@@ -1,0 +1,41 @@
+{
+  "name": "pi-agentic-search",
+  "version": "0.1.0",
+  "description": "Pi extension for agent-oriented ranked code search",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dantetekanem/pi-agentic-search.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "agentic-search",
+    "code-search",
+    "ripgrep"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit",
+    "smoke": "tsx test/smoke.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.74.0",
+    "@earendil-works/pi-coding-agent": "0.74.0",
+    "@earendil-works/pi-tui": "0.74.0",
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typebox": "^1.1.24"
+  }
+}
