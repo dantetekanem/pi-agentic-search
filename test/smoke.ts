@@ -35,7 +35,7 @@ const formatted = formatSearchResults("Widget", ranked.slice(0, 1), matches.leng
 assert.match(formatted, /TARGET FILE: src\/widget\.ts/);
 assert.match(formatted, /export function renderWidget/);
 assert.doesNotMatch(formatted, /\[object Object\]/);
-assert.match(formatted, /read only the TARGET FILE/);
+assert.match(formatted, /read the TARGET FILE first/);
 
 const registeredTools: string[] = [];
 const registeredCommands: string[] = [];
@@ -61,6 +61,7 @@ assert.match(searchTool.description, /scopes/i);
 assert.match(searchTool.description, /methods/i);
 assert.match(searchTool.description, /call sites/i);
 assert.match(searchTool.description, /ranked/i);
+assert.match(searchTool.description, /expand_related true/i);
 assert.match(searchTool.promptSnippet, /preferred/i);
 assert.match(searchTool.promptSnippet, /locating/i);
 assert.match(searchTool.promptSnippet, /files/i);
@@ -81,8 +82,16 @@ assert.ok(
   "promptGuidelines should map Rails scope filename prompts to query plus path",
 );
 assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /stop discovery/i.test(guideline) && /tests/i.test(guideline) && /git status/i.test(guideline)),
-  "promptGuidelines should prevent extra discovery after the target file contains the requested matches",
+  searchTool.promptGuidelines.some((guideline: string) => /how many scopes does User have/i.test(guideline) && /expand_related true/i.test(guideline)),
+  "promptGuidelines should tell agents to enable expand_related for model scope questions",
+);
+assert.ok(
+  searchTool.promptGuidelines.some((guideline: string) => /JS\/TS questions/i.test(guideline) && /expand_related true/i.test(guideline)),
+  "promptGuidelines should tell agents to enable expand_related for JS/TS import questions",
+);
+assert.ok(
+  searchTool.promptGuidelines.some((guideline: string) => /read that target first/i.test(guideline) && /tests/i.test(guideline) && /git status/i.test(guideline)),
+  "promptGuidelines should prioritize the target before extra discovery after the target file contains the requested matches",
 );
 assert.doesNotMatch(searchTool.promptGuidelines.join("\n"), /path_glob|file_type|--glob|--type/);
 
@@ -103,6 +112,12 @@ assert.match(malformedRender, /agentic_search: fallback line/);
 
 const repo = await mkdtemp(join(tmpdir(), "pi-agentic-search-smoke-"));
 await mkdir(join(repo, "app/models"), { recursive: true });
+await mkdir(join(repo, "app/models/user"), { recursive: true });
+await mkdir(join(repo, "app/models/museum"), { recursive: true });
+await mkdir(join(repo, "app/models/concerns/audit"), { recursive: true });
+await mkdir(join(repo, "app/controllers"), { recursive: true });
+await mkdir(join(repo, "src/helpers"), { recursive: true });
+await mkdir(join(repo, "src/components"), { recursive: true });
 await mkdir(join(repo, "test/fixtures"), { recursive: true });
 await writeFile(
   join(repo, "app/models/event_occurrence.rb"),
@@ -123,7 +138,73 @@ await writeFile(
     "end",
   ].join("\n"),
 );
+await writeFile(join(repo, "app/controllers/application_controller.rb"), "class ApplicationController < ActionController::Base\nend\n");
+await writeFile(
+  join(repo, "app/models/post.rb"),
+  [
+    "class Post < ApplicationRecord",
+    "  def topic_page",
+    "    where(\"posts.created_at <= ?\", created_at)",
+    "  end",
+    "end",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "app/models/user.rb"),
+  [
+    "class User < ApplicationRecord",
+    "  include ProfileScopes",
+    "  include MissingConcern",
+    "  include Audit::Scopes",
+    "  scope :direct_user, -> { where(active: true) }",
+    "end",
+  ].join("\n"),
+);
+await writeFile(join(repo, "app/models/museum/user.rb"), "class Museum::User < ApplicationRecord\n  scope :museum_user, -> { all }\nend\n");
+await writeFile(
+  join(repo, "app/models/user/profile_scopes.rb"),
+  [
+    "module User::ProfileScopes",
+    "  extend ActiveSupport::Concern",
+    "  included do",
+    "    scope :profiled, -> { where.not(profile_id: nil) }",
+    "  end",
+    "end",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "app/models/concerns/audit/scopes.rb"),
+  [
+    "module Audit::Scopes",
+    "  extend ActiveSupport::Concern",
+    "  included do",
+    "    scope :audited, -> { where(audited: true) }",
+    "  end",
+    "end",
+  ].join("\n"),
+);
 await writeFile(join(repo, "test/fixtures/event_occurrences.yml"), "one:\n  date: 2026-01-01\n");
+await writeFile(
+  join(repo, "src/app.ts"),
+  [
+    "import { computeUserScore } from './helpers/math';",
+    "import Button from './components/Button';",
+    "export { APP_LABEL } from './constants';",
+    "export function renderApp() {",
+    "  return Button(computeUserScore(2));",
+    "}",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "src/helpers/math.ts"),
+  [
+    "export function computeUserScore(value: number) {",
+    "  return value * 10;",
+    "}",
+  ].join("\n"),
+);
+await writeFile(join(repo, "src/components/Button.tsx"), "export default function Button(value: number) { return String(value); }\n");
+await writeFile(join(repo, "src/constants.ts"), "export const APP_LABEL = 'Agentic Search';\n");
 
 const pathOnlyResult = await searchTool.execute(
   "tool-call-1",
@@ -148,12 +229,180 @@ const scopeResult = await searchTool.execute(
 const scopeText = scopeResult.content[0].text;
 assert.equal(scopeResult.details.files[0].path, "app/models/event_occurrence.rb");
 assert.match(scopeText, /confidence sum 1\.000/);
-assert.match(scopeText, /Do not inspect alternate candidates, sibling models, tests, migrations, git status, or run more searches/);
+assert.match(scopeText, /read the TARGET FILE first/);
 assert.match(scopeText, /\[scope\] scope :upcoming/);
 assert.match(scopeText, /\[scope\] scope :past/);
 assert.match(scopeText, /\[scope\] scope :by_date_range/);
 assert.match(scopeText, /\[scope\] scope :with_budget/);
 assert.equal(scopeResult.details.files[0].matchCount, 4);
 assert.equal(scopeResult.details.files[0].confidence, 1);
+
+const broadDirectoryResult = await searchTool.execute(
+  "tool-call-3",
+  { query: "created_at.*<=", path: "app", max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const broadDirectoryText = broadDirectoryResult.content[0].text;
+assert.equal(broadDirectoryResult.details.files[0].path, "app/models/post.rb");
+assert.match(broadDirectoryText, /TARGET FILE: app\/models\/post\.rb/);
+assert.match(broadDirectoryText, /L3 \[ref\] where\("posts\.created_at <= \?", created_at\)/);
+assert.doesNotMatch(broadDirectoryText, /TARGET FILE: app\/controllers\/application_controller\.rb/);
+assert.ok(
+  broadDirectoryResult.details.files[0].reasons.some((reason: string) => reason === "content match"),
+  "content-backed results should outrank broad directory path candidates",
+);
+
+const absolutePathResult = await searchTool.execute(
+  "tool-call-4",
+  { query: "created_at.*<=", path: join(repo, "app/models/post.rb"), max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: process.cwd() },
+);
+const absolutePathText = absolutePathResult.content[0].text;
+assert.match(absolutePathText, /posts\.created_at <= \?/);
+assert.match(absolutePathResult.details.files[0].path, /app\/models\/post\.rb$/);
+assert.equal(absolutePathResult.details.files[0].confidence, 1);
+
+const absoluteDirectoryResult = await searchTool.execute(
+  "tool-call-5",
+  { query: "created_at.*<=", path: join(repo, "app"), max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: process.cwd() },
+);
+const absoluteDirectoryText = absoluteDirectoryResult.content[0].text;
+assert.match(absoluteDirectoryText, /TARGET FILE: .*app\/models\/post\.rb/);
+assert.match(absoluteDirectoryText, /posts\.created_at <= \?/);
+assert.doesNotMatch(absoluteDirectoryText, /application_controller\.rb[\s\S]*\[path\] filename\/path match/);
+assert.equal(absoluteDirectoryResult.details.files[0].confidence, 1);
+
+const pathOnlySelectiveResult = await searchTool.execute(
+  "tool-call-6",
+  { query: "post.rb", max_files: 5 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(pathOnlySelectiveResult.details.files[0].path, "app/models/post.rb");
+assert.match(pathOnlySelectiveResult.content[0].text, /\[path\] filename\/path match/);
+
+const ambiguousSelectiveResult = await searchTool.execute(
+  "tool-call-7",
+  { query: "created_at.*<=", path: "post.rb", max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(ambiguousSelectiveResult.details.files[0].path, "app/models/post.rb");
+assert.match(ambiguousSelectiveResult.content[0].text, /posts\.created_at <= \?/);
+assert.ok(
+  ambiguousSelectiveResult.details.files[0].reasons.some((reason: string) => reason === "content match"),
+  "selective path hints should still rank the content-backed matching file first",
+);
+
+const mixinExpandedResult = await searchTool.execute(
+  "tool-call-8",
+  { query: "scope\\s+:", path: "app/models/user.rb", expand_mixins: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const mixinExpandedText = mixinExpandedResult.content[0].text;
+assert.equal(mixinExpandedResult.details.files[0].path, "app/models/user.rb");
+assert.match(mixinExpandedText, /scope :direct_user/);
+assert.match(mixinExpandedText, /scope :profiled/);
+assert.match(mixinExpandedText, /scope :audited/);
+assert.match(mixinExpandedText, /TARGET FILE: app\/models\/user\.rb\. Read this file first; expand_mixins also searched 2 resolved mixin files shown below as 1\.x related targets\./);
+assert.match(mixinExpandedText, /expand_mixins: searched 2 resolved mixin files/);
+assert.match(mixinExpandedText, /Resolved mixins: ProfileScopes -> app\/models\/user\/profile_scopes\.rb/);
+assert.match(mixinExpandedText, /Audit::Scopes -> app\/models\/concerns\/audit\/scopes\.rb/);
+assert.match(mixinExpandedText, /Unresolved mixins: MissingConcern/);
+assert.doesNotMatch(mixinExpandedText, /ActiveSupport::Concern/);
+assert.deepEqual(
+  mixinExpandedResult.details.mixins.roots.sort(),
+  ["app/models/concerns/audit/scopes.rb", "app/models/user/profile_scopes.rb"],
+);
+assert.deepEqual(
+  mixinExpandedResult.details.files.slice(1, 3).map((file: any) => file.path).sort(),
+  ["app/models/concerns/audit/scopes.rb", "app/models/user/profile_scopes.rb"],
+);
+assert.ok(
+  mixinExpandedResult.details.files.slice(1, 3).every((file: any) => file.reasons[0].startsWith("mixin target:")),
+  "mixin-expanded files should appear directly below the primary file and be labelled as likely targets",
+);
+const mixinExpandedRender = searchTool.renderResult(
+  mixinExpandedResult,
+  { expanded: true, isPartial: false },
+  identityTheme,
+).render(200).join("\n");
+assert.match(mixinExpandedRender, /mixin files below are likely targets too/);
+assert.match(mixinExpandedRender, /mixin results are included search values and likely targets too/);
+assert.match(mixinExpandedRender, /↳ 1\.\d\. app\/models\/user\/profile_scopes\.rb/);
+assert.match(mixinExpandedRender, /\[included by app\/models\/user\.rb via ProfileScopes; mixin also includes search values, very likely a target too\]/);
+
+const basenameMixinExpandedResult = await searchTool.execute(
+  "tool-call-9",
+  { query: "scope\\s+:", path: "user.rb", expand_mixins: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const basenameMixinExpandedText = basenameMixinExpandedResult.content[0].text;
+assert.equal(basenameMixinExpandedResult.details.files[0].path, "app/models/user.rb");
+assert.match(basenameMixinExpandedText, /scope :direct_user/);
+assert.match(basenameMixinExpandedText, /scope :profiled/);
+assert.match(basenameMixinExpandedText, /scope :audited/);
+assert.match(basenameMixinExpandedText, /expand_mixins also searched 2 resolved mixin files/);
+
+const importExpandedResult = await searchTool.execute(
+  "tool-call-10",
+  { query: "computeUserScore", path: "src/app.ts", expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const importExpandedText = importExpandedResult.content[0].text;
+assert.equal(importExpandedResult.details.files[0].path, "src/app.ts");
+assert.equal(importExpandedResult.details.related.label, "import");
+assert.match(importExpandedText, /TARGET FILE: src\/app\.ts\. Read this file first; expand_related also searched 3 resolved import files shown below as 1\.x related targets\./);
+assert.match(importExpandedText, /↳ 1\.1\. src\/helpers\/math\.ts/);
+assert.match(importExpandedText, /imported by src\/app\.ts via \.\/helpers\/math; related import also includes search values, very likely a target too/);
+assert.match(importExpandedText, /L1 \[def\] export function computeUserScore/);
+assert.match(importExpandedText, /src\/components\/Button\.tsx/);
+assert.match(importExpandedText, /src\/constants\.ts/);
+const importExpandedRender = searchTool.renderResult(
+  importExpandedResult,
+  { expanded: true, isPartial: false },
+  identityTheme,
+).render(220).join("\n");
+assert.match(importExpandedRender, /import files below are likely targets too/);
+assert.match(importExpandedRender, /↳ 1\.1\. src\/helpers\/math\.ts/);
+assert.match(importExpandedRender, /related import also includes search values, very likely a target too/);
+
+const importDisabledResult = await searchTool.execute(
+  "tool-call-11",
+  { query: "computeUserScore", path: "src/app.ts", max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(importDisabledResult.details.files[0].path, "src/app.ts");
+assert.doesNotMatch(importDisabledResult.content[0].text, /src\/helpers\/math\.ts/);
+assert.equal(importDisabledResult.details.related, undefined);
+
+const mixinDisabledResult = await searchTool.execute(
+  "tool-call-12",
+  { query: "scope\\s+:", path: "app/models/user.rb", max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.match(mixinDisabledResult.content[0].text, /scope :direct_user/);
+assert.doesNotMatch(mixinDisabledResult.content[0].text, /scope :profiled|scope :audited/);
+assert.equal(mixinDisabledResult.details.mixins, undefined);
+assert.equal(mixinDisabledResult.details.related, undefined);
 
 console.log("pi-agentic-search smoke test passed");
