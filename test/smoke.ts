@@ -53,6 +53,8 @@ agenticSearchExtension({
 assert.deepEqual(registeredTools, ["agentic_search"]);
 assert.deepEqual(registeredCommands, ["agentic-search-info"]);
 assert.ok(searchTool, "agentic_search tool should be registered");
+assert.match(JSON.stringify(searchTool.parameters), /context/);
+assert.match(JSON.stringify(searchTool.parameters), /disambiguation hint used only for ranking/);
 
 assert.match(searchTool.description, /preferred/i);
 assert.match(searchTool.description, /files/i);
@@ -69,6 +71,7 @@ assert.match(searchTool.promptSnippet, /classes/i);
 assert.match(searchTool.promptSnippet, /scopes/i);
 assert.match(searchTool.promptSnippet, /methods/i);
 assert.match(searchTool.promptSnippet, /call sites/i);
+assert.match(searchTool.promptSnippet, /context.*natural-language disambiguation/i);
 assert.ok(
   searchTool.promptGuidelines.some((guideline: string) => /Prefer agentic_search over grep/.test(guideline)),
   "promptGuidelines should explicitly prefer agentic_search over grep for discovery",
@@ -76,6 +79,10 @@ assert.ok(
 assert.ok(
   searchTool.promptGuidelines.some((guideline: string) => /files, classes, scopes, methods, and call sites/.test(guideline)),
   "promptGuidelines should name common code-discovery targets",
+);
+assert.ok(
+  searchTool.promptGuidelines.some((guideline: string) => /context actual goal progress/i.test(guideline) && /query remaining_value/i.test(guideline)),
+  "promptGuidelines should explain context disambiguation without replacing query",
 );
 assert.ok(
   searchTool.promptGuidelines.some((guideline: string) => /query scope\\s\+:/i.test(guideline) && /path event_occurrence\.rb/i.test(guideline)),
@@ -112,10 +119,12 @@ assert.match(malformedRender, /agentic_search: fallback line/);
 
 const repo = await mkdtemp(join(tmpdir(), "pi-agentic-search-smoke-"));
 await mkdir(join(repo, "app/models"), { recursive: true });
+await mkdir(join(repo, "app/models/goal"), { recursive: true });
 await mkdir(join(repo, "app/models/user"), { recursive: true });
 await mkdir(join(repo, "app/models/museum"), { recursive: true });
 await mkdir(join(repo, "app/models/concerns/audit"), { recursive: true });
 await mkdir(join(repo, "app/controllers"), { recursive: true });
+await mkdir(join(repo, "app/services/finance"), { recursive: true });
 await mkdir(join(repo, "src/helpers"), { recursive: true });
 await mkdir(join(repo, "src/components"), { recursive: true });
 await mkdir(join(repo, "test/fixtures"), { recursive: true });
@@ -135,6 +144,26 @@ await writeFile(
   [
     "class GoalStep < ApplicationRecord",
     "  scope :upcoming, -> { where(\"scheduled_date >= ?\", Date.current) }",
+    "end",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "app/models/goal/progress.rb"),
+  [
+    "class Goal::Progress < ApplicationRecord",
+    "  def apply_update",
+    "    self.remaining_value = actual_remaining_value",
+    "  end",
+    "end",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "app/services/finance/payment_schedule.rb"),
+  [
+    "class Finance::PaymentSchedule",
+    "  def remaining_value",
+    "    payment_total_cents - paid_value_cents",
+    "  end",
     "end",
   ].join("\n"),
 );
@@ -301,6 +330,48 @@ assert.match(ambiguousSelectiveResult.content[0].text, /posts\.created_at <= \?/
 assert.ok(
   ambiguousSelectiveResult.details.files[0].reasons.some((reason: string) => reason === "content match"),
   "selective path hints should still rank the content-backed matching file first",
+);
+
+const noContextRemainingValueResult = await searchTool.execute(
+  "tool-call-context-1",
+  { query: "remaining_value", max_files: 5 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(noContextRemainingValueResult.details.files[0].path, "app/services/finance/payment_schedule.rb");
+assert.ok(
+  noContextRemainingValueResult.details.files.some((file: any) => file.path === "app/models/goal/progress.rb"),
+  "no-context search should still return the competing goal/progress match",
+);
+assert.ok(
+  noContextRemainingValueResult.details.files.every((file: any) =>
+    file.reasons.every((reason: string) => !reason.startsWith("context tokens matched")),
+  ),
+  "context reasons should not appear when context is omitted",
+);
+
+const contextualRemainingValueResult = await searchTool.execute(
+  "tool-call-context-2",
+  { query: "remaining_value", context: "actual goal progress", max_files: 5 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const contextualRemainingValueText = contextualRemainingValueResult.content[0].text;
+assert.equal(contextualRemainingValueResult.details.context, "actual goal progress");
+assert.equal(contextualRemainingValueResult.details.totalMatches, noContextRemainingValueResult.details.totalMatches);
+assert.equal(contextualRemainingValueResult.details.files[0].path, "app/models/goal/progress.rb");
+assert.match(contextualRemainingValueText, /TARGET FILE: app\/models\/goal\/progress\.rb/);
+assert.match(contextualRemainingValueText, /context tokens matched snippets: actual/);
+assert.match(contextualRemainingValueText, /context tokens matched path: goal, progress/);
+assert.ok(
+  contextualRemainingValueResult.details.files[0].reasons.some((reason: string) => reason === "context tokens matched snippets: actual"),
+  "contextual ranking should explain snippet-token matches",
+);
+assert.ok(
+  contextualRemainingValueResult.details.files[0].reasons.some((reason: string) => reason === "context tokens matched path: goal, progress"),
+  "contextual ranking should explain path-token matches",
 );
 
 const mixinExpandedResult = await searchTool.execute(

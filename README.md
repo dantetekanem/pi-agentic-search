@@ -22,6 +22,7 @@ The extension does not replace `rg`. It uses `rg` for fast local search, then ad
 `agentic_search` improves agent behavior by combining several small constraints that are useful together:
 
 - it asks for a precise construct query instead of a whole natural-language request
+- it accepts optional natural-language `context` only as a ranking/disambiguation hint
 - it accepts an optional path hint, such as a filename or partial path, and resolves likely files internally
 - it ranks implementation files above tests, fixtures, generated files, build output, vendor files, and lockfiles
 - it boosts definition-like matches, such as functions, classes, types, Ruby classes, Rails scopes, Rust functions, Go types, and similar declarations
@@ -40,6 +41,7 @@ The important part is not the scoring alone. The important part is that the resu
 Parameters:
 
 - `query` — precise code syntax regex or literal string to search for. Prefer construct syntax over the whole user prompt. For Rails scopes, use `scope\s+:`.
+- `context` — optional natural-language disambiguation hint used only for ranking, not for the ripgrep search query; for example `actual goal progress`.
 - `path` — optional exact path, filename, or partial path hint, such as `event_occurrence.rb`.
 - `max_files` — maximum ranked candidate files to return. Defaults to 5, maximum 10.
 - `max_matches_per_file` — maximum snippet matches per file. Defaults to 10, maximum 10.
@@ -105,6 +107,16 @@ TARGET FILE: src/widget.ts. Read only this file before editing when it contains 
    L7 [ref] return new Widget();
 ```
 
+### Natural-language disambiguation
+
+When the same code name appears in multiple domains, keep `query` as the exact syntax or literal and pass domain words as `context`:
+
+```text
+agentic_search query="remaining_value" context="actual goal progress"
+```
+
+`rg` still searches only for `remaining_value`. The `context` words can lift files or matched snippets containing `actual`, `goal`, or `progress` above competing finance/payment matches.
+
 ### Path-only discovery
 
 When the user or prompt already names a file, `agentic_search` can use that as the query:
@@ -161,6 +173,7 @@ Sparse checkouts help because ripgrep only sees the sparse working tree.
 - source extensions score higher than miscellaneous files
 - implementation paths such as `src/`, `app/`, `lib/`, `packages/`, and `core/` score higher
 - tests, fixtures, mocks, generated files, vendor, build output, and lockfiles score lower
+- optional `context` tokens can boost matching file paths or snippets without changing the ripgrep query
 - results are grouped by file and trimmed to a small number of snippets per file
 - compact rendering shows the target file path and top snippet
 - invalid regex queries are retried as literal text, so searches like `sig {` still produce a normal search result

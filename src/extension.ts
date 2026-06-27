@@ -135,6 +135,7 @@ interface SearchFileDetails extends Pick<RankedFileResult, "path" | "score" | "m
 
 interface SearchDetails {
   query: string;
+  context?: string;
   totalMatches: number;
   totalFiles: number;
   returnedFiles: number;
@@ -335,6 +336,68 @@ function scorePathQueryMatch(path: string, query: string): { score: number; reas
   return { score, reasons };
 }
 
+const CONTEXT_STOPWORDS = new Set([
+  ...PATH_QUERY_STOPWORDS,
+  "about",
+  "above",
+  "across",
+  "around",
+  "between",
+  "by",
+  "context",
+  "domain",
+  "from",
+  "into",
+  "named",
+  "near",
+  "of",
+  "or",
+  "related",
+  "same",
+  "search",
+  "use",
+  "using",
+  "with",
+]);
+
+function contextTokens(context: string | undefined): string[] {
+  const trimmed = context?.trim();
+  if (!trimmed) return [];
+  return uniqueValues(
+    [trimmed, camelToSnake(trimmed)]
+      .flatMap((value) => value.toLowerCase().split(/[^a-z0-9]+/))
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2 && !CONTEXT_STOPWORDS.has(token)),
+  );
+}
+
+function scoreContext(path: string, matches: CodeMatch[], context: string | undefined): { score: number; reasons: string[] } {
+  const tokens = contextTokens(context);
+  if (tokens.length === 0) return { score: 0, reasons: [] };
+
+  const normalizedPath = normalizeRepoRelativePath(path).toLowerCase();
+  const lowerLines = matches.map((match) => match.line.toLowerCase());
+  const pathTokens = tokens.filter((token) => normalizedPath.includes(token));
+  const snippetTokens = tokens.filter((token) => lowerLines.some((line) => line.includes(token)));
+
+  let score = 0;
+  const reasons: string[] = [];
+
+  if (snippetTokens.length > 0) {
+    score += Math.min(135, snippetTokens.length * 45);
+    reasons.push(`context tokens matched snippets: ${snippetTokens.join(", ")}`);
+  }
+
+  if (pathTokens.length > 0) {
+    score += Math.min(75, pathTokens.length * 25);
+    reasons.push(`context tokens matched path: ${pathTokens.join(", ")}`);
+  }
+
+  if (snippetTokens.length > 0 && pathTokens.length > 0) score += 15;
+
+  return { score, reasons };
+}
+
 export function parseRipgrepJsonLines(output: string): CodeMatch[] {
   const matches: CodeMatch[] = [];
 
@@ -382,6 +445,7 @@ export function rankFileGroups(
   query: string,
   maxMatchesPerFile: number,
   pathMatches: PathMatch[] = [],
+  context?: string,
 ): RankedFileResult[] {
   const grouped = new Map<string, CodeMatch[]>();
   for (const match of matches) {
@@ -404,13 +468,14 @@ export function rankFileGroups(
 
     const pathScore = scorePath(path, query);
     const matchScore = scoreMatches(fileMatches);
+    const contextScore = scoreContext(path, fileMatches, context);
     const pathQueryScore = pathQueryMatch?.score ?? 0;
     const pathQueryReasons = pathQueryMatch?.reasons ?? [];
 
     ranked.push({
       path,
-      score: pathScore.score + matchScore.score + pathQueryScore,
-      reasons: [...pathQueryReasons, ...matchScore.reasons, ...pathScore.reasons],
+      score: pathScore.score + matchScore.score + contextScore.score + pathQueryScore,
+      reasons: [...contextScore.reasons, ...pathQueryReasons, ...matchScore.reasons, ...pathScore.reasons],
       matchCount: fileMatches.length > 0 ? fileMatches.length : (pathQueryMatch ? 1 : 0),
       matches: sortedMatches.slice(0, maxMatchesPerFile),
     });
@@ -692,6 +757,7 @@ function addRgExcludes(args: string[]): void {
 
 const SearchParams = Type.Object({
   query: Type.String({ description: "Precise code syntax regex or literal string to search for. Prefer construct syntax over the whole user prompt; for Rails scopes use scope\\s+:" }),
+  context: Type.Optional(Type.String({ description: "Optional natural-language disambiguation hint used only for ranking, not as the ripgrep query. Example: actual goal progress" })),
   path: Type.Optional(Type.String({ description: "Optional exact path, filename, or partial path hint. Example: event_occurrence.rb" })),
   max_files: Type.Optional(Type.Number({ description: "Maximum ranked candidate files to return, default 5, max 10" })),
   max_matches_per_file: Type.Optional(Type.Number({ description: "Maximum snippet matches per file, default 10 for construct queries, max 10" })),
@@ -705,11 +771,12 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "agentic_search",
     label: "Agentic Search",
-    description: `Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Uses ripgrep, then ranks and groups results for coding-agent workflows. For model/component/module questions about available behavior, scopes, callbacks, associations, included concerns, mixins, or JS/TS imports, set expand_related true so related files are searched with the target file. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
-    promptSnippet: "Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Make one focused search from the user's named construct and optional path hint. For Rails model questions about scopes/behavior including concerns or mixins, or JS/TS questions needing imported files, pass expand_related: true. Read the target file first, then use related 1.x candidates when shown.",
+    description: `Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Uses ripgrep, then ranks and groups results for coding-agent workflows. Optional context disambiguates ranking without changing the ripgrep query. For model/component/module questions about available behavior, scopes, callbacks, associations, included concerns, mixins, or JS/TS imports, set expand_related true so related files are searched with the target file. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
+    promptSnippet: "Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Make one focused search from the user's named construct and optional path hint. When construct names repeat across domains, keep query precise and pass context as natural-language disambiguation, for example context: 'actual goal progress'. For Rails model questions about scopes/behavior including concerns or mixins, or JS/TS questions needing imported files, pass expand_related: true. Read the target file first, then use related 1.x candidates when shown.",
     promptGuidelines: [
       "Prefer agentic_search over grep for locating files, classes, scopes, methods, and call sites because ranked results identify the best file to read first.",
       "When a user names both a code construct and a file, make exactly one focused agentic_search call with query for the construct syntax and path for the filename or partial path hint.",
+      "When the same construct name appears in multiple domains, keep query as the exact code syntax or literal and pass context as a natural-language ranking hint; for example query remaining_value with context actual goal progress.",
       "For Rails scope requests like predicates for scopes on event_occurrence.rb, call agentic_search once with query scope\\s+: and path event_occurrence.rb, then read the target file first before broader discovery.",
       "For Rails model questions about scopes available on a model, model behavior, callbacks, associations, included concerns, or mixins, set expand_related true; examples: 'how many scopes does User have?', 'include concerns', 'from mixins', 'available on User'.",
       "For JS/TS questions where imported files, re-export barrels, hooks, components, helpers, or sibling modules may contain the requested behavior, set expand_related true so relative imports are searched and rendered as 1.x child targets.",
@@ -721,6 +788,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const maxFiles = clampInt(params.max_files, 5, 1, 10);
       const maxMatchesPerFile = clampInt(params.max_matches_per_file, 10, 1, 10);
+      const context = typeof params.context === "string" && params.context.trim() ? params.context.trim() : undefined;
       const scope = await resolveSearchScope({
         cwd: ctx.cwd,
         query: params.query,
@@ -757,7 +825,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       const pathMatches = scope.pathMatches;
       const matches = parseRipgrepJsonLines(output);
       const rankedCandidates = prioritizeRelatedResults(
-        rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, pathMatches),
+        rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, pathMatches, context),
         related,
         scope.searchRoots[0],
       );
@@ -785,6 +853,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
 
       const details: SearchDetails = {
         query: params.query,
+        context,
         totalMatches,
         totalFiles,
         returnedFiles: ranked.length,
