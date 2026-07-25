@@ -1,5 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { camelToSnake, displaySearchRoot, normalizeRepoRelativePath, uniqueValues } from "./shared.ts";
 
 export interface RelatedExpansionDetails {
   enabled: boolean;
@@ -20,31 +21,13 @@ const RUBY_MIXIN_IGNORE_NAMES = new Set([
 
 const JS_TS_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs"];
 const JS_TS_EXTENSION_SET = new Set(JS_TS_EXTENSIONS);
+const RUBY_EXTENSION = ".rb";
 
-function normalizeRepoRelativePath(path: string): string {
-  return path.split(sep).join("/").replace(/^\.\/+/, "");
-}
-
-function camelToSnake(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .toLowerCase();
-}
-
-function uniqueValues(values: string[]): string[] {
-  return Array.from(new Set(values));
-}
+const SKIP_DIRS = new Set([".git", "node_modules", "vendor", "dist", "build", "coverage", "tmp", "log", ".next", ".turbo", "target"]);
+const MAX_DIR_WALK_FILES = 200;
 
 function rootToResolvedPath(cwd: string, root: string): string {
   return isAbsolute(root) ? resolve(root) : resolve(cwd, root);
-}
-
-function displaySearchRoot(cwd: string, resolved: string): string {
-  const rel = relative(cwd, resolved);
-  if (rel === "") return ".";
-  if (!rel.startsWith("..") && !isAbsolute(rel)) return normalizeRepoRelativePath(rel);
-  return normalizeRepoRelativePath(resolved);
 }
 
 function parseRubyMixinReferences(source: string): RubyMixinReference[] {
@@ -115,9 +98,56 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+async function collectSourceFiles(cwd: string, root: string): Promise<string[]> {
+  const resolved = rootToResolvedPath(cwd, root);
+  const out: string[] = [];
+
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > 8 || out.length >= MAX_DIR_WALK_FILES) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= MAX_DIR_WALK_FILES) return;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) await walk(full, depth + 1);
+      } else {
+        const ext = extname(entry.name).toLowerCase();
+        if (ext === RUBY_EXTENSION || JS_TS_EXTENSION_SET.has(ext)) out.push(full);
+      }
+    }
+  }
+
+  try {
+    const stats = await stat(resolved);
+    if (stats.isDirectory()) await walk(resolved, 0);
+    else if (stats.isFile()) out.push(resolved);
+  } catch {
+    // root doesn't exist
+  }
+  return out;
+}
+
 export async function expandRubyMixins(cwd: string, roots: string[]): Promise<RelatedExpansionDetails> {
   const details: RelatedExpansionDetails = { enabled: true, label: "mixin", roots: [], resolved: [], unresolved: [] };
-  const queue = roots.filter((root) => extname(root).toLowerCase() === ".rb");
+  const queue: string[] = [];
+
+  for (const root of roots) {
+    const resolved = rootToResolvedPath(cwd, root);
+    const s = await stat(resolved).catch(() => undefined);
+    if (s?.isDirectory()) {
+      for (const f of await collectSourceFiles(cwd, root)) {
+        if (extname(f).toLowerCase() === RUBY_EXTENSION) queue.push(displaySearchRoot(cwd, f));
+      }
+    } else if (extname(resolved).toLowerCase() === RUBY_EXTENSION) {
+      queue.push(root);
+    }
+  }
+
   const visited = new Set<string>();
   const maxMixinFiles = 25;
 
@@ -196,7 +226,20 @@ function jsImportCandidatePaths(resolvedFrom: string, specifier: string): string
 
 export async function expandJsTsImports(cwd: string, roots: string[]): Promise<RelatedExpansionDetails> {
   const details: RelatedExpansionDetails = { enabled: true, label: "import", roots: [], resolved: [], unresolved: [] };
-  const queue = roots.filter((root) => JS_TS_EXTENSION_SET.has(extname(root).toLowerCase()));
+  const queue: string[] = [];
+
+  for (const root of roots) {
+    const resolved = rootToResolvedPath(cwd, root);
+    const s = await stat(resolved).catch(() => undefined);
+    if (s?.isDirectory()) {
+      for (const f of await collectSourceFiles(cwd, root)) {
+        if (JS_TS_EXTENSION_SET.has(extname(f).toLowerCase())) queue.push(displaySearchRoot(cwd, f));
+      }
+    } else if (JS_TS_EXTENSION_SET.has(extname(resolved).toLowerCase())) {
+      queue.push(root);
+    }
+  }
+
   const visited = new Set<string>();
   const maxImportFiles = 50;
 

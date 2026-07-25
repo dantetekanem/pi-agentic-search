@@ -224,14 +224,12 @@ await writeFile(
     "}",
   ].join("\n"),
 );
-await writeFile(
-  join(repo, "src/helpers/math.ts"),
-  [
-    "export function computeUserScore(value: number) {",
-    "  return value * 10;",
-    "}",
-  ].join("\n"),
-);
+await writeFile(join(repo, "src/helpers/math.ts"), [
+  "export function computeUserScore(value: number) {",
+  "  return value * 10;",
+  "}",
+  "// NOTE: math.ts is the canonical score helper; see math.ts docs.",
+].join("\n"));
 await writeFile(join(repo, "src/components/Button.tsx"), "export default function Button(value: number) { return String(value); }\n");
 await writeFile(join(repo, "src/constants.ts"), "export const APP_LABEL = 'Agentic Search';\n");
 
@@ -376,7 +374,7 @@ assert.ok(
 
 const mixinExpandedResult = await searchTool.execute(
   "tool-call-8",
-  { query: "scope\\s+:", path: "app/models/user.rb", expand_mixins: true, max_files: 10 },
+  { query: "scope\\s+:", path: "app/models/user.rb", expand_related: true, max_files: 10 },
   undefined,
   undefined,
   { cwd: repo },
@@ -386,14 +384,14 @@ assert.equal(mixinExpandedResult.details.files[0].path, "app/models/user.rb");
 assert.match(mixinExpandedText, /scope :direct_user/);
 assert.match(mixinExpandedText, /scope :profiled/);
 assert.match(mixinExpandedText, /scope :audited/);
-assert.match(mixinExpandedText, /TARGET FILE: app\/models\/user\.rb\. Read this file first; expand_mixins also searched 2 resolved mixin files shown below as 1\.x related targets\./);
-assert.match(mixinExpandedText, /expand_mixins: searched 2 resolved mixin files/);
+assert.match(mixinExpandedText, /TARGET FILE: app\/models\/user\.rb\. Read this file first; expand_related also searched 2 resolved mixin files shown below as 1\.x related targets\./);
+assert.match(mixinExpandedText, /expand_related: searched 2 resolved mixin files/);
 assert.match(mixinExpandedText, /Resolved mixins: ProfileScopes -> app\/models\/user\/profile_scopes\.rb/);
 assert.match(mixinExpandedText, /Audit::Scopes -> app\/models\/concerns\/audit\/scopes\.rb/);
 assert.match(mixinExpandedText, /Unresolved mixins: MissingConcern/);
 assert.doesNotMatch(mixinExpandedText, /ActiveSupport::Concern/);
 assert.deepEqual(
-  mixinExpandedResult.details.mixins.roots.sort(),
+  mixinExpandedResult.details.related.roots.sort(),
   ["app/models/concerns/audit/scopes.rb", "app/models/user/profile_scopes.rb"],
 );
 assert.deepEqual(
@@ -416,7 +414,7 @@ assert.match(mixinExpandedRender, /\[included by app\/models\/user\.rb via Profi
 
 const basenameMixinExpandedResult = await searchTool.execute(
   "tool-call-9",
-  { query: "scope\\s+:", path: "user.rb", expand_mixins: true, max_files: 10 },
+  { query: "scope\\s+:", path: "user.rb", expand_related: true, max_files: 10 },
   undefined,
   undefined,
   { cwd: repo },
@@ -426,7 +424,7 @@ assert.equal(basenameMixinExpandedResult.details.files[0].path, "app/models/user
 assert.match(basenameMixinExpandedText, /scope :direct_user/);
 assert.match(basenameMixinExpandedText, /scope :profiled/);
 assert.match(basenameMixinExpandedText, /scope :audited/);
-assert.match(basenameMixinExpandedText, /expand_mixins also searched 2 resolved mixin files/);
+assert.match(basenameMixinExpandedText, /expand_related also searched 2 resolved mixin files/);
 
 const importExpandedResult = await searchTool.execute(
   "tool-call-10",
@@ -473,7 +471,75 @@ const mixinDisabledResult = await searchTool.execute(
 );
 assert.match(mixinDisabledResult.content[0].text, /scope :direct_user/);
 assert.doesNotMatch(mixinDisabledResult.content[0].text, /scope :profiled|scope :audited/);
-assert.equal(mixinDisabledResult.details.mixins, undefined);
 assert.equal(mixinDisabledResult.details.related, undefined);
+
+// ── New behavior assertions ────────────────────────────────────────────────
+
+// 1. Query that is both a filename and content in another file: both lanes surface.
+//    math.ts itself now contains a literal "math.ts" comment; app.ts does not.
+//    The path lane must still surface math.ts, and a separate query for a content
+//    string that only app.ts has must surface app.ts (proving content isn't dropped).
+const mathPathResult = await searchTool.execute(
+  "tool-call-new-1a",
+  { query: "math.ts", literal: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const mathPathPaths = mathPathResult.details.files.map((f: any) => f.path);
+assert.ok(mathPathPaths.includes("src/helpers/math.ts"), "path lane should find math.ts");
+assert.ok(mathPathResult.details.files.find((f: any) => f.path === "src/helpers/math.ts")?.matchCount >= 1, "math.ts content match should be counted");
+
+const mathContentResult = await searchTool.execute(
+  "tool-call-new-1b",
+  { query: "computeUserScore", max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const mathContentPaths = mathContentResult.details.files.map((f: any) => f.path);
+assert.ok(mathContentPaths.includes("src/app.ts"), "content lane should find app.ts which calls computeUserScore");
+assert.ok(mathContentPaths.includes("src/helpers/math.ts"), "content lane should find math.ts which defines computeUserScore");
+
+// 2. Absolute path outside cwd is confined to that exact file (allowed deliberately,
+//    e.g. tmp fixtures) but cannot broaden into the repo.
+const outsideResult = await searchTool.execute(
+  "tool-call-new-2",
+  { query: "secret_token", path: join(repo, ".outside-secret.rb"), max_files: 5 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.match(outsideResult.content[0].text, /No matches found/, "search outside the named file returns nothing");
+
+// 3. Go receiver-method definition detection.
+{
+  const goOut = JSON.stringify({ type: "match", data: { path: { text: "main.go" }, lines: { text: "func (s *Server) Start() error {\n" }, line_number: 10, submatches: [] } });
+  const goMatches = parseRipgrepJsonLines(goOut);
+  assert.equal(goMatches[0]?.isDefinition, true, "Go method should be definition-like");
+}
+
+// 4. expand_related on a directory root now expands.
+const dirExpandedResult = await searchTool.execute(
+  "tool-call-new-4",
+  { query: "scope\\s+:", path: "app/models", expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.ok(dirExpandedResult.details.related !== undefined, "expand_related should fire on directory root");
+assert.ok(dirExpandedResult.details.related.roots.length >= 2, "should resolve mixins from directory walk");
+assert.match(dirExpandedResult.content[0].text, /expand_related: searched/);
+
+// 5. Invalid regex pre-validation avoids the rg spawn (still returns results).
+const sigBraceResult = await searchTool.execute(
+  "tool-call-new-5",
+  { query: "sig {", max_files: 5 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(sigBraceResult.details.literalFallback, true, "invalid regex should mark literalFallback");
+assert.match(sigBraceResult.content[0].text, /literal string/);
 
 console.log("pi-agentic-search smoke test passed");

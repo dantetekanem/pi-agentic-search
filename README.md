@@ -72,7 +72,7 @@ Example result:
 
 ```text
 agentic_search: "scope\\s+:" — 1 ranked file from 4 matches, confidence sum 1.000
-TARGET FILE: app/models/event_occurrence.rb. Read only this file before editing when it contains the requested construct matches.
+TARGET FILE: app/models/event_occurrence.rb. Read this file first; use other ranked candidates if it lacks the requested context.
 
 1. app/models/event_occurrence.rb (score 113, confidence 1.000, 4 matches) — 4 matches, source file, implementation path
    L2 [scope] scope :upcoming, -> { where("date >= ?", Date.current).order(:date) }
@@ -100,7 +100,7 @@ src/widget.ts:7: return new Widget();
 Example result shape:
 
 ```text
-TARGET FILE: src/widget.ts. Read only this file before editing when it contains the requested construct matches.
+TARGET FILE: src/widget.ts. Read this file first; use other ranked candidates if it lacks the requested context.
 
 1. src/widget.ts (score 87, 2 matches) — 1 definition-like match, 2 matches, source file, implementation path
    L1 [def] export function renderWidget() {
@@ -232,4 +232,9 @@ npm run smoke
 
 - Requires `rg` (`ripgrep`) on PATH.
 - Tool output uses Pi truncation limits: 2000 lines or 50KB, whichever comes first.
-- Scoring weights are defined in `index.ts`.
+- Scoring weights are defined in `src/extension.ts`.
+- Optional `expand_related` resolves Ruby/Rails mixins and JS/TS relative imports from both file and directory roots, then searches those files too.
+- Exact-path searches skip the repo-wide file listing for lower latency.
+- Within a single request, repeated repo-wide path listings are memoized to avoid redundant ripgrep spawns (no cross-request cache).
+- Invalid regex queries are pre-validated and retried as literal text without paying a failed ripgrep spawn.
+- Streaming JSON parsing avoids large-buffer limits on huge result sets.

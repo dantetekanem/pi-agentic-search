@@ -35,8 +35,9 @@ export function renderCall(args: any, theme: ThemeLike): Text {
   text += theme.fg("accent", JSON.stringify(args.query ?? ""));
   if (args.path) text += theme.fg("dim", ` path ${JSON.stringify(args.path)}`);
   if (args.context) text += theme.fg("dim", ` context ${JSON.stringify(args.context)}`);
-  if (args.expand_mixins) text += theme.fg("dim", " expand_mixins true");
   if (args.expand_related) text += theme.fg("dim", " expand_related true");
+  if (args.literal) text += theme.fg("dim", " literal true");
+  if (args.case_sensitive) text += theme.fg("dim", " case_sensitive true");
   return new Text(text, 0, 0);
 }
 

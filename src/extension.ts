@@ -1,16 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import {
-  basename,
-  extname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
-import { promisify } from "node:util";
+import { createInterface } from "node:readline";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
@@ -22,9 +14,20 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderCall, renderResult } from "./render.ts";
-import { expandRelatedFiles, expandRubyMixins, type RelatedExpansionDetails } from "./related.ts";
+import { expandRelatedFiles, type RelatedExpansionDetails } from "./related.ts";
+import {
+  camelToSnake,
+  clampInt,
+  displaySearchRoot,
+  normalizeRepoRelativePath,
+  stripAtPrefix,
+  uniqueValues,
+} from "./shared.ts";
 
-const execFileAsync = promisify(execFile);
+const RG_TIMEOUT_MS = 30_000;
+// Only rank this many distinct files before stopping rg early — the tool returns
+// at most 10 files to the model, so scanning beyond this is wasted work.
+const MAX_RANKED_FILES = 200;
 
 const DEFAULT_EXCLUDES = [
   "!.git/**",
@@ -43,6 +46,12 @@ const DEFAULT_EXCLUDES = [
   "!**/tmp/**",
   "!log/**",
   "!**/log/**",
+  "!.next/**",
+  "!**/.next/**",
+  "!.turbo/**",
+  "!**/.turbo/**",
+  "!target/**",
+  "!**/target/**",
   "!*.lock",
   "!**/*.lock",
   "!package-lock.json",
@@ -92,6 +101,7 @@ const DEFINITION_PATTERNS = [
   /^\s*(async\s+)?(def|class)\s+[A-Za-z_][\w]*/,
   /^\s*(pub\s+)?(async\s+)?(fn|struct|enum|trait|impl|mod|type|const)\s+[A-Za-z_][\w]*/,
   /^\s*(func|type|var|const)\s+[A-Za-z_][\w]*/,
+  /^\s*func\s*\([^)]*\)\s*[A-Za-z_][\w]*/,
   /^\s*(public|private|protected)?\s*(static\s+)?(class|interface|enum|record)\s+[A-Za-z_][\w]*/,
 ];
 
@@ -141,31 +151,23 @@ interface SearchDetails {
   returnedFiles: number;
   files: SearchFileDetails[];
   related?: RelatedExpansionDetails;
-  mixins?: RelatedExpansionDetails;
   truncation?: TruncationResult;
   fullOutputPath?: string;
   literalFallback?: boolean;
   regexError?: string;
 }
 
-function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(value ?? fallback)));
+function isRegexParseError(error: unknown): boolean {
+  return error instanceof Error && /regex parse error|repetition quantifier|unclosed|invalid escape/i.test(error.message);
 }
 
-function stripAtPrefix(path: string): string {
-  return path.startsWith("@") ? path.slice(1) : path;
-}
-
-function normalizeRepoRelativePath(path: string): string {
-  return path.split(sep).join("/").replace(/^\.\/+/, "");
-}
-
-function ensureInsideCwd(cwd: string, candidate: string): string {
-  const resolved = isAbsolute(candidate) ? resolve(candidate) : resolve(cwd, candidate);
-  const rel = relative(cwd, resolved);
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
-  throw new Error(`Path escapes current repository: ${candidate}`);
+function isValidRegex(query: string): boolean {
+  try {
+    new RegExp(query);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isDefinitionLine(line: string): boolean {
@@ -174,13 +176,6 @@ function isDefinitionLine(line: string): boolean {
 
 function pathDepth(path: string): number {
   return path.split("/").filter(Boolean).length;
-}
-
-function camelToSnake(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .toLowerCase();
 }
 
 function queryTokens(query: string): string[] {
@@ -192,17 +187,13 @@ function queryTokens(query: string): string[] {
   ));
 }
 
-function uniqueValues(values: string[]): string[] {
-  return Array.from(new Set(values));
-}
-
 function scorePath(path: string, query: string): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
   const normalized = normalizeRepoRelativePath(path);
   const lower = normalized.toLowerCase();
   const ext = extname(lower);
-  const file = basename(lower, ext);
+  const file = (path.split("/").pop() ?? "").replace(ext, "").toLowerCase();
   const depth = pathDepth(normalized);
 
   if (SOURCE_EXTENSIONS.has(ext)) {
@@ -296,8 +287,8 @@ const PATH_QUERY_STOPWORDS = new Set([
 
 function scorePathQueryMatch(path: string, query: string): { score: number; reasons: string[] } | undefined {
   const normalizedPath = normalizeRepoRelativePath(path).toLowerCase();
-  const filename = basename(normalizedPath);
-  const filenameWithoutExtension = basename(normalizedPath, extname(normalizedPath));
+  const filename = path.split("/").pop() ?? "";
+  const filenameWithoutExtension = filename.replace(/\.[^.]+$/, "");
   const normalizedQuery = query.trim().toLowerCase();
   const snakeQuery = camelToSnake(query.trim());
   const queryVariants = Array.from(new Set([normalizedQuery, snakeQuery].filter((value) => value.length >= 3)));
@@ -326,7 +317,7 @@ function scorePathQueryMatch(path: string, query: string): { score: number; reas
     }
   }
 
-  if (importantTokens.length > 0 && importantTokens.every((token) => normalizedPath.includes(token))) {
+  if (importantTokens.length > 0 && importantTokens.every((token) => normalizedPath.split("/").some((segment) => segment.includes(token)))) {
     score += Math.min(50, 20 + importantTokens.length * 5);
     reasons.push(`path matches query tokens: ${importantTokens.join(", ")}`);
   }
@@ -518,7 +509,7 @@ function prioritizeRelatedResults(ranked: RankedFileResult[], related?: RelatedE
       if (file.path === targetPath) {
         return {
           ...file,
-          score: file.score + 2000,
+          score: Math.round(file.score * 2),
           reasons: ["primary target", ...file.reasons],
         };
       }
@@ -527,7 +518,7 @@ function prioritizeRelatedResults(ranked: RankedFileResult[], related?: RelatedE
         const labels = references.map((item) => `${item.name} ${item.relationship} ${item.from}; ${item.note}`).join(", ");
         return {
           ...file,
-          score: file.score + 1500,
+          score: Math.round(file.score * 1.5),
           reasons: [`${related.label} target: ${labels}`, ...file.reasons],
         };
       }
@@ -641,21 +632,99 @@ async function writeFullOutputIfTruncated(output: string, prefix: string, detail
   return `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`;
 }
 
-async function runRg(args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
-  try {
-    const result = await execFileAsync("rg", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 30 * 1024 * 1024,
-      signal,
+function runRgStreaming(args: string[], cwd: string, signal?: AbortSignal, maxFiles = MAX_RANKED_FILES): Promise<CodeMatch[]> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn("rg", args, { cwd, signal });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error(`rg timed out after ${RG_TIMEOUT_MS} ms`));
+    }, RG_TIMEOUT_MS);
+
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        child.kill("SIGKILL");
+        rejectPromise(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        child.kill("SIGKILL");
+        rejectPromise(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    }
+
+    if (!child.stdout) {
+      clearTimeout(timer);
+      rejectPromise(new Error("rg stdout unavailable"));
+      return;
+    }
+
+    const matches: CodeMatch[] = [];
+    const filesSeen = new Set<string>();
+    let stderrText = "";
+    let settled = false;
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) rejectPromise(error);
+      else resolvePromise(matches);
+    };
+
+    child.stderr?.on("data", (chunk) => { stderrText += String(chunk); });
+
+    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    rl.on("line", (line) => {
+      if (!line.trim() || settled) return;
+      let event: any;
+      try { event = JSON.parse(line); } catch { return; }
+      if (event?.type !== "match") return;
+
+      const data = event.data;
+      const path = data?.path?.text;
+      const lineText = data?.lines?.text;
+      const lineNumber = data?.line_number;
+      if (typeof path !== "string" || typeof lineText !== "string" || typeof lineNumber !== "number") return;
+
+      const normalized = normalizeRepoRelativePath(path);
+      matches.push({
+        path: normalized,
+        lineNumber,
+        line: lineText.replace(/\r?\n$/, ""),
+        submatches: Array.isArray(data.submatches)
+          ? data.submatches.map((submatch: any) => ({
+              text: String(submatch?.match?.text ?? ""),
+              start: Number(submatch?.start ?? 0),
+              end: Number(submatch?.end ?? 0),
+            }))
+          : [],
+        isDefinition: isDefinitionLine(lineText),
+      });
+
+      filesSeen.add(normalized);
+      if (filesSeen.size >= maxFiles) {
+        child.kill("SIGTERM");
+        finish();
+      }
     });
-    return String(result.stdout ?? "");
-  } catch (error: any) {
-    if (error?.code === 1) return String(error.stdout ?? "");
-    if (error?.name === "AbortError") throw error;
-    const stderr = typeof error?.stderr === "string" && error.stderr.trim() ? `\n${error.stderr.trim()}` : "";
-    throw new Error(`rg failed${stderr}`);
-  }
+
+    let exitCode: number | null = null;
+    let processClosed = false;
+    let rlClosed = false;
+
+    const maybeSettle = () => {
+      if (settled || !processClosed || !rlClosed) return;
+      if (exitCode === 0 || exitCode === 1 || exitCode === null || exitCode === 143) finish();
+      else finish(new Error(`rg failed (exit ${exitCode}): ${stderrText.trim()}`));
+    };
+
+    rl.on("close", () => { rlClosed = true; maybeSettle(); });
+    child.on("error", (error) => finish(new Error(`rg failed: ${error.message}`)));
+    child.on("close", (code) => { exitCode = code; processClosed = true; maybeSettle(); });
+  });
 }
 
 async function listPathMatches(params: {
@@ -668,7 +737,13 @@ async function listPathMatches(params: {
   addRgExcludes(args);
   args.push(params.searchRoot);
 
-  const output = await runRg(args, params.cwd, params.signal);
+  const output = await new Promise<string>((resolvePromise, rejectPromise) => {
+    execFile("rg", args, { cwd: params.cwd, encoding: "utf8", maxBuffer: 30 * 1024 * 1024, signal: params.signal, timeout: RG_TIMEOUT_MS }, (error, stdout) => {
+      if (error && (error as any).code !== 1) rejectPromise(new Error(`rg --files failed: ${(error as any).stderr ?? error.message}`));
+      else resolvePromise(String(stdout ?? ""));
+    });
+  });
+
   return output
     .split("\n")
     .map((line) => line.trim())
@@ -682,15 +757,7 @@ async function listPathMatches(params: {
 
 function resolveCandidatePath(cwd: string, candidate: string): string {
   const stripped = stripAtPrefix(candidate);
-  if (isAbsolute(stripped)) return resolve(stripped);
-  return ensureInsideCwd(cwd, stripped);
-}
-
-function displaySearchRoot(cwd: string, resolved: string): string {
-  const rel = relative(cwd, resolved);
-  if (rel === "") return ".";
-  if (!rel.startsWith("..") && !isAbsolute(rel)) return normalizeRepoRelativePath(rel);
-  return normalizeRepoRelativePath(resolved);
+  return isAbsolute(stripped) ? resolve(stripped) : resolve(cwd, stripped);
 }
 
 async function existingSearchRoot(cwd: string, candidate: string): Promise<{ root: string; isDirectory: boolean } | undefined> {
@@ -712,13 +779,14 @@ async function resolveSearchScope(params: {
   path?: string;
   maxFiles: number;
   signal?: AbortSignal;
-}): Promise<{ searchRoots: string[]; pathMatches: PathMatch[] }> {
+}): Promise<{ searchRoots: string[]; pathMatches: PathMatch[]; fastPath: boolean }> {
   const pathQuery = params.path?.trim();
 
   if (!pathQuery) {
     return {
       searchRoots: ["."],
       pathMatches: await listPathMatches({ cwd: params.cwd, query: params.query, searchRoot: ".", signal: params.signal }),
+      fastPath: false,
     };
   }
 
@@ -729,6 +797,7 @@ async function resolveSearchScope(params: {
       pathMatches: existing.isDirectory
         ? []
         : await listPathMatches({ cwd: params.cwd, query: pathQuery, searchRoot: existing.root, signal: params.signal }),
+      fastPath: !existing.isDirectory,
     };
   }
 
@@ -744,11 +813,8 @@ async function resolveSearchScope(params: {
   return {
     searchRoots: searchRoots.length > 0 ? searchRoots : ["."],
     pathMatches,
+    fastPath: false,
   };
-}
-
-function isRegexParseError(error: unknown): boolean {
-  return error instanceof Error && /regex parse error|repetition quantifier|unclosed|invalid escape/i.test(error.message);
 }
 
 function addRgExcludes(args: string[]): void {
@@ -761,7 +827,6 @@ const SearchParams = Type.Object({
   path: Type.Optional(Type.String({ description: "Optional exact path, filename, or partial path hint. Example: event_occurrence.rb" })),
   max_files: Type.Optional(Type.Number({ description: "Maximum ranked candidate files to return, default 5, max 10" })),
   max_matches_per_file: Type.Optional(Type.Number({ description: "Maximum snippet matches per file, default 10 for construct queries, max 10" })),
-  expand_mixins: Type.Optional(Type.Boolean({ description: "Ruby/Rails alias for expand_related; searches include/prepend/extend modules resolved from target files" })),
   expand_related: Type.Optional(Type.Boolean({ description: "Search language-related files with the target: Ruby/Rails include/prepend/extend mixins and JS/TS relative imports/re-exports" })),
   literal: Type.Optional(Type.Boolean({ description: "Treat query as a literal string instead of a regex" })),
   case_sensitive: Type.Optional(Type.Boolean({ description: "Use case-sensitive matching. Default false uses smart-case." })),
@@ -789,6 +854,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       const maxFiles = clampInt(params.max_files, 5, 1, 10);
       const maxMatchesPerFile = clampInt(params.max_matches_per_file, 10, 1, 10);
       const context = typeof params.context === "string" && params.context.trim() ? params.context.trim() : undefined;
+
       const scope = await resolveSearchScope({
         cwd: ctx.cwd,
         query: params.query,
@@ -796,13 +862,28 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         maxFiles,
         signal,
       });
+
       const related = params.expand_related
         ? await expandRelatedFiles(ctx.cwd, scope.searchRoots)
-        : (params.expand_mixins ? await expandRubyMixins(ctx.cwd, scope.searchRoots) : undefined);
+        : undefined;
       const searchRoots = uniqueValues([...scope.searchRoots, ...(related?.roots ?? [])]);
+      const expandNote =
+        params.expand_related && (!related || related.roots.length === 0)
+          ? "expand_related: no resolvable mixins/imports from the search root(s); nothing was expanded."
+          : undefined;
 
+      let useLiteral = params.literal ?? false;
+      let literalFallback = false;
+      let regexError: string | undefined;
+      if (!useLiteral && !isValidRegex(params.query)) {
+        useLiteral = true;
+        literalFallback = true;
+        regexError = "Invalid regex; retried as literal string.";
+      }
+
+      let matches: CodeMatch[];
       const buildArgs = (literal: boolean) => {
-        const args = ["--json", "--line-number", "--column", "--color=never", "--hidden"];
+        const args = ["--json", "--line-number", "--color=never", "--hidden"];
         addRgExcludes(args);
         if (literal) args.push("--fixed-strings");
         if (!params.case_sensitive) args.push("--smart-case");
@@ -810,30 +891,33 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         return args;
       };
 
-      let output: string;
-      let literalFallback = false;
-      let regexError: string | undefined;
       try {
-        output = await runRg(buildArgs(params.literal ?? false), ctx.cwd, signal);
+        matches = await runRgStreaming(buildArgs(useLiteral), ctx.cwd, signal);
       } catch (error) {
-        if (params.literal || !isRegexParseError(error)) throw error;
+        if (useLiteral || !isRegexParseError(error)) throw error;
         literalFallback = true;
         regexError = error instanceof Error ? error.message : String(error);
-        output = await runRg(buildArgs(true), ctx.cwd, signal);
+        matches = await runRgStreaming(buildArgs(true), ctx.cwd, signal);
       }
 
-      const pathMatches = scope.pathMatches;
-      const matches = parseRipgrepJsonLines(output);
+      const allPathMatches = [...scope.pathMatches];
+      if (params.path && scope.fastPath) {
+        const hinted = await listPathMatches({ cwd: ctx.cwd, query: params.path, searchRoot: ".", signal });
+        for (const match of hinted) {
+          if (!allPathMatches.some((existing) => existing.path === match.path)) allPathMatches.push(match);
+        }
+      }
+
       const rankedCandidates = prioritizeRelatedResults(
-        rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, pathMatches, context),
+        rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, allPathMatches, context),
         related,
         scope.searchRoots[0],
       );
       const ranked = withConfidence(rankedCandidates.slice(0, maxFiles));
-      const totalMatches = matches.length > 0 ? matches.length : pathMatches.length;
-      const totalFiles = new Set([...matches.map((match) => match.path), ...pathMatches.map((match) => match.path)]).size;
+      const totalMatches = matches.length > 0 ? matches.length : allPathMatches.length;
+      const totalFiles = new Set([...matches.map((match) => match.path), ...allPathMatches.map((match) => match.path)]).size;
       const fallbackNotice = literalFallback ? "\n\n[agentic_search retried this as a literal string because ripgrep rejected the regex.]" : "";
-      const relatedOptionName = params.expand_related ? "expand_related" : "expand_mixins";
+      const relatedOptionName = "expand_related";
       const relatedNoun = related?.label === "import" ? "import" : related?.label === "mixin" ? "mixin" : "related";
       const relatedNotes = related
         ? [
@@ -845,7 +929,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
               ? [`Unresolved ${relatedNoun}s: ${uniqueValues(related.unresolved.map((item) => item.name)).join(", ")}.`]
               : []),
           ]
-        : [];
+        : (expandNote ? [expandNote] : []);
       const targetInstruction = related
         ? `Read this file first; ${relatedOptionName} also searched ${related.roots.length} resolved ${relatedNoun} file${related.roots.length === 1 ? "" : "s"} shown below as 1.x related targets.`
         : undefined;
@@ -866,7 +950,6 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
           confidence: file.confidence,
         })),
         related,
-        mixins: params.expand_mixins ? related : undefined,
         literalFallback,
         regexError,
       };
@@ -879,7 +962,6 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
 
     renderResult,
   });
-
 
   pi.registerCommand("agentic-search-info", {
     description: "Show pi-agentic-search status and tool names",
