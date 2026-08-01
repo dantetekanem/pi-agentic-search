@@ -1,6 +1,6 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi extension for agent-oriented ranked code search",
   "type": "module",
   "repository": {

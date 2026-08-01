@@ -1,13 +1,45 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { createRequire, isBuiltin } from "node:module";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { camelToSnake, displaySearchRoot, normalizeRepoRelativePath, uniqueValues } from "./shared.ts";
+
+export interface RelatedResolvedReference {
+  from: string;
+  name: string;
+  path: string;
+  relationship: string;
+  note: string;
+  kind?: "file" | "package";
+  entryPath?: string;
+}
+
+export interface RelatedPackageRoot {
+  from: string;
+  name: string;
+  path: string;
+  entryPath: string;
+}
 
 export interface RelatedExpansionDetails {
   enabled: boolean;
   label: "mixin" | "import" | "related";
   roots: string[];
-  resolved: Array<{ from: string; name: string; path: string; relationship: string; note: string }>;
+  packageRoots: RelatedPackageRoot[];
+  resolved: RelatedResolvedReference[];
   unresolved: Array<{ from: string; name: string }>;
+}
+
+export function relatedReferencesForPath(
+  related: RelatedExpansionDetails | undefined,
+  path: string,
+): RelatedResolvedReference[] {
+  if (!related) return [];
+  const normalizedPath = normalizeRepoRelativePath(path);
+  return related.resolved.filter((reference) => {
+    const normalizedReference = normalizeRepoRelativePath(reference.path);
+    if (reference.kind !== "package") return normalizedReference === normalizedPath;
+    return normalizedPath === normalizedReference || normalizedPath.startsWith(`${normalizedReference}/`);
+  });
 }
 
 interface RubyMixinReference {
@@ -133,7 +165,14 @@ async function collectSourceFiles(cwd: string, root: string): Promise<string[]> 
 }
 
 export async function expandRubyMixins(cwd: string, roots: string[]): Promise<RelatedExpansionDetails> {
-  const details: RelatedExpansionDetails = { enabled: true, label: "mixin", roots: [], resolved: [], unresolved: [] };
+  const details: RelatedExpansionDetails = {
+    enabled: true,
+    label: "mixin",
+    roots: [],
+    packageRoots: [],
+    resolved: [],
+    unresolved: [],
+  };
   const queue: string[] = [];
 
   for (const root of roots) {
@@ -205,11 +244,132 @@ function parseJsImportReferences(source: string): string[] {
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
       const specifier = match[1]?.trim();
-      if (specifier?.startsWith(".")) specifiers.push(specifier);
+      if (specifier) specifiers.push(specifier);
     }
   }
 
   return uniqueValues(specifiers);
+}
+
+function packageNameFromSpecifier(specifier: string): string | undefined {
+  if (!specifier || specifier.startsWith(".") || specifier.startsWith("#") || isBuiltin(specifier)) return undefined;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(specifier)) return undefined;
+  const segments = specifier.split("/").filter(Boolean);
+  if (segments.length === 0) return undefined;
+  return specifier.startsWith("@") && segments.length >= 2
+    ? `${segments[0]}/${segments[1]}`
+    : segments[0];
+}
+
+async function findPackageRoot(entryPath: string, expectedName: string): Promise<string | undefined> {
+  let current = dirname(entryPath);
+  while (true) {
+    try {
+      const manifest = JSON.parse(await readFile(join(current, "package.json"), "utf8")) as { name?: unknown };
+      if (manifest.name === expectedName) return current;
+    } catch {
+      // Continue upward until the package owning the resolved entry is found.
+    }
+
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+async function displayCanonicalSearchRoot(cwd: string, resolvedPath: string): Promise<string> {
+  const directDisplay = displaySearchRoot(cwd, resolvedPath);
+  if (!isAbsolute(directDisplay) && !directDisplay.startsWith("..")) return directDisplay;
+
+  const [canonicalCwd, canonicalPath] = await Promise.all([
+    realpath(cwd).catch(() => resolve(cwd)),
+    realpath(resolvedPath).catch(() => resolve(resolvedPath)),
+  ]);
+  const canonicalRelative = relative(canonicalCwd, canonicalPath);
+  if (canonicalRelative === "") return ".";
+  if (!canonicalRelative.startsWith("..") && !isAbsolute(canonicalRelative)) {
+    return normalizeRepoRelativePath(canonicalRelative);
+  }
+  return displaySearchRoot(cwd, resolvedPath);
+}
+
+async function nodeModulesAncestors(seed: string | undefined): Promise<string[]> {
+  if (!seed) return [];
+  const logicalSeed = resolve(seed);
+  const canonicalSeed = await realpath(logicalSeed).catch(() => logicalSeed);
+  const directories: string[] = [];
+
+  for (const candidateSeed of uniqueValues([logicalSeed, canonicalSeed])) {
+    let current = dirname(candidateSeed);
+    while (true) {
+      directories.push(join(current, "node_modules"));
+      if (basename(current) === "node_modules") directories.push(current);
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+
+  return uniqueValues(directories);
+}
+
+async function packageRootFromSearchDirectories(
+  packageName: string,
+  searchDirectories: string[],
+): Promise<string | undefined> {
+  for (const directory of uniqueValues(searchDirectories)) {
+    const candidate = join(directory, packageName);
+    try {
+      const manifest = JSON.parse(await readFile(join(candidate, "package.json"), "utf8")) as { name?: unknown };
+      if (manifest.name === packageName) return candidate;
+    } catch {
+      // Try the next Node resolution directory.
+    }
+  }
+  return undefined;
+}
+
+async function resolvePackageImport(
+  cwd: string,
+  resolvedFrom: string,
+  specifier: string,
+): Promise<RelatedPackageRoot | undefined> {
+  const packageName = packageNameFromSpecifier(specifier);
+  if (!packageName) return undefined;
+
+  const resolvers = [createRequire(resolvedFrom), createRequire(import.meta.url)];
+  for (const resolver of resolvers) {
+    let entryPath: string;
+    try {
+      entryPath = resolver.resolve(specifier);
+    } catch {
+      continue;
+    }
+
+    const packageRoot = await findPackageRoot(entryPath, packageName);
+    if (!packageRoot) continue;
+    return {
+      from: displaySearchRoot(cwd, resolvedFrom),
+      name: packageName,
+      path: await displayCanonicalSearchRoot(cwd, packageRoot),
+      entryPath: await displayCanonicalSearchRoot(cwd, entryPath),
+    };
+  }
+
+  const runtimeSearchDirectories = await nodeModulesAncestors(process.argv[1]);
+  const resolverSearchDirectories = resolvers.flatMap((resolver) => resolver.resolve.paths(packageName) ?? []);
+  const packageRoot = await packageRootFromSearchDirectories(
+    packageName,
+    [...runtimeSearchDirectories, ...resolverSearchDirectories],
+  );
+  if (!packageRoot) return undefined;
+
+  return {
+    from: displaySearchRoot(cwd, resolvedFrom),
+    name: packageName,
+    path: await displayCanonicalSearchRoot(cwd, packageRoot),
+    entryPath: await displayCanonicalSearchRoot(cwd, packageRoot),
+  };
 }
 
 function jsImportCandidatePaths(resolvedFrom: string, specifier: string): string[] {
@@ -225,7 +385,14 @@ function jsImportCandidatePaths(resolvedFrom: string, specifier: string): string
 }
 
 export async function expandJsTsImports(cwd: string, roots: string[]): Promise<RelatedExpansionDetails> {
-  const details: RelatedExpansionDetails = { enabled: true, label: "import", roots: [], resolved: [], unresolved: [] };
+  const details: RelatedExpansionDetails = {
+    enabled: true,
+    label: "import",
+    roots: [],
+    packageRoots: [],
+    resolved: [],
+    unresolved: [],
+  };
   const queue: string[] = [];
 
   for (const root of roots) {
@@ -257,6 +424,33 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
     }
 
     for (const specifier of parseJsImportReferences(source)) {
+      if (!specifier.startsWith(".")) {
+        const packageName = packageNameFromSpecifier(specifier);
+        if (!packageName) continue;
+        const packageRoot = await resolvePackageImport(cwd, resolvedRoot, specifier);
+        if (!packageRoot) {
+          if (!details.unresolved.some((item) => item.from === displaySearchRoot(cwd, resolvedRoot) && item.name === specifier)) {
+            details.unresolved.push({ from: displaySearchRoot(cwd, resolvedRoot), name: specifier });
+          }
+          continue;
+        }
+        if (!details.packageRoots.some((item) => item.path === packageRoot.path)) {
+          details.packageRoots.push(packageRoot);
+        }
+        if (!details.resolved.some((item) => item.kind === "package" && item.path === packageRoot.path)) {
+          details.resolved.push({
+            from: packageRoot.from,
+            name: packageRoot.name,
+            path: packageRoot.path,
+            entryPath: packageRoot.entryPath,
+            kind: "package",
+            relationship: "package imported by",
+            note: "imported package surface was searched in the same agentic_search call",
+          });
+        }
+        continue;
+      }
+
       const candidates = jsImportCandidatePaths(resolvedRoot, specifier);
       const resolvedPath = await (async () => {
         for (const candidate of candidates) {
@@ -276,6 +470,7 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
         from: displaySearchRoot(cwd, resolvedRoot),
         name: specifier,
         path: displayPath,
+        kind: "file",
         relationship: "imported by",
         note: "related import also includes search values, very likely a target too",
       });
@@ -287,14 +482,20 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
 }
 
 function mergeRelatedExpansions(expansions: RelatedExpansionDetails[]): RelatedExpansionDetails | undefined {
-  const active = expansions.filter((expansion) => expansion.roots.length > 0 || expansion.unresolved.length > 0);
+  const active = expansions.filter(
+    (expansion) => expansion.roots.length > 0 || expansion.packageRoots.length > 0 || expansion.unresolved.length > 0,
+  );
   if (active.length === 0) return undefined;
 
   const label = active.length === 1 ? active[0]!.label : "related";
+  const packageRoots = active
+    .flatMap((expansion) => expansion.packageRoots)
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.path === item.path) === index);
   return {
     enabled: true,
     label,
     roots: uniqueValues(active.flatMap((expansion) => expansion.roots)),
+    packageRoots,
     resolved: active.flatMap((expansion) => expansion.resolved),
     unresolved: active.flatMap((expansion) => expansion.unresolved),
   };

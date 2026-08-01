@@ -127,7 +127,10 @@ await mkdir(join(repo, "app/controllers"), { recursive: true });
 await mkdir(join(repo, "app/services/finance"), { recursive: true });
 await mkdir(join(repo, "src/helpers"), { recursive: true });
 await mkdir(join(repo, "src/components"), { recursive: true });
+await mkdir(join(repo, "src/utils"), { recursive: true });
+await mkdir(join(repo, "node_modules/@fixture/model-api/dist"), { recursive: true });
 await mkdir(join(repo, "test/fixtures"), { recursive: true });
+await writeFile(join(repo, "package.json"), JSON.stringify({ name: "agentic-search-fixture", type: "module" }, null, 2));
 await writeFile(
   join(repo, "app/models/event_occurrence.rb"),
   [
@@ -232,6 +235,29 @@ await writeFile(join(repo, "src/helpers/math.ts"), [
 ].join("\n"));
 await writeFile(join(repo, "src/components/Button.tsx"), "export default function Button(value: number) { return String(value); }\n");
 await writeFile(join(repo, "src/constants.ts"), "export const APP_LABEL = 'Agentic Search';\n");
+await writeFile(
+  join(repo, "src/response.ts"),
+  [
+    "import { complete } from '@fixture/model-api';",
+    "export function responseAdapter() { return complete; }",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "src/utils/local-collections.ts"),
+  "export function compactMap<T>(values: T[]) { return values.filter(Boolean); }\n",
+);
+await writeFile(
+  join(repo, "node_modules/@fixture/model-api/package.json"),
+  JSON.stringify({
+    name: "@fixture/model-api",
+    type: "module",
+    exports: { ".": { import: "./dist/index.js" } },
+  }, null, 2),
+);
+await writeFile(
+  join(repo, "node_modules/@fixture/model-api/dist/index.js"),
+  "export function filterMap(values, mapper) { return values.map(mapper).filter(Boolean); }\n",
+);
 
 const pathOnlyResult = await searchTool.execute(
   "tool-call-1",
@@ -510,7 +536,7 @@ const outsideResult = await searchTool.execute(
   undefined,
   { cwd: repo },
 );
-assert.match(outsideResult.content[0].text, /No matches found/, "search outside the named file returns nothing");
+assert.match(outsideResult.content[0].text, /No code matches found/, "search outside the named file returns nothing");
 
 // 3. Go receiver-method definition detection.
 {
@@ -541,5 +567,69 @@ const sigBraceResult = await searchTool.execute(
 );
 assert.equal(sigBraceResult.details.literalFallback, true, "invalid regex should mark literalFallback");
 assert.match(sigBraceResult.content[0].text, /literal string/);
+
+// 6. A single scoped call broadens internally to the owning package when the
+// target and its direct imports do not contain the requested symbol.
+const owningPackageResult = await searchTool.execute(
+  "tool-call-one-trip-owner",
+  { query: "compactMap", path: "src/response.ts", expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(owningPackageResult.details.files[0].path, "src/utils/local-collections.ts");
+assert.match(owningPackageResult.content[0].text, /TARGET FILE: src\/utils\/local-collections\.ts/);
+assert.match(owningPackageResult.content[0].text, /one-call coverage/i);
+assert.match(owningPackageResult.content[0].text, /owning package.*\./i);
+assert.equal(owningPackageResult.details.coverage.ownerRoot, ".");
+
+// 7. Bare package imports are resolved and searched inside the same tool call,
+// including shipped dist files under node_modules.
+const importedPackageResult = await searchTool.execute(
+  "tool-call-one-trip-dependency",
+  { query: "filterMap", path: "src/response.ts", expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const importedPackageText = importedPackageResult.content[0].text;
+assert.equal(importedPackageResult.details.files[0].path, "node_modules/@fixture/model-api/dist/index.js");
+assert.match(importedPackageText, /export function filterMap/);
+assert.match(importedPackageText, /imported package.*@fixture\/model-api/i);
+assert.deepEqual(importedPackageResult.details.coverage.packageRoots, ["node_modules/@fixture/model-api"]);
+assert.doesNotMatch(importedPackageText, /falling back to broad shell search/i);
+const importedPackageRender = searchTool.renderResult(
+  importedPackageResult,
+  { expanded: false, isPartial: false },
+  identityTheme,
+).render(220).join("\n");
+assert.match(importedPackageRender, /one-call coverage: owner \., 1 imported package/i);
+
+// 8. A scoped miss is decisive: path hints are reported as coverage, not fake
+// code matches, and the result closes discovery rather than recommending grep.
+const decisiveMissResult = await searchTool.execute(
+  "tool-call-one-trip-miss",
+  { query: "missingFilterMap", path: "src/response.ts", expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+const decisiveMissText = decisiveMissResult.content[0].text;
+assert.equal(decisiveMissResult.details.totalMatches, 0);
+assert.equal(decisiveMissResult.details.files.length, 0);
+assert.match(decisiveMissText, /No code matches found for "missingFilterMap"/);
+assert.match(decisiveMissText, /Path hints are coverage, not code matches/i);
+assert.match(decisiveMissText, /Search complete for the reported one-call coverage/i);
+assert.match(decisiveMissText, /Do not repeat discovery with grep, find, or shell search/i);
+assert.doesNotMatch(decisiveMissText, /TARGET FILE:/);
+
+assert.ok(
+  searchTool.promptGuidelines.some((guideline: string) => /one agentic_search call/i.test(guideline) && /owning package/i.test(guideline) && /imported packages/i.test(guideline)),
+  "promptGuidelines should describe the one-call package/dependency coverage contract",
+);
+assert.ok(
+  searchTool.promptGuidelines.some((guideline: string) => /Do not repeat discovery with grep, find, or shell search/i.test(guideline)),
+  "promptGuidelines should close discovery after agentic_search reports its coverage",
+);
 
 console.log("pi-agentic-search smoke test passed");

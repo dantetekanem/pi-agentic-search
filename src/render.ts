@@ -1,5 +1,5 @@
 import { Text } from "@earendil-works/pi-tui";
-import type { RelatedExpansionDetails } from "./related.ts";
+import { relatedReferencesForPath, type RelatedExpansionDetails } from "./related.ts";
 
 interface RenderFileDetails {
   path: string;
@@ -19,6 +19,12 @@ interface RenderSearchDetails {
   totalFiles?: number;
   returnedFiles?: number;
   files?: RenderFileDetails[];
+  coverage?: {
+    roots: string[];
+    ownerRoot?: string;
+    packageRoots: string[];
+    omittedPackageRoots: number;
+  };
   related?: RelatedExpansionDetails;
   literalFallback?: boolean;
   truncation?: { truncated?: boolean };
@@ -50,7 +56,18 @@ export function renderResult(result: any, { expanded, isPartial }: { expanded: b
   const totalFiles = typeof details?.totalFiles === "number" ? details.totalFiles : undefined;
   const returnedFiles = typeof details?.returnedFiles === "number" ? details.returnedFiles : files.length;
 
-  if (totalMatches === 0) return new Text(theme.fg("dim", "No matches found"), 0, 0);
+  if (totalMatches === 0) {
+    let text = theme.fg("dim", "No code matches found");
+    if (details?.coverage) {
+      const covered = [
+        `${details.coverage.roots.length} target/relative root${details.coverage.roots.length === 1 ? "" : "s"}`,
+        ...(details.coverage.ownerRoot ? [`owner ${details.coverage.ownerRoot}`] : []),
+        ...(details.coverage.packageRoots.length > 0 ? [`${details.coverage.packageRoots.length} imported package${details.coverage.packageRoots.length === 1 ? "" : "s"}`] : []),
+      ];
+      text += theme.fg("muted", `; one-call coverage: ${covered.join(", ")}`);
+    }
+    return new Text(text, 0, 0);
+  }
 
   let text: string;
   if (totalMatches === undefined || totalFiles === undefined) {
@@ -71,10 +88,13 @@ export function renderResult(result: any, { expanded, isPartial }: { expanded: b
     }
     const relatedCount = details?.related?.roots.length;
     const relatedLabel = details?.related?.label ?? "related";
+    const packageCount = details?.coverage?.packageRoots.length ?? 0;
     text += theme.fg(
       "muted",
       relatedCount !== undefined
-        ? ` → read target first; ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} below are likely targets too`
+        ? (packageCount > 0
+          ? ` → read target first; related coverage includes ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} and ${packageCount} imported package${packageCount === 1 ? "" : "s"}`
+          : ` → read target first; ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} below are likely targets too`)
         : " → read target first",
     );
   }
@@ -84,24 +104,27 @@ export function renderResult(result: any, { expanded, isPartial }: { expanded: b
     text += `\n${theme.fg("muted", `expand_related: searched ${details.related.roots.length} resolved ${relatedLabel} file${details.related.roots.length === 1 ? "" : "s"}; ${relatedLabel} results are included search values and likely targets too`)}`;
   }
 
+  if (details?.coverage && (details.coverage.ownerRoot || details.coverage.packageRoots.length > 0)) {
+    const covered = [
+      ...(details.coverage.ownerRoot ? [`owner ${details.coverage.ownerRoot}`] : []),
+      ...(details.coverage.packageRoots.length > 0 ? [`${details.coverage.packageRoots.length} imported package${details.coverage.packageRoots.length === 1 ? "" : "s"}`] : []),
+      `${details.coverage.roots.length} target/relative root${details.coverage.roots.length === 1 ? "" : "s"}`,
+    ];
+    text += `\n${theme.fg("muted", `one-call coverage: ${covered.join(", ")}`)}`;
+  }
+
   if (details?.literalFallback) text += theme.fg("warning", " (literal fallback)");
   if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 
   if (expanded && files.length > 0) {
     const primaryPath = files[0]?.path;
-    const relatedByPath = new Map<string, Array<{ from: string; name: string; relationship: string; note: string }>>();
-    for (const item of details?.related?.resolved ?? []) {
-      const existing = relatedByPath.get(item.path) ?? [];
-      existing.push({ from: item.from, name: item.name, relationship: item.relationship, note: item.note });
-      relatedByPath.set(item.path, existing);
-    }
 
     let topLevelIndex = 0;
     let relatedChildIndex = 0;
     for (const file of files.slice(0, 10)) {
       const topMatch = file.topMatch ? ` L${file.topMatch.lineNumber} [${file.topMatch.marker}] ${file.topMatch.text}` : "";
       const confidence = typeof file.confidence === "number" ? `, confidence ${file.confidence.toFixed(3)}` : "";
-      const relatedReferences = relatedByPath.get(file.path) ?? [];
+      const relatedReferences = relatedReferencesForPath(details?.related, file.path);
       const isPrimaryRelatedChild = file.path !== primaryPath && relatedReferences.some((item) => item.from === primaryPath);
       const displayIndex = isPrimaryRelatedChild ? `1.${++relatedChildIndex}` : String(++topLevelIndex);
       const prefix = isPrimaryRelatedChild ? `↳ ${displayIndex}` : displayIndex;

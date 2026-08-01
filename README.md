@@ -29,6 +29,8 @@ The extension does not replace `rg`. It uses `rg` for fast local search, then ad
 - it groups matches by file instead of returning a flat stream of lines
 - it labels the best result as `TARGET FILE`
 - it tells the agent to read only that target file before editing when the requested construct matches are present
+- with `expand_related`, it completes the relevant target, owning-package, and imported-package discovery inside the same tool call
+- it distinguishes real code matches from path hints and returns a decisive, coverage-backed miss instead of sending the agent to another search tool
 - it includes confidence values across returned candidates
 - it retries invalid regular expressions as literal text, so useful searches do not fail just because a query contains characters like `{`
 
@@ -45,12 +47,13 @@ Parameters:
 - `path` — optional exact path, filename, or partial path hint, such as `event_occurrence.rb`.
 - `max_files` — maximum ranked candidate files to return. Defaults to 5, maximum 10.
 - `max_matches_per_file` — maximum snippet matches per file. Defaults to 10, maximum 10.
+- `expand_related` — complete related discovery in one call: Ruby/Rails mixins; JS/TS relative imports, the owning package, and resolvable imported package surfaces when the focused files do not answer the query.
 - `literal` — treat `query` as a literal string instead of a regex.
 - `case_sensitive` — use case-sensitive matching. Defaults to ripgrep smart-case behavior.
 
 By default, `agentic_search` returns ranked files. After `agentic_search`, the usual next step is to use Pi's built-in `read` tool on the target path.
 
-Built-in grep and shell search remain useful for narrow exact checks and confirming text in a known file.
+Built-in grep and shell search remain useful for narrow exact confirmation in a known file. They are not a follow-up discovery step after `agentic_search` reports its one-call coverage.
 
 ## Examples
 
@@ -80,7 +83,7 @@ TARGET FILE: app/models/event_occurrence.rb. Read this file first; use other ran
    L4 [scope] scope :by_date_range, ->(start_date, end_date) { where(date: start_date..end_date) }
    L5 [scope] scope :with_budget, -> { where.not(budget_cents: nil) }
 
-Next step: read only the TARGET FILE, then propose the edit from that file. Do not inspect alternate candidates, sibling models, tests, migrations, git status, or run more searches unless the target file lacks the requested construct matches.
+Next step: read only the TARGET FILE, then propose the edit from that file. Discovery is complete for the reported one-call coverage; do not repeat it with grep, find, or shell search.
 ```
 
 Why this is better: the agent does not need to inspect `goal_step.rb`, fixtures, tests, migrations, or git status before proposing the edit. The file and the relevant scope lines are already identified.
@@ -127,6 +130,16 @@ agentic_search query="event_occurrence.rb"
 
 In the smoke test fixture, this ranks `app/models/event_occurrence.rb` above `test/fixtures/event_occurrences.yml` because implementation paths and source files are more useful first-read targets than fixtures.
 
+### One-call utility and dependency discovery
+
+When the agent needs to find an existing utility from a named JS/TS file, use one scoped call:
+
+```text
+agentic_search query="filterMap" path="pi-work-context/index.ts" context="existing utility for extracting text response parts" expand_related=true
+```
+
+The call first checks the target and its relative imports. If those files do not provide a definition, the same execution searches the owning package and any resolvable bare-package imports. The result either ranks the applicable definition or reports the exact searched coverage and a decisive miss. A resolved path hint is never counted as a code match, so the agent has no reason to repeat discovery with grep or shell `rg`.
+
 ### Invalid regex fallback
 
 Some useful code queries are not valid regular expressions. For example:
@@ -146,6 +159,8 @@ Compared with plain `rg` output, `agentic_search` adds:
 - scoring for source files, implementation paths, filename matches, and definition-like lines
 - penalties for tests, fixtures, mocks, generated files, vendor directories, build output, and lockfiles
 - path-hint resolution for prompts that name a file without an exact repository path
+- path hints treated as coverage rather than fake code matches on scoped misses
+- one-call fallback across the owning package and resolvable imported packages
 - normalized confidence values across returned candidates
 - scope-specific rendering for Rails scope matches
 - defensive result rendering when tool details are missing or malformed
@@ -233,7 +248,7 @@ npm run smoke
 - Requires `rg` (`ripgrep`) on PATH.
 - Tool output uses Pi truncation limits: 2000 lines or 50KB, whichever comes first.
 - Scoring weights are defined in `src/extension.ts`.
-- Optional `expand_related` resolves Ruby/Rails mixins and JS/TS relative imports from both file and directory roots, then searches those files too.
+- Optional `expand_related` resolves Ruby/Rails mixins and JS/TS relative imports from both file and directory roots. On a scoped JS/TS miss it also searches the owning package and resolvable bare-import package surfaces inside the same tool execution.
 - Exact-path searches skip the repo-wide file listing for lower latency.
 - Within a single request, repeated repo-wide path listings are memoized to avoid redundant ripgrep spawns (no cross-request cache).
 - Invalid regex queries are pre-validated and retried as literal text without paying a failed ripgrep spawn.

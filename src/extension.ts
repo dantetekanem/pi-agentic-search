@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
@@ -14,7 +14,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderCall, renderResult } from "./render.ts";
-import { expandRelatedFiles, type RelatedExpansionDetails } from "./related.ts";
+import {
+  expandRelatedFiles,
+  relatedReferencesForPath,
+  type RelatedExpansionDetails,
+} from "./related.ts";
 import {
   camelToSnake,
   clampInt,
@@ -28,6 +32,7 @@ const RG_TIMEOUT_MS = 30_000;
 // Only rank this many distinct files before stopping rg early — the tool returns
 // at most 10 files to the model, so scanning beyond this is wasted work.
 const MAX_RANKED_FILES = 200;
+const MAX_PACKAGE_SEARCH_ROOTS = 20;
 
 const DEFAULT_EXCLUDES = [
   "!.git/**",
@@ -61,6 +66,26 @@ const DEFAULT_EXCLUDES = [
   "!yarn.lock",
   "!**/yarn.lock",
 ];
+
+const PACKAGE_SEARCH_EXCLUDES = [
+  "!.git/**",
+  "!**/.git/**",
+  "!node_modules/**",
+  "!**/node_modules/**",
+  "!coverage/**",
+  "!**/coverage/**",
+  "!*.map",
+  "!**/*.map",
+  "!*.min.*",
+  "!**/*.min.*",
+  "!*.lock",
+  "!**/*.lock",
+  "!package-lock.json",
+  "!pnpm-lock.yaml",
+  "!yarn.lock",
+];
+
+const JS_TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs"]);
 
 const SOURCE_EXTENSIONS = new Set([
   ".c",
@@ -143,6 +168,13 @@ interface SearchFileDetails extends Pick<RankedFileResult, "path" | "score" | "m
   confidence?: number;
 }
 
+interface SearchCoverageDetails {
+  roots: string[];
+  ownerRoot?: string;
+  packageRoots: string[];
+  omittedPackageRoots: number;
+}
+
 interface SearchDetails {
   query: string;
   context?: string;
@@ -150,6 +182,7 @@ interface SearchDetails {
   totalFiles: number;
   returnedFiles: number;
   files: SearchFileDetails[];
+  coverage: SearchCoverageDetails;
   related?: RelatedExpansionDetails;
   truncation?: TruncationResult;
   fullOutputPath?: string;
@@ -496,16 +529,10 @@ function prioritizeRelatedResults(ranked: RankedFileResult[], related?: RelatedE
   if (!related || ranked.length === 0) return ranked;
 
   const targetPath = primaryPath ?? ranked[0]!.path;
-  const relatedByPath = new Map<string, Array<{ from: string; name: string; relationship: string; note: string }>>();
-  for (const item of related.resolved) {
-    const existing = relatedByPath.get(item.path) ?? [];
-    existing.push({ from: item.from, name: item.name, relationship: item.relationship, note: item.note });
-    relatedByPath.set(item.path, existing);
-  }
 
   return ranked
     .map((file) => {
-      const references = relatedByPath.get(file.path) ?? [];
+      const references = relatedReferencesForPath(related, file.path);
       if (file.path === targetPath) {
         return {
           ...file,
@@ -554,8 +581,12 @@ export function formatSearchResults(
   related?: RelatedExpansionDetails,
 ): string {
   if (ranked.length === 0) {
-    const noteText = notes.length > 0 ? `\n\n${notes.join("\n")}` : "";
-    return `No matches found for ${JSON.stringify(query)}.${noteText}`;
+    return [
+      `No code matches found for ${JSON.stringify(query)}.`,
+      ...(notes.length > 0 ? [notes.join("\n")] : []),
+      "Path hints are coverage, not code matches.",
+      "Search complete for the reported one-call coverage. Do not repeat discovery with grep, find, or shell search.",
+    ].join("\n\n");
   }
 
   const confidenceSum = ranked.reduce((sum, file) => sum + (file.confidence ?? 0), 0);
@@ -567,19 +598,11 @@ export function formatSearchResults(
   ];
 
   const primaryPath = ranked[0]?.path;
-  const relatedByPath = new Map<string, Array<{ from: string; name: string; relationship: string; note: string }>>();
-  if (related && primaryPath) {
-    for (const item of related.resolved) {
-      const existing = relatedByPath.get(item.path) ?? [];
-      existing.push({ from: item.from, name: item.name, relationship: item.relationship, note: item.note });
-      relatedByPath.set(item.path, existing);
-    }
-  }
 
   let topLevelIndex = 0;
   let mixinChildIndex = 0;
   for (const file of ranked) {
-    const relatedReferences = relatedByPath.get(file.path) ?? [];
+    const relatedReferences = relatedReferencesForPath(related, file.path);
     const isPrimaryRelatedChild = file.path !== primaryPath && relatedReferences.some((item) => item.from === primaryPath);
     const displayIndex = isPrimaryRelatedChild ? `1.${++mixinChildIndex}` : String(++topLevelIndex);
     const prefix = isPrimaryRelatedChild ? `   ↳ ${displayIndex}.` : `${displayIndex}.`;
@@ -610,7 +633,7 @@ export function formatSearchResults(
     lines.push(...notes, "");
   }
 
-  lines.push("Next step: read the TARGET FILE first. If it lacks the requested construct or context, inspect the ranked candidates before falling back to broad shell search.");
+  lines.push("Next step: read the TARGET FILE first. Discovery is complete for the reported one-call coverage; do not repeat it with grep, find, or shell search.");
   return lines.join("\n").trimEnd();
 }
 
@@ -632,7 +655,13 @@ async function writeFullOutputIfTruncated(output: string, prefix: string, detail
   return `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`;
 }
 
-function runRgStreaming(args: string[], cwd: string, signal?: AbortSignal, maxFiles = MAX_RANKED_FILES): Promise<CodeMatch[]> {
+function runRgStreaming(
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+  maxFiles = MAX_RANKED_FILES,
+  mapPath: (path: string) => string = normalizeRepoRelativePath,
+): Promise<CodeMatch[]> {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn("rg", args, { cwd, signal });
 
@@ -689,7 +718,7 @@ function runRgStreaming(args: string[], cwd: string, signal?: AbortSignal, maxFi
       const lineNumber = data?.line_number;
       if (typeof path !== "string" || typeof lineText !== "string" || typeof lineNumber !== "number") return;
 
-      const normalized = normalizeRepoRelativePath(path);
+      const normalized = mapPath(path);
       matches.push({
         path: normalized,
         lineNumber,
@@ -821,13 +850,90 @@ function addRgExcludes(args: string[]): void {
   for (const glob of DEFAULT_EXCLUDES) args.push("--glob", glob);
 }
 
+function addPackageSearchExcludes(args: string[]): void {
+  for (const glob of PACKAGE_SEARCH_EXCLUDES) args.push("--glob", glob);
+}
+
+function deduplicateMatches(matches: CodeMatch[]): CodeMatch[] {
+  const seen = new Set<string>();
+  return matches.filter((match) => {
+    const key = `${match.path}\u0000${match.lineNumber}\u0000${match.line}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function findOwningSearchRoot(cwd: string, searchRoot: string): Promise<string | undefined> {
+  const resolved = resolveCandidatePath(cwd, searchRoot);
+  const stats = await stat(resolved).catch(() => undefined);
+  if (!stats) return undefined;
+
+  let current = stats.isDirectory() ? resolved : dirname(resolved);
+  while (true) {
+    const [manifest, gitBoundary] = await Promise.all([
+      stat(join(current, "package.json")).catch(() => undefined),
+      stat(join(current, ".git")).catch(() => undefined),
+    ]);
+    if (manifest?.isFile() || gitBoundary) return displaySearchRoot(cwd, current);
+
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+async function searchPackageRoot(params: {
+  cwd: string;
+  root: string;
+  query: string;
+  literal: boolean;
+  caseSensitive?: boolean;
+  signal?: AbortSignal;
+}): Promise<CodeMatch[]> {
+  const resolvedRoot = resolveCandidatePath(params.cwd, params.root);
+  const stats = await stat(resolvedRoot).catch(() => undefined);
+  if (!stats?.isDirectory()) return [];
+
+  const args = ["--json", "--line-number", "--color=never", "--hidden", "--no-ignore"];
+  addPackageSearchExcludes(args);
+  if (params.literal) args.push("--fixed-strings");
+  if (!params.caseSensitive) args.push("--smart-case");
+  args.push(params.query, ".");
+
+  return runRgStreaming(
+    args,
+    resolvedRoot,
+    params.signal,
+    MAX_RANKED_FILES,
+    (path) => displaySearchRoot(params.cwd, resolve(resolvedRoot, stripAtPrefix(path))),
+  );
+}
+
+function oneCallCoverageNotes(coverage: SearchCoverageDetails): string[] {
+  const parts = [`${coverage.roots.length} target/relative root${coverage.roots.length === 1 ? "" : "s"}`];
+  if (coverage.ownerRoot) parts.push(`owning package ${coverage.ownerRoot}`);
+  if (coverage.packageRoots.length > 0) {
+    parts.push(`${coverage.packageRoots.length} imported package${coverage.packageRoots.length === 1 ? "" : "s"}`);
+  }
+  if (coverage.omittedPackageRoots > 0) {
+    parts.push(`${coverage.omittedPackageRoots} imported package${coverage.omittedPackageRoots === 1 ? "" : "s"} omitted by the safety cap`);
+  }
+
+  const notes = [`One-call coverage: ${parts.join("; ")}.`];
+  if (coverage.packageRoots.length > 0) {
+    notes.push(`Imported packages searched: ${coverage.packageRoots.join(", ")}.`);
+  }
+  return notes;
+}
+
 const SearchParams = Type.Object({
   query: Type.String({ description: "Precise code syntax regex or literal string to search for. Prefer construct syntax over the whole user prompt; for Rails scopes use scope\\s+:" }),
   context: Type.Optional(Type.String({ description: "Optional natural-language disambiguation hint used only for ranking, not as the ripgrep query. Example: actual goal progress" })),
-  path: Type.Optional(Type.String({ description: "Optional exact path, filename, or partial path hint. Example: event_occurrence.rb" })),
+  path: Type.Optional(Type.String({ description: "Optional exact path, filename, partial path, or absolute file/directory root. Example: event_occurrence.rb" })),
   max_files: Type.Optional(Type.Number({ description: "Maximum ranked candidate files to return, default 5, max 10" })),
   max_matches_per_file: Type.Optional(Type.Number({ description: "Maximum snippet matches per file, default 10 for construct queries, max 10" })),
-  expand_related: Type.Optional(Type.Boolean({ description: "Search language-related files with the target: Ruby/Rails include/prepend/extend mixins and JS/TS relative imports/re-exports" })),
+  expand_related: Type.Optional(Type.Boolean({ description: "Complete related discovery in one call: Ruby/Rails mixins; JS/TS relative imports, owning package, and resolvable imported package surfaces" })),
   literal: Type.Optional(Type.Boolean({ description: "Treat query as a literal string instead of a regex" })),
   case_sensitive: Type.Optional(Type.Boolean({ description: "Use case-sensitive matching. Default false uses smart-case." })),
 });
@@ -836,17 +942,18 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "agentic_search",
     label: "Agentic Search",
-    description: `Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Uses ripgrep, then ranks and groups results for coding-agent workflows. Optional context disambiguates ranking without changing the ripgrep query. For model/component/module questions about available behavior, scopes, callbacks, associations, included concerns, mixins, or JS/TS imports, set expand_related true so related files are searched with the target file. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
-    promptSnippet: "Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Make one focused search from the user's named construct and optional path hint. When construct names repeat across domains, keep query precise and pass context as natural-language disambiguation, for example context: 'actual goal progress'. For Rails model questions about scopes/behavior including concerns or mixins, or JS/TS questions needing imported files, pass expand_related: true. Read the target file first, then use related 1.x candidates when shown.",
+    description: `Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Uses ripgrep, then ranks and groups results for coding-agent workflows. Optional context disambiguates ranking without changing the ripgrep query. Set expand_related true to make one call cover Ruby/Rails mixins or the JS/TS target, relative imports, owning package, and resolvable imported package surfaces before returning a result or decisive miss. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
+    promptSnippet: "Preferred one-call ranked search for locating files, classes, scopes, methods, and call sites. Make one focused search from the user's named construct and optional path hint. Use context for natural-language disambiguation. For Rails concerns/mixins or JS/TS module and utility discovery, pass expand_related: true so the same call searches the relevant owning and imported-package surfaces. Read the ranked target; do not repeat discovery with another search tool.",
     promptGuidelines: [
       "Prefer agentic_search over grep for locating files, classes, scopes, methods, and call sites because ranked results identify the best file to read first.",
       "When a user names both a code construct and a file, make exactly one focused agentic_search call with query for the construct syntax and path for the filename or partial path hint.",
       "When the same construct name appears in multiple domains, keep query as the exact code syntax or literal and pass context as a natural-language ranking hint; for example query remaining_value with context actual goal progress.",
       "For Rails scope requests like predicates for scopes on event_occurrence.rb, call agentic_search once with query scope\\s+: and path event_occurrence.rb, then read the target file first before broader discovery.",
       "For Rails model questions about scopes available on a model, model behavior, callbacks, associations, included concerns, or mixins, set expand_related true; examples: 'how many scopes does User have?', 'include concerns', 'from mixins', 'available on User'.",
-      "For JS/TS questions where imported files, re-export barrels, hooks, components, helpers, or sibling modules may contain the requested behavior, set expand_related true so relative imports are searched and rendered as 1.x child targets.",
+      "For JS/TS questions where imported files, re-export barrels, hooks, components, helpers, sibling modules, or dependency utilities may contain the requested behavior, set expand_related true. One agentic_search call then covers relative imports, the owning package, and resolvable imported packages.",
       "If agentic_search returns a target file containing the requested construct matches, read that target first before alternate candidates, sibling models, tests, migrations, git status, or shell searches.",
-      "Use other ranked candidates when the target file is missing, ambiguous, or lacks the requested construct/context.",
+      "Use other ranked candidates from the same agentic_search result when the first target is ambiguous or lacks context.",
+      "When agentic_search reports its one-call coverage or a decisive miss, discovery is complete for those scopes. Do not repeat discovery with grep, find, or shell search.",
     ],
     parameters: SearchParams,
 
@@ -868,8 +975,8 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         : undefined;
       const searchRoots = uniqueValues([...scope.searchRoots, ...(related?.roots ?? [])]);
       const expandNote =
-        params.expand_related && (!related || related.roots.length === 0)
-          ? "expand_related: no resolvable mixins/imports from the search root(s); nothing was expanded."
+        params.expand_related && (!related || (related.roots.length === 0 && related.packageRoots.length === 0))
+          ? "expand_related: no resolvable mixins/imports from the search root(s); owning-package coverage is still included on a scoped miss."
           : undefined;
 
       let useLiteral = params.literal ?? false;
@@ -881,24 +988,59 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         regexError = "Invalid regex; retried as literal string.";
       }
 
-      let matches: CodeMatch[];
-      const buildArgs = (literal: boolean) => {
+      const buildArgs = (literal: boolean, roots: string[]) => {
         const args = ["--json", "--line-number", "--color=never", "--hidden"];
         addRgExcludes(args);
         if (literal) args.push("--fixed-strings");
         if (!params.case_sensitive) args.push("--smart-case");
-        args.push(params.query, ...searchRoots);
+        args.push(params.query, ...roots);
         return args;
       };
 
+      let matches: CodeMatch[];
       try {
-        matches = await runRgStreaming(buildArgs(useLiteral), ctx.cwd, signal);
+        matches = await runRgStreaming(buildArgs(useLiteral, searchRoots), ctx.cwd, signal);
       } catch (error) {
         if (useLiteral || !isRegexParseError(error)) throw error;
+        useLiteral = true;
         literalFallback = true;
         regexError = error instanceof Error ? error.message : String(error);
-        matches = await runRgStreaming(buildArgs(true), ctx.cwd, signal);
+        matches = await runRgStreaming(buildArgs(true, searchRoots), ctx.cwd, signal);
       }
+
+      const primaryRoot = scope.searchRoots[0] ?? ".";
+      const primaryExtension = extname(primaryRoot).toLowerCase();
+      const needsOneCallExpansion = Boolean(
+        params.expand_related
+        && (matches.length === 0 || (JS_TS_EXTENSIONS.has(primaryExtension) && !matches.some((match) => match.isDefinition))),
+      );
+      const ownerRoot = needsOneCallExpansion
+        ? await findOwningSearchRoot(ctx.cwd, primaryRoot)
+        : undefined;
+      if (ownerRoot && !searchRoots.includes(ownerRoot)) {
+        matches.push(...await runRgStreaming(buildArgs(useLiteral, [ownerRoot]), ctx.cwd, signal));
+      }
+
+      const availablePackageRoots = needsOneCallExpansion ? (related?.packageRoots ?? []) : [];
+      const selectedPackageRoots = availablePackageRoots.slice(0, MAX_PACKAGE_SEARCH_ROOTS);
+      for (const packageRoot of selectedPackageRoots) {
+        matches.push(...await searchPackageRoot({
+          cwd: ctx.cwd,
+          root: packageRoot.path,
+          query: params.query,
+          literal: useLiteral,
+          caseSensitive: params.case_sensitive,
+          signal,
+        }));
+      }
+      matches = deduplicateMatches(matches);
+
+      const coverage: SearchCoverageDetails = {
+        roots: searchRoots,
+        ownerRoot,
+        packageRoots: selectedPackageRoots.map((item) => item.path),
+        omittedPackageRoots: Math.max(0, availablePackageRoots.length - selectedPackageRoots.length),
+      };
 
       const allPathMatches = [...scope.pathMatches];
       if (params.path && scope.fastPath) {
@@ -908,14 +1050,20 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      const rankedCandidates = prioritizeRelatedResults(
+      const pathOnlyDiscovery = matches.length === 0 && !params.path && allPathMatches.length > 0;
+      const allRankedCandidates = prioritizeRelatedResults(
         rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, allPathMatches, context),
         related,
-        scope.searchRoots[0],
+        primaryRoot,
       );
+      const rankedCandidates = matches.length > 0
+        ? allRankedCandidates.filter((file) => file.matches.length > 0)
+        : (pathOnlyDiscovery ? allRankedCandidates : []);
       const ranked = withConfidence(rankedCandidates.slice(0, maxFiles));
-      const totalMatches = matches.length > 0 ? matches.length : allPathMatches.length;
-      const totalFiles = new Set([...matches.map((match) => match.path), ...allPathMatches.map((match) => match.path)]).size;
+      const totalMatches = matches.length + (pathOnlyDiscovery ? allPathMatches.length : 0);
+      const totalFiles = matches.length > 0
+        ? new Set(matches.map((match) => match.path)).size
+        : (pathOnlyDiscovery ? new Set(allPathMatches.map((match) => match.path)).size : 0);
       const fallbackNotice = literalFallback ? "\n\n[agentic_search retried this as a literal string because ripgrep rejected the regex.]" : "";
       const relatedOptionName = "expand_related";
       const relatedNoun = related?.label === "import" ? "import" : related?.label === "mixin" ? "mixin" : "related";
@@ -930,10 +1078,13 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
               : []),
           ]
         : (expandNote ? [expandNote] : []);
+      const notes = [...relatedNotes, ...oneCallCoverageNotes(coverage)];
       const targetInstruction = related
-        ? `Read this file first; ${relatedOptionName} also searched ${related.roots.length} resolved ${relatedNoun} file${related.roots.length === 1 ? "" : "s"} shown below as 1.x related targets.`
+        ? (coverage.packageRoots.length > 0
+          ? `Read this file first; ${relatedOptionName} also searched ${related.roots.length} resolved ${relatedNoun} file${related.roots.length === 1 ? "" : "s"} and ${coverage.packageRoots.length} imported package${coverage.packageRoots.length === 1 ? "" : "s"}.`
+          : `Read this file first; ${relatedOptionName} also searched ${related.roots.length} resolved ${relatedNoun} file${related.roots.length === 1 ? "" : "s"} shown below as 1.x related targets.`)
         : undefined;
-      const formatted = `${formatSearchResults(params.query, ranked, totalMatches, relatedNotes, targetInstruction, related)}${fallbackNotice}`;
+      const formatted = `${formatSearchResults(params.query, ranked, totalMatches, notes, targetInstruction, related)}${fallbackNotice}`;
 
       const details: SearchDetails = {
         query: params.query,
@@ -949,6 +1100,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
           topMatch: file.matches[0] ? formatTopMatch(file.matches[0]) : undefined,
           confidence: file.confidence,
         })),
+        coverage,
         related,
         literalFallback,
         regexError,
@@ -967,7 +1119,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
     description: "Show pi-agentic-search status and tool names",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
-        "pi-agentic-search loaded: agentic_search only. For named-file construct matches, read the target file first before broader discovery.",
+        "pi-agentic-search loaded: one agentic_search call covers the scoped target, related files, owning package, and resolvable imported packages.",
         "info",
       );
     },
