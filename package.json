@@ -1,11 +1,15 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "Pi extension for agent-oriented ranked code search",
   "type": "module",
+  "homepage": "https://github.com/dantetekanem/pi-agentic-search#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dantetekanem/pi-agentic-search.git"
+    "url": "git+https://github.com/dantetekanem/pi-agentic-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dantetekanem/pi-agentic-search/issues"
   },
   "keywords": [
     "pi-package",
@@ -13,6 +17,11 @@
     "agentic-search",
     "code-search",
     "ripgrep"
+  ],
+  "files": [
+    "README.md",
+    "index.ts",
+    "src"
   ],
   "pi": {
     "extensions": [
