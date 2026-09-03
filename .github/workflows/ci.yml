@@ -19,5 +19,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm run check
       - run: npm run smoke

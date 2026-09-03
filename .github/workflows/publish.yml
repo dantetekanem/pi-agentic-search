@@ -27,6 +27,7 @@ jobs:
         run: |
           test "$RELEASE_TAG" = "v$(node -p \"require('./package.json').version\")"
       - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm run check
       - run: npm run smoke
       - name: Use npm with Trusted Publishing support
