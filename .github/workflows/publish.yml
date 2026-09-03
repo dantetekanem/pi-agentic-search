@@ -25,7 +25,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          test "$RELEASE_TAG" = "v$(node -p \"require('./package.json').version\")"
+          test "$RELEASE_TAG" = "v$(node -p "require('./package.json').version")"
       - run: npm ci
       - run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm run check
