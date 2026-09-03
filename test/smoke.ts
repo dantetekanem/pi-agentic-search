@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import agenticSearchExtension, { formatSearchResults, parseRipgrepJsonLines, rankFileGroups } from "../index.ts";
 
 function rgMatch(path: string, lineNumber: number, text: string): string {
@@ -216,6 +216,8 @@ await writeFile(
   ].join("\n"),
 );
 await writeFile(join(repo, "test/fixtures/event_occurrences.yml"), "one:\n  date: 2026-01-01\n");
+await writeFile(join(repo, "--no-ignore"), "dash_root_needle\n");
+await writeFile(join(repo, "dash-root-sibling.ts"), "dash_root_needle\n");
 await writeFile(
   join(repo, "src/app.ts"),
   [
@@ -331,6 +333,29 @@ assert.match(absoluteDirectoryText, /TARGET FILE: .*app\/models\/post\.rb/);
 assert.match(absoluteDirectoryText, /posts\.created_at <= \?/);
 assert.doesNotMatch(absoluteDirectoryText, /application_controller\.rb[\s\S]*\[path\] filename\/path match/);
 assert.equal(absoluteDirectoryResult.details.files[0].confidence, 1);
+
+const absoluteDirectoryFromRootResult = await searchTool.execute(
+  "tool-call-absolute-from-root",
+  { query: "created_at.*<=", path: join(repo, "app"), max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: parse(repo).root },
+);
+assert.match(absoluteDirectoryFromRootResult.details.files[0].path, /app\/models\/post\.rb$/);
+assert.match(absoluteDirectoryFromRootResult.content[0].text, /posts\.created_at <= \?/);
+
+const dashPrefixedFileResult = await searchTool.execute(
+  "tool-call-dash-prefixed-file",
+  { query: "dash_root_needle", path: join(repo, "--no-ignore"), max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.deepEqual(
+  dashPrefixedFileResult.details.files.map((file: any) => file.path),
+  ["--no-ignore"],
+  "a dash-prefixed absolute file must remain the only search root",
+);
 
 const pathOnlySelectiveResult = await searchTool.execute(
   "tool-call-6",
@@ -582,6 +607,17 @@ assert.match(owningPackageResult.content[0].text, /TARGET FILE: src\/utils\/loca
 assert.match(owningPackageResult.content[0].text, /one-call coverage/i);
 assert.match(owningPackageResult.content[0].text, /owning package.*\./i);
 assert.equal(owningPackageResult.details.coverage.ownerRoot, ".");
+
+const absoluteOwningPackageResult = await searchTool.execute(
+  "tool-call-one-trip-absolute-owner",
+  { query: "compactMap", path: join(repo, "src/response.ts"), expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: process.cwd() },
+);
+assert.equal(absoluteOwningPackageResult.details.files[0].path, join(repo, "src/utils/local-collections.ts"));
+assert.match(absoluteOwningPackageResult.content[0].text, /export function compactMap/);
+assert.equal(absoluteOwningPackageResult.details.coverage.ownerRoot, repo);
 
 // 7. Bare package imports are resolved and searched inside the same tool call,
 // including shipped dist files under node_modules.

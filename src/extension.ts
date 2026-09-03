@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
@@ -762,12 +762,17 @@ async function listPathMatches(params: {
   searchRoot: string;
   signal?: AbortSignal;
 }): Promise<PathMatch[]> {
+  const explicitAbsoluteRoot = isAbsolute(stripAtPrefix(params.searchRoot));
+  const resolvedRoot = resolveCandidatePath(params.cwd, params.searchRoot);
+  const rootStats = explicitAbsoluteRoot ? await stat(resolvedRoot) : undefined;
+  const searchCwd = rootStats?.isDirectory() ? resolvedRoot : explicitAbsoluteRoot ? dirname(resolvedRoot) : params.cwd;
+  const localRoot = rootStats?.isDirectory() ? "." : explicitAbsoluteRoot ? basename(resolvedRoot) : params.searchRoot;
   const args = ["--files", "--hidden", "--color=never"];
   addRgExcludes(args);
-  args.push(params.searchRoot);
+  args.push("--", localRoot);
 
   const output = await new Promise<string>((resolvePromise, rejectPromise) => {
-    execFile("rg", args, { cwd: params.cwd, encoding: "utf8", maxBuffer: 30 * 1024 * 1024, signal: params.signal, timeout: RG_TIMEOUT_MS }, (error, stdout) => {
+    execFile("rg", args, { cwd: searchCwd, encoding: "utf8", maxBuffer: 30 * 1024 * 1024, signal: params.signal, timeout: RG_TIMEOUT_MS }, (error, stdout) => {
       if (error && (error as any).code !== 1) rejectPromise(new Error(`rg --files failed: ${(error as any).stderr ?? error.message}`));
       else resolvePromise(String(stdout ?? ""));
     });
@@ -777,7 +782,9 @@ async function listPathMatches(params: {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .map(normalizeRepoRelativePath)
+    .map((path) => explicitAbsoluteRoot
+      ? displaySearchRoot(params.cwd, resolve(searchCwd, stripAtPrefix(path)))
+      : normalizeRepoRelativePath(path))
     .flatMap((path) => {
       const match = scorePathQueryMatch(path, params.query);
       return match ? [{ path, ...match }] : [];
@@ -791,10 +798,11 @@ function resolveCandidatePath(cwd: string, candidate: string): string {
 
 async function existingSearchRoot(cwd: string, candidate: string): Promise<{ root: string; isDirectory: boolean } | undefined> {
   try {
+    const stripped = stripAtPrefix(candidate);
     const resolved = resolveCandidatePath(cwd, candidate);
     const stats = await stat(resolved);
     return {
-      root: displaySearchRoot(cwd, resolved),
+      root: isAbsolute(stripped) ? resolved : displaySearchRoot(cwd, resolved),
       isDirectory: stats.isDirectory(),
     };
   } catch {
@@ -875,7 +883,9 @@ async function findOwningSearchRoot(cwd: string, searchRoot: string): Promise<st
       stat(join(current, "package.json")).catch(() => undefined),
       stat(join(current, ".git")).catch(() => undefined),
     ]);
-    if (manifest?.isFile() || gitBoundary) return displaySearchRoot(cwd, current);
+    if (manifest?.isFile() || gitBoundary) {
+      return isAbsolute(searchRoot) ? current : displaySearchRoot(cwd, current);
+    }
 
     const parent = dirname(current);
     if (parent === current) return undefined;
@@ -899,7 +909,7 @@ async function searchPackageRoot(params: {
   addPackageSearchExcludes(args);
   if (params.literal) args.push("--fixed-strings");
   if (!params.caseSensitive) args.push("--smart-case");
-  args.push(params.query, ".");
+  args.push("-e", params.query, "--", ".");
 
   return runRgStreaming(
     args,
@@ -993,19 +1003,42 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         addRgExcludes(args);
         if (literal) args.push("--fixed-strings");
         if (!params.case_sensitive) args.push("--smart-case");
-        args.push(params.query, ...roots);
+        args.push("-e", params.query, "--", ...roots);
         return args;
+      };
+
+      const runSearchRoots = async (literal: boolean, roots: string[]) => {
+        const matches: CodeMatch[] = [];
+        const relativeRoots = roots.filter((root) => !isAbsolute(root));
+        if (relativeRoots.length > 0) {
+          matches.push(...await runRgStreaming(buildArgs(literal, relativeRoots), ctx.cwd, signal));
+        }
+
+        for (const root of roots.filter(isAbsolute)) {
+          const rootStats = await stat(root);
+          const searchCwd = rootStats.isDirectory() ? root : dirname(root);
+          const localRoot = rootStats.isDirectory() ? "." : basename(root);
+          matches.push(...await runRgStreaming(
+            buildArgs(literal, [localRoot]),
+            searchCwd,
+            signal,
+            MAX_RANKED_FILES,
+            (path) => displaySearchRoot(ctx.cwd, resolve(searchCwd, stripAtPrefix(path))),
+          ));
+        }
+
+        return matches;
       };
 
       let matches: CodeMatch[];
       try {
-        matches = await runRgStreaming(buildArgs(useLiteral, searchRoots), ctx.cwd, signal);
+        matches = await runSearchRoots(useLiteral, searchRoots);
       } catch (error) {
         if (useLiteral || !isRegexParseError(error)) throw error;
         useLiteral = true;
         literalFallback = true;
         regexError = error instanceof Error ? error.message : String(error);
-        matches = await runRgStreaming(buildArgs(true, searchRoots), ctx.cwd, signal);
+        matches = await runSearchRoots(true, searchRoots);
       }
 
       const primaryRoot = scope.searchRoots[0] ?? ".";
@@ -1018,7 +1051,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         ? await findOwningSearchRoot(ctx.cwd, primaryRoot)
         : undefined;
       if (ownerRoot && !searchRoots.includes(ownerRoot)) {
-        matches.push(...await runRgStreaming(buildArgs(useLiteral, [ownerRoot]), ctx.cwd, signal));
+        matches.push(...await runSearchRoots(useLiteral, [ownerRoot]));
       }
 
       const availablePackageRoots = needsOneCallExpansion ? (related?.packageRoots ?? []) : [];
