@@ -2,6 +2,14 @@
 
 `pi-agentic-search` ranks `rg` matches and tells Pi which file to read first. It was inspired by Entire's `pgr` article.
 
+## Try without installing
+
+```bash
+pi -e npm:pi-agentic-search
+```
+
+This runs the published package for the current Pi invocation without adding it to your project configuration.
+
 ## Install
 
 ```bash
@@ -126,17 +134,9 @@ Exact paths are faster because ripgrep can search one file immediately. Basename
 
 Sparse checkouts reduce the searchable tree because ripgrep only sees checked-out files.
 
-## Try without installing
+## Security and data access
 
-```bash
-pi -e git:github.com/dantetekanem/pi-agentic-search
-```
-
-Then ask Pi:
-
-```text
-Search for where checkpoint commits are written using agentic_search.
-```
+Read [SECURITY.md](SECURITY.md) for private vulnerability reporting and [docs/access.md](docs/access.md) for the exact ripgrep subprocess, filesystem, temporary-output, and network behavior.
 
 ## Other installation options
 
