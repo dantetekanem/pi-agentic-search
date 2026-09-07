@@ -1,35 +1,6 @@
 import { Text } from "@earendil-works/pi-tui";
-import { relatedReferencesForPath, type RelatedExpansionDetails } from "./related.ts";
-
-interface RenderFileDetails {
-  path: string;
-  score: number;
-  matchCount: number;
-  reasons: string[];
-  topMatch?: {
-    lineNumber: number;
-    marker: "def" | "ref" | "scope";
-    text: string;
-  };
-  confidence?: number;
-}
-
-interface RenderSearchDetails {
-  totalMatches?: number;
-  totalFiles?: number;
-  returnedFiles?: number;
-  files?: RenderFileDetails[];
-  coverage?: {
-    roots: string[];
-    ownerRoot?: string;
-    packageRoots: string[];
-    omittedPackageRoots: number;
-  };
-  related?: RelatedExpansionDetails;
-  literalFallback?: boolean;
-  truncation?: { truncated?: boolean };
-  fullOutputPath?: string;
-}
+import { relatedReferencesForPath } from "./related.ts";
+import type { SearchDetails } from "./types.ts";
 
 interface ThemeLike {
   fg(name: string, text: string): string;
@@ -50,21 +21,22 @@ export function renderCall(args: any, theme: ThemeLike): Text {
 export function renderResult(result: any, { expanded, isPartial }: { expanded: boolean; isPartial: boolean }, theme: ThemeLike): Text {
   if (isPartial) return new Text(theme.fg("warning", "Searching…"), 0, 0);
 
-  const details = result.details as Partial<RenderSearchDetails> | undefined;
+  const details = result.details as Partial<SearchDetails> | undefined;
   const files = Array.isArray(details?.files) ? details.files : [];
   const totalMatches = typeof details?.totalMatches === "number" ? details.totalMatches : undefined;
   const totalFiles = typeof details?.totalFiles === "number" ? details.totalFiles : undefined;
   const returnedFiles = typeof details?.returnedFiles === "number" ? details.returnedFiles : files.length;
 
   if (totalMatches === 0) {
-    let text = theme.fg("dim", "No code matches found");
+    let text = theme.fg("dim", details?.coverage?.status === "failed" ? "Search failed" : "No code matches found in completed scopes");
     if (details?.coverage) {
       const covered = [
         `${details.coverage.roots.length} target/relative root${details.coverage.roots.length === 1 ? "" : "s"}`,
         ...(details.coverage.ownerRoot ? [`owner ${details.coverage.ownerRoot}`] : []),
         ...(details.coverage.packageRoots.length > 0 ? [`${details.coverage.packageRoots.length} imported package${details.coverage.packageRoots.length === 1 ? "" : "s"}`] : []),
       ];
-      text += theme.fg("muted", `; one-call coverage: ${covered.join(", ")}`);
+      text += theme.fg("muted", `; one-call coverage: ${covered.join(", ")}; ${details.coverage.status ?? "unknown"}`);
+      if (details.coverage.reasons?.length) text += `\n${theme.fg("warning", details.coverage.reasons.join("; "))}`;
     }
     return new Text(text, 0, 0);
   }
@@ -78,6 +50,10 @@ export function renderResult(result: any, { expanded, isPartial }: { expanded: b
     const confidenceSum = files.reduce((sum, file) => sum + (typeof file.confidence === "number" ? file.confidence : 0), 0);
     const confidenceText = files.some((file) => typeof file.confidence === "number") ? `, confidence ${confidenceSum.toFixed(3)}` : "";
     text = theme.fg("success", `${returnedFiles}/${totalFiles} files ranked from ${totalMatches} matches${confidenceText}`);
+  }
+
+  if (details?.coverage?.status && details.coverage.status !== "complete") {
+    text += `\n${theme.fg("warning", `Coverage ${details.coverage.status}: ${details.coverage.reasons.join("; ")}`)}`;
   }
 
   const top = files[0];

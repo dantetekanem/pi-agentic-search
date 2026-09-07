@@ -1,7 +1,5 @@
-import { execFile, spawn } from "node:child_process";
 import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createInterface } from "node:readline";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -28,184 +26,17 @@ import {
   uniqueValues,
 } from "./shared.ts";
 
-const RG_TIMEOUT_MS = 30_000;
-// Only rank this many distinct files before stopping rg early — the tool returns
-// at most 10 files to the model, so scanning beyond this is wasted work.
-const MAX_RANKED_FILES = 200;
+import { DEFAULT_EXCLUDES, PACKAGE_SEARCH_EXCLUDES, JS_TS_EXTENSIONS, SOURCE_EXTENSIONS } from "./classifications.ts";
+import { SearchRequest, runRg } from "./retrieval.ts";
+import type { CodeMatch, FileSummary, RankedFileResult, PathMatch, SearchTopMatch, SearchCoverageDetails, SearchDetails } from "./types.ts";
+export { parseRipgrepJsonLines } from "./matches.ts";
+export type { CodeMatch, RankedFileResult, PathMatch } from "./types.ts";
+
 const MAX_PACKAGE_SEARCH_ROOTS = 20;
-
-const DEFAULT_EXCLUDES = [
-  "!.git/**",
-  "!**/.git/**",
-  "!node_modules/**",
-  "!**/node_modules/**",
-  "!vendor/**",
-  "!**/vendor/**",
-  "!dist/**",
-  "!**/dist/**",
-  "!build/**",
-  "!**/build/**",
-  "!coverage/**",
-  "!**/coverage/**",
-  "!tmp/**",
-  "!**/tmp/**",
-  "!log/**",
-  "!**/log/**",
-  "!.next/**",
-  "!**/.next/**",
-  "!.turbo/**",
-  "!**/.turbo/**",
-  "!target/**",
-  "!**/target/**",
-  "!*.lock",
-  "!**/*.lock",
-  "!package-lock.json",
-  "!**/package-lock.json",
-  "!pnpm-lock.yaml",
-  "!**/pnpm-lock.yaml",
-  "!yarn.lock",
-  "!**/yarn.lock",
-];
-
-const PACKAGE_SEARCH_EXCLUDES = [
-  "!.git/**",
-  "!**/.git/**",
-  "!node_modules/**",
-  "!**/node_modules/**",
-  "!coverage/**",
-  "!**/coverage/**",
-  "!*.map",
-  "!**/*.map",
-  "!*.min.*",
-  "!**/*.min.*",
-  "!*.lock",
-  "!**/*.lock",
-  "!package-lock.json",
-  "!pnpm-lock.yaml",
-  "!yarn.lock",
-];
-
-const JS_TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs"]);
-
-const SOURCE_EXTENSIONS = new Set([
-  ".c",
-  ".cc",
-  ".clj",
-  ".cpp",
-  ".cs",
-  ".ex",
-  ".exs",
-  ".go",
-  ".h",
-  ".hpp",
-  ".java",
-  ".js",
-  ".jsx",
-  ".kt",
-  ".lua",
-  ".mjs",
-  ".php",
-  ".py",
-  ".rb",
-  ".rs",
-  ".scala",
-  ".swift",
-  ".ts",
-  ".tsx",
-  ".zig",
-]);
-
-const DEFINITION_PATTERNS = [
-  /^\s*(export\s+)?(default\s+)?(async\s+)?function\s+[A-Za-z_$][\w$]*/,
-  /^\s*(export\s+)?(abstract\s+)?class\s+[A-Za-z_$][\w$]*/,
-  /^\s*(export\s+)?interface\s+[A-Za-z_$][\w$]*/,
-  /^\s*(export\s+)?type\s+[A-Za-z_$][\w$]*/,
-  /^\s*(export\s+)?enum\s+[A-Za-z_$][\w$]*/,
-  /^\s*(export\s+)?(const|let|var)\s+[A-Za-z_$][\w$]*\s*=/,
-  /^\s*(def|class|module)\s+[A-Za-z_][\w!?=]*/,
-  /^\s*(async\s+)?(def|class)\s+[A-Za-z_][\w]*/,
-  /^\s*(pub\s+)?(async\s+)?(fn|struct|enum|trait|impl|mod|type|const)\s+[A-Za-z_][\w]*/,
-  /^\s*(func|type|var|const)\s+[A-Za-z_][\w]*/,
-  /^\s*func\s*\([^)]*\)\s*[A-Za-z_][\w]*/,
-  /^\s*(public|private|protected)?\s*(static\s+)?(class|interface|enum|record)\s+[A-Za-z_][\w]*/,
-];
 
 const LOW_VALUE_PATH_PATTERN = /(^|\/)(node_modules|vendor|dist|build|coverage|tmp|log|\.git|\.next|\.turbo|target)(\/|$)/;
 const TEST_PATH_PATTERN = /(^|\/)(__tests__|tests?|spec|fixtures?|mocks?|stories)(\/|$)|\.(test|spec|stories)\.[^.]+$/;
 const GENERATED_PATH_PATTERN = /(generated|schema\.json|\.min\.|bundle\.|compiled)/i;
-
-export interface CodeMatch {
-  path: string;
-  lineNumber: number;
-  line: string;
-  submatches: Array<{ text: string; start: number; end: number }>;
-  isDefinition: boolean;
-}
-
-export interface RankedFileResult {
-  path: string;
-  score: number;
-  confidence?: number;
-  reasons: string[];
-  matchCount: number;
-  matches: CodeMatch[];
-}
-
-export interface PathMatch {
-  path: string;
-  score: number;
-  reasons: string[];
-}
-
-interface SearchTopMatch {
-  lineNumber: number;
-  marker: "def" | "ref" | "scope";
-  text: string;
-}
-
-interface SearchFileDetails extends Pick<RankedFileResult, "path" | "score" | "matchCount" | "reasons"> {
-  topMatch?: SearchTopMatch;
-  confidence?: number;
-}
-
-interface SearchCoverageDetails {
-  roots: string[];
-  ownerRoot?: string;
-  packageRoots: string[];
-  omittedPackageRoots: number;
-}
-
-interface SearchDetails {
-  query: string;
-  context?: string;
-  totalMatches: number;
-  totalFiles: number;
-  returnedFiles: number;
-  files: SearchFileDetails[];
-  coverage: SearchCoverageDetails;
-  related?: RelatedExpansionDetails;
-  truncation?: TruncationResult;
-  fullOutputPath?: string;
-  literalFallback?: boolean;
-  regexError?: string;
-}
-
-function isRegexParseError(error: unknown): boolean {
-  return error instanceof Error && /regex parse error|repetition quantifier|unclosed|invalid escape/i.test(error.message);
-}
-
-function isValidRegex(query: string): boolean {
-  try {
-    new RegExp(query);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isDefinitionLine(line: string): boolean {
-  return DEFINITION_PATTERNS.some((pattern) => pattern.test(line));
-}
 
 function pathDepth(path: string): number {
   return path.split("/").filter(Boolean).length;
@@ -271,12 +102,13 @@ function scorePath(path: string, query: string): { score: number; reasons: strin
   return { score, reasons };
 }
 
-function scoreMatches(matches: CodeMatch[]): { score: number; reasons: string[] } {
+function scoreMatches(matches: CodeMatch[], summary?: FileSummary): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
-  const definitionCount = matches.filter((match) => match.isDefinition).length;
+  const definitionCount = summary?.definitionCount ?? matches.filter((match) => match.isDefinition).length;
+  const count = summary?.matchCount ?? matches.length;
 
-  if (matches.length > 0) {
+  if (count > 0) {
     score += 1000;
     reasons.push("content match");
   }
@@ -286,8 +118,8 @@ function scoreMatches(matches: CodeMatch[]): { score: number; reasons: string[] 
     reasons.push(`${definitionCount} definition-like match${definitionCount === 1 ? "" : "es"}`);
   }
 
-  score += Math.min(20, matches.length * 2);
-  if (matches.length > 1) reasons.push(`${matches.length} matches`);
+  score += Math.min(20, count * 2);
+  if (count > 1) reasons.push(`${count} matches`);
 
   return { score, reasons };
 }
@@ -422,54 +254,13 @@ function scoreContext(path: string, matches: CodeMatch[], context: string | unde
   return { score, reasons };
 }
 
-export function parseRipgrepJsonLines(output: string): CodeMatch[] {
-  const matches: CodeMatch[] = [];
-
-  for (const line of output.split("\n")) {
-    if (!line.trim()) continue;
-
-    let event: any;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (event?.type !== "match") continue;
-
-    const data = event.data;
-    const path = data?.path?.text;
-    const lineText = data?.lines?.text;
-    const lineNumber = data?.line_number;
-
-    if (typeof path !== "string" || typeof lineText !== "string" || typeof lineNumber !== "number") {
-      continue;
-    }
-
-    matches.push({
-      path: normalizeRepoRelativePath(path),
-      lineNumber,
-      line: lineText.replace(/\r?\n$/, ""),
-      submatches: Array.isArray(data.submatches)
-        ? data.submatches.map((submatch: any) => ({
-            text: String(submatch?.match?.text ?? ""),
-            start: Number(submatch?.start ?? 0),
-            end: Number(submatch?.end ?? 0),
-          }))
-        : [],
-      isDefinition: isDefinitionLine(lineText),
-    });
-  }
-
-  return matches;
-}
-
 export function rankFileGroups(
   matches: CodeMatch[],
   query: string,
   maxMatchesPerFile: number,
   pathMatches: PathMatch[] = [],
   context?: string,
+  summaries?: ReadonlyMap<string, FileSummary>,
 ): RankedFileResult[] {
   const grouped = new Map<string, CodeMatch[]>();
   for (const match of matches) {
@@ -479,7 +270,7 @@ export function rankFileGroups(
   }
 
   const pathMatchByPath = new Map(pathMatches.map((match) => [match.path, match]));
-  const allPaths = new Set([...grouped.keys(), ...pathMatchByPath.keys()]);
+  const allPaths = new Set([...grouped.keys(), ...pathMatchByPath.keys(), ...(summaries?.keys() ?? [])]);
 
   const ranked: RankedFileResult[] = [];
   for (const path of allPaths) {
@@ -491,7 +282,7 @@ export function rankFileGroups(
     });
 
     const pathScore = scorePath(path, query);
-    const matchScore = scoreMatches(fileMatches);
+    const matchScore = scoreMatches(fileMatches, summaries?.get(path));
     const contextScore = scoreContext(path, fileMatches, context);
     const pathQueryScore = pathQueryMatch?.score ?? 0;
     const pathQueryReasons = pathQueryMatch?.reasons ?? [];
@@ -500,7 +291,7 @@ export function rankFileGroups(
       path,
       score: pathScore.score + matchScore.score + contextScore.score + pathQueryScore,
       reasons: [...contextScore.reasons, ...pathQueryReasons, ...matchScore.reasons, ...pathScore.reasons],
-      matchCount: fileMatches.length > 0 ? fileMatches.length : (pathQueryMatch ? 1 : 0),
+      matchCount: summaries?.get(path)?.matchCount ?? (fileMatches.length > 0 ? fileMatches.length : (pathQueryMatch ? 1 : 0)),
       matches: sortedMatches.slice(0, maxMatchesPerFile),
     });
   }
@@ -579,13 +370,14 @@ export function formatSearchResults(
   notes: string[] = [],
   targetInstruction = "Read this file first; use other ranked candidates if it lacks the requested context.",
   related?: RelatedExpansionDetails,
+  coverage?: SearchCoverageDetails,
 ): string {
   if (ranked.length === 0) {
     return [
-      `No code matches found for ${JSON.stringify(query)}.`,
+      coverage?.status === "failed" ? `Search failed for ${JSON.stringify(query)}.` : `No code matches found for ${JSON.stringify(query)} in the completed scopes.`,
       ...(notes.length > 0 ? [notes.join("\n")] : []),
       "Path hints are coverage, not code matches.",
-      "Search complete for the reported one-call coverage. Do not repeat discovery with grep, find, or shell search.",
+      coverage?.status === "complete" ? "Search complete for the reported pattern and scopes." : "Coverage is incomplete; inspect the unvisited roots and unresolved relationships listed above.",
     ].join("\n\n");
   }
 
@@ -614,7 +406,7 @@ export function formatSearchResults(
     lines.push(`${prefix} ${file.path} (score ${file.score}${candidateConfidence}, ${file.matchCount} match${file.matchCount === 1 ? "" : "es"})${relationshipText || reasonText}`);
 
     if (file.matches.length === 0) {
-      lines.push(`${isPrimaryRelatedChild ? "      " : "   "}[path] filename/path match`);
+      lines.push(`${isPrimaryRelatedChild ? "      " : "   "}${file.reasons.includes("content match") ? "[content] matching snippets omitted by retention budget" : "[path] filename/path match"}`);
     }
 
     for (const match of file.matches) {
@@ -633,7 +425,9 @@ export function formatSearchResults(
     lines.push(...notes, "");
   }
 
-  lines.push("Next step: read the TARGET FILE first. Discovery is complete for the reported one-call coverage; do not repeat it with grep, find, or shell search.");
+  lines.push(coverage && coverage.status !== "complete"
+    ? "Next step: read the TARGET FILE, then inspect the unvisited roots and unresolved relationships listed above."
+    : "Next step: read the TARGET FILE first; coverage applies only to the reported pattern and scopes.");
   return lines.join("\n").trimEnd();
 }
 
@@ -655,135 +449,40 @@ async function writeFullOutputIfTruncated(output: string, prefix: string, detail
   return `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`;
 }
 
-function runRgStreaming(
-  args: string[],
-  cwd: string,
-  signal?: AbortSignal,
-  maxFiles = MAX_RANKED_FILES,
-  mapPath: (path: string) => string = normalizeRepoRelativePath,
-): Promise<CodeMatch[]> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn("rg", args, { cwd, signal });
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      rejectPromise(new Error(`rg timed out after ${RG_TIMEOUT_MS} ms`));
-    }, RG_TIMEOUT_MS);
-
-    if (signal) {
-      if (signal.aborted) {
-        clearTimeout(timer);
-        child.kill("SIGKILL");
-        rejectPromise(new DOMException("Aborted", "AbortError"));
-        return;
-      }
-      signal.addEventListener("abort", () => {
-        clearTimeout(timer);
-        child.kill("SIGKILL");
-        rejectPromise(new DOMException("Aborted", "AbortError"));
-      }, { once: true });
-    }
-
-    if (!child.stdout) {
-      clearTimeout(timer);
-      rejectPromise(new Error("rg stdout unavailable"));
-      return;
-    }
-
-    const matches: CodeMatch[] = [];
-    const filesSeen = new Set<string>();
-    let stderrText = "";
-    let settled = false;
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) rejectPromise(error);
-      else resolvePromise(matches);
-    };
-
-    child.stderr?.on("data", (chunk) => { stderrText += String(chunk); });
-
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    rl.on("line", (line) => {
-      if (!line.trim() || settled) return;
-      let event: any;
-      try { event = JSON.parse(line); } catch { return; }
-      if (event?.type !== "match") return;
-
-      const data = event.data;
-      const path = data?.path?.text;
-      const lineText = data?.lines?.text;
-      const lineNumber = data?.line_number;
-      if (typeof path !== "string" || typeof lineText !== "string" || typeof lineNumber !== "number") return;
-
-      const normalized = mapPath(path);
-      matches.push({
-        path: normalized,
-        lineNumber,
-        line: lineText.replace(/\r?\n$/, ""),
-        submatches: Array.isArray(data.submatches)
-          ? data.submatches.map((submatch: any) => ({
-              text: String(submatch?.match?.text ?? ""),
-              start: Number(submatch?.start ?? 0),
-              end: Number(submatch?.end ?? 0),
-            }))
-          : [],
-        isDefinition: isDefinitionLine(lineText),
-      });
-
-      filesSeen.add(normalized);
-      if (filesSeen.size >= maxFiles) {
-        child.kill("SIGTERM");
-        finish();
-      }
-    });
-
-    let exitCode: number | null = null;
-    let processClosed = false;
-    let rlClosed = false;
-
-    const maybeSettle = () => {
-      if (settled || !processClosed || !rlClosed) return;
-      if (exitCode === 0 || exitCode === 1 || exitCode === null || exitCode === 143) finish();
-      else finish(new Error(`rg failed (exit ${exitCode}): ${stderrText.trim()}`));
-    };
-
-    rl.on("close", () => { rlClosed = true; maybeSettle(); });
-    child.on("error", (error) => finish(new Error(`rg failed: ${error.message}`)));
-    child.on("close", (code) => { exitCode = code; processClosed = true; maybeSettle(); });
-  });
-}
-
 async function listPathMatches(params: {
   cwd: string;
   query: string;
   searchRoot: string;
-  signal?: AbortSignal;
+  request: SearchRequest;
 }): Promise<PathMatch[]> {
   const explicitAbsoluteRoot = isAbsolute(stripAtPrefix(params.searchRoot));
   const resolvedRoot = resolveCandidatePath(params.cwd, params.searchRoot);
   const rootStats = explicitAbsoluteRoot ? await stat(resolvedRoot) : undefined;
   const searchCwd = rootStats?.isDirectory() ? resolvedRoot : explicitAbsoluteRoot ? dirname(resolvedRoot) : params.cwd;
   const localRoot = rootStats?.isDirectory() ? "." : explicitAbsoluteRoot ? basename(resolvedRoot) : params.searchRoot;
-  const args = ["--files", "--hidden", "--color=never"];
+  const args = ["--files", "--null", "--hidden", "--color=never"];
   addRgExcludes(args);
   args.push("--", localRoot);
 
-  const output = await new Promise<string>((resolvePromise, rejectPromise) => {
-    execFile("rg", args, { cwd: searchCwd, encoding: "utf8", maxBuffer: 30 * 1024 * 1024, signal: params.signal, timeout: RG_TIMEOUT_MS }, (error, stdout) => {
-      if (error && (error as any).code !== 1) rejectPromise(new Error(`rg --files failed: ${(error as any).stderr ?? error.message}`));
-      else resolvePromise(String(stdout ?? ""));
-    });
-  });
+  const key = `${searchCwd}\0${localRoot}`;
+  let inventory = params.request.inventories.get(key);
+  if (!inventory) {
+    inventory = (async () => {
+      const paths: string[] = [];
+      const result = await runRg(args, searchCwd, [params.searchRoot], params.request, (path) => {
+        if (paths.length >= params.request.limits.candidates) return "path inventory candidate budget";
+        paths.push(path);
+      }, "\0");
+      result.kind = "inventory";
+      if (result.status !== "complete") params.request.inventoryReasons.push(result.reason ?? result.error ?? "incomplete path inventory");
+      return paths;
+    })();
+    params.request.inventories.set(key, inventory);
+  }
 
-  return output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
+  return (await inventory)
     .map((path) => explicitAbsoluteRoot
-      ? displaySearchRoot(params.cwd, resolve(searchCwd, stripAtPrefix(path)))
+      ? displaySearchRoot(params.cwd, resolve(searchCwd, path))
       : normalizeRepoRelativePath(path))
     .flatMap((path) => {
       const match = scorePathQueryMatch(path, params.query);
@@ -796,15 +495,12 @@ function resolveCandidatePath(cwd: string, candidate: string): string {
   return isAbsolute(stripped) ? resolve(stripped) : resolve(cwd, stripped);
 }
 
-async function existingSearchRoot(cwd: string, candidate: string): Promise<{ root: string; isDirectory: boolean } | undefined> {
+async function existingSearchRoot(cwd: string, candidate: string): Promise<{ root: string } | undefined> {
   try {
     const stripped = stripAtPrefix(candidate);
     const resolved = resolveCandidatePath(cwd, candidate);
-    const stats = await stat(resolved);
-    return {
-      root: isAbsolute(stripped) ? resolved : displaySearchRoot(cwd, resolved),
-      isDirectory: stats.isDirectory(),
-    };
+    await stat(resolved);
+    return { root: isAbsolute(stripped) ? resolved : displaySearchRoot(cwd, resolved) };
   } catch {
     return undefined;
   }
@@ -814,16 +510,14 @@ async function resolveSearchScope(params: {
   cwd: string;
   query: string;
   path?: string;
-  maxFiles: number;
-  signal?: AbortSignal;
-}): Promise<{ searchRoots: string[]; pathMatches: PathMatch[]; fastPath: boolean }> {
+  request: SearchRequest;
+}): Promise<{ searchRoots: string[]; pathMatches: PathMatch[] }> {
   const pathQuery = params.path?.trim();
 
   if (!pathQuery) {
     return {
       searchRoots: ["."],
-      pathMatches: await listPathMatches({ cwd: params.cwd, query: params.query, searchRoot: ".", signal: params.signal }),
-      fastPath: false,
+      pathMatches: [],
     };
   }
 
@@ -831,26 +525,22 @@ async function resolveSearchScope(params: {
   if (existing) {
     return {
       searchRoots: [existing.root],
-      pathMatches: existing.isDirectory
-        ? []
-        : await listPathMatches({ cwd: params.cwd, query: pathQuery, searchRoot: existing.root, signal: params.signal }),
-      fastPath: !existing.isDirectory,
+      pathMatches: [],
     };
   }
 
-  const pathMatches = await listPathMatches({ cwd: params.cwd, query: pathQuery, searchRoot: ".", signal: params.signal });
+  const pathMatches = await listPathMatches({ cwd: params.cwd, query: pathQuery, searchRoot: ".", request: params.request });
   const rankedPathMatches = [...pathMatches].sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     const depthDifference = pathDepth(a.path) - pathDepth(b.path);
     if (depthDifference !== 0) return depthDifference;
     return a.path.localeCompare(b.path);
   });
-  const searchRoots = rankedPathMatches.slice(0, Math.max(params.maxFiles, 1)).map((match) => match.path);
+  const searchRoots = rankedPathMatches.map((match) => match.path);
 
   return {
     searchRoots: searchRoots.length > 0 ? searchRoots : ["."],
     pathMatches,
-    fastPath: false,
   };
 }
 
@@ -860,16 +550,6 @@ function addRgExcludes(args: string[]): void {
 
 function addPackageSearchExcludes(args: string[]): void {
   for (const glob of PACKAGE_SEARCH_EXCLUDES) args.push("--glob", glob);
-}
-
-function deduplicateMatches(matches: CodeMatch[]): CodeMatch[] {
-  const seen = new Set<string>();
-  return matches.filter((match) => {
-    const key = `${match.path}\u0000${match.lineNumber}\u0000${match.line}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 async function findOwningSearchRoot(cwd: string, searchRoot: string): Promise<string | undefined> {
@@ -899,11 +579,9 @@ async function searchPackageRoot(params: {
   query: string;
   literal: boolean;
   caseSensitive?: boolean;
-  signal?: AbortSignal;
-}): Promise<CodeMatch[]> {
+  request: SearchRequest;
+}): Promise<void> {
   const resolvedRoot = resolveCandidatePath(params.cwd, params.root);
-  const stats = await stat(resolvedRoot).catch(() => undefined);
-  if (!stats?.isDirectory()) return [];
 
   const args = ["--json", "--line-number", "--color=never", "--hidden", "--no-ignore"];
   addPackageSearchExcludes(args);
@@ -911,13 +589,8 @@ async function searchPackageRoot(params: {
   if (!params.caseSensitive) args.push("--smart-case");
   args.push("-e", params.query, "--", ".");
 
-  return runRgStreaming(
-    args,
-    resolvedRoot,
-    params.signal,
-    MAX_RANKED_FILES,
-    (path) => displaySearchRoot(params.cwd, resolve(resolvedRoot, stripAtPrefix(path))),
-  );
+  await runRg(args, resolvedRoot, [params.root], params.request,
+    (line) => params.request.consume(line, (path) => displaySearchRoot(params.cwd, resolve(resolvedRoot, path))));
 }
 
 function oneCallCoverageNotes(coverage: SearchCoverageDetails): string[] {
@@ -927,10 +600,15 @@ function oneCallCoverageNotes(coverage: SearchCoverageDetails): string[] {
     parts.push(`${coverage.packageRoots.length} imported package${coverage.packageRoots.length === 1 ? "" : "s"}`);
   }
   if (coverage.omittedPackageRoots > 0) {
-    parts.push(`${coverage.omittedPackageRoots} imported package${coverage.omittedPackageRoots === 1 ? "" : "s"} omitted by the safety cap`);
+    parts.push(`${coverage.omittedPackageRoots} imported package${coverage.omittedPackageRoots === 1 ? "" : "s"} not searched`);
   }
 
-  const notes = [`One-call coverage: ${parts.join("; ")}.`];
+  const notes = [`One-call coverage: ${parts.join("; ")}. Status: ${coverage.status}.`,
+    `Completed roots: ${coverage.completedRoots.join(", ") || "none"}.`,
+    ...(coverage.unvisitedRoots.length ? [`Unvisited or incomplete roots: ${coverage.unvisitedRoots.join(", ")}.`] : []),
+    ...coverage.reasons.map((reason) => `Coverage limit: ${reason}.`),
+    ...(coverage.omittedMatches ? [`Snippet retention: ${coverage.retainedMatches} retained; ${coverage.omittedMatches} omitted. Counts include all visited matching lines.`] : []),
+  ];
   if (coverage.packageRoots.length > 0) {
     notes.push(`Imported packages searched: ${coverage.packageRoots.join(", ")}.`);
   }
@@ -953,7 +631,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
     name: "agentic_search",
     label: "Agentic Search",
     description: `Preferred ranked search for locating files, classes, scopes, methods, and call sites across a repository. Uses ripgrep, then ranks and groups results for coding-agent workflows. Optional context disambiguates ranking without changing the ripgrep query. Set expand_related true to make one call cover Ruby/Rails mixins or the JS/TS target, relative imports, owning package, and resolvable imported package surfaces before returning a result or decisive miss. Output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
-    promptSnippet: "Preferred one-call ranked search for locating files, classes, scopes, methods, and call sites. Make one focused search from the user's named construct and optional path hint. Use context for natural-language disambiguation. For Rails concerns/mixins or JS/TS module and utility discovery, pass expand_related: true so the same call searches the relevant owning and imported-package surfaces. Read the ranked target; do not repeat discovery with another search tool.",
+    promptSnippet: "Preferred one-call ranked search for locating files, classes, scopes, methods, and call sites. Use context for natural-language disambiguation and expand_related: true for Rails concerns/mixins or JS/TS imports. Read the ranked target, then inspect reported unvisited scopes when coverage is partial.",
     promptGuidelines: [
       "Prefer agentic_search over grep for locating files, classes, scopes, methods, and call sites because ranked results identify the best file to read first.",
       "When a user names both a code construct and a file, make exactly one focused agentic_search call with query for the construct syntax and path for the filename or partial path hint.",
@@ -963,7 +641,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       "For JS/TS questions where imported files, re-export barrels, hooks, components, helpers, sibling modules, or dependency utilities may contain the requested behavior, set expand_related true. One agentic_search call then covers relative imports, the owning package, and resolvable imported packages.",
       "If agentic_search returns a target file containing the requested construct matches, read that target first before alternate candidates, sibling models, tests, migrations, git status, or shell searches.",
       "Use other ranked candidates from the same agentic_search result when the first target is ambiguous or lacks context.",
-      "When agentic_search reports its one-call coverage or a decisive miss, discovery is complete for those scopes. Do not repeat discovery with grep, find, or shell search.",
+      "Use agentic_search coverage.status, completedRoots, and unvisitedRoots to judge misses. Partial or failed coverage is not a decisive miss; inspect the named unvisited scopes or unresolved relationships.",
     ],
     parameters: SearchParams,
 
@@ -972,16 +650,12 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       const maxMatchesPerFile = clampInt(params.max_matches_per_file, 10, 1, 10);
       const context = typeof params.context === "string" && params.context.trim() ? params.context.trim() : undefined;
 
-      const scope = await resolveSearchScope({
-        cwd: ctx.cwd,
-        query: params.query,
-        path: params.path,
-        maxFiles,
-        signal,
-      });
+      const request = new SearchRequest(signal);
+      try {
+      const scope = await resolveSearchScope({ cwd: ctx.cwd, query: params.query, path: params.path, request });
 
       const related = params.expand_related
-        ? await expandRelatedFiles(ctx.cwd, scope.searchRoots)
+        ? await expandRelatedFiles(ctx.cwd, scope.searchRoots, request.signal)
         : undefined;
       const searchRoots = uniqueValues([...scope.searchRoots, ...(related?.roots ?? [])]);
       const expandNote =
@@ -992,11 +666,6 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       let useLiteral = params.literal ?? false;
       let literalFallback = false;
       let regexError: string | undefined;
-      if (!useLiteral && !isValidRegex(params.query)) {
-        useLiteral = true;
-        literalFallback = true;
-        regexError = "Invalid regex; retried as literal string.";
-      }
 
       const buildArgs = (literal: boolean, roots: string[]) => {
         const args = ["--json", "--line-number", "--color=never", "--hidden"];
@@ -1007,39 +676,31 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         return args;
       };
 
-      const runSearchRoots = async (literal: boolean, roots: string[]) => {
-        const matches: CodeMatch[] = [];
+      const runSearchRoots = async (roots: string[]) => {
+        const search = async (cwd: string, localRoots: string[], reportedRoots: string[], mapPath = normalizeRepoRelativePath) => {
+          const result = await runRg(buildArgs(useLiteral, localRoots), cwd, reportedRoots, request, (line) => request.consume(line, mapPath));
+          if (!useLiteral && result.exitCode === 2 && result.signal === null && /regex parse error:/i.test(result.error ?? "")) {
+            result.kind = "validation";
+            useLiteral = true;
+            literalFallback = true;
+            regexError = result.error;
+            await runRg(buildArgs(true, localRoots), cwd, reportedRoots, request, (line) => request.consume(line, mapPath));
+          }
+        };
         const relativeRoots = roots.filter((root) => !isAbsolute(root));
-        if (relativeRoots.length > 0) {
-          matches.push(...await runRgStreaming(buildArgs(literal, relativeRoots), ctx.cwd, signal));
+        for (let index = 0; index < relativeRoots.length; index += 32) {
+          const batch = relativeRoots.slice(index, index + 32);
+          await search(ctx.cwd, batch, batch);
         }
-
         for (const root of roots.filter(isAbsolute)) {
-          const rootStats = await stat(root);
-          const searchCwd = rootStats.isDirectory() ? root : dirname(root);
-          const localRoot = rootStats.isDirectory() ? "." : basename(root);
-          matches.push(...await runRgStreaming(
-            buildArgs(literal, [localRoot]),
-            searchCwd,
-            signal,
-            MAX_RANKED_FILES,
-            (path) => displaySearchRoot(ctx.cwd, resolve(searchCwd, stripAtPrefix(path))),
-          ));
+          const rootStats = await stat(root).catch(() => undefined);
+          const cwd = rootStats?.isDirectory() ? root : dirname(root);
+          await search(cwd, [rootStats?.isDirectory() ? "." : basename(root)], [root],
+            (path) => displaySearchRoot(ctx.cwd, resolve(cwd, path)));
         }
-
-        return matches;
       };
-
-      let matches: CodeMatch[];
-      try {
-        matches = await runSearchRoots(useLiteral, searchRoots);
-      } catch (error) {
-        if (useLiteral || !isRegexParseError(error)) throw error;
-        useLiteral = true;
-        literalFallback = true;
-        regexError = error instanceof Error ? error.message : String(error);
-        matches = await runSearchRoots(true, searchRoots);
-      }
+      await runSearchRoots(searchRoots);
+      let matches = request.matches;
 
       const primaryRoot = scope.searchRoots[0] ?? ".";
       const primaryExtension = extname(primaryRoot).toLowerCase();
@@ -1051,52 +712,60 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
         ? await findOwningSearchRoot(ctx.cwd, primaryRoot)
         : undefined;
       if (ownerRoot && !searchRoots.includes(ownerRoot)) {
-        matches.push(...await runSearchRoots(useLiteral, [ownerRoot]));
+        await runSearchRoots([ownerRoot]);
       }
 
-      const availablePackageRoots = needsOneCallExpansion ? (related?.packageRoots ?? []) : [];
-      const selectedPackageRoots = availablePackageRoots.slice(0, MAX_PACKAGE_SEARCH_ROOTS);
+      const availablePackageRoots = related?.packageRoots ?? [];
+      const selectedPackageRoots = needsOneCallExpansion ? availablePackageRoots.slice(0, MAX_PACKAGE_SEARCH_ROOTS) : [];
       for (const packageRoot of selectedPackageRoots) {
-        matches.push(...await searchPackageRoot({
+        await searchPackageRoot({
           cwd: ctx.cwd,
           root: packageRoot.path,
           query: params.query,
           literal: useLiteral,
           caseSensitive: params.case_sensitive,
-          signal,
-        }));
+          request,
+        });
       }
-      matches = deduplicateMatches(matches);
-
+      matches = request.matches;
+      const allPathMatches = !params.path && request.files.size === 0
+        ? await listPathMatches({ cwd: ctx.cwd, query: params.query, searchRoot: ".", request })
+        : scope.pathMatches;
+      const contentRuns = request.runs.filter((run) => !run.kind || run.kind === "content");
+      const omittedPackages = availablePackageRoots.filter((item) => !selectedPackageRoots.includes(item));
+      const reasons = uniqueValues([
+        ...request.inventoryReasons,
+        ...contentRuns.flatMap((run) => run.reason ?? run.error ?? []),
+        ...(related?.unresolved.map((item) => `unresolved ${item.name} from ${item.from}`) ?? []),
+        ...omittedPackages.map((item) => `unsearched imported package ${item.path}`),
+        ...(related?.skipped ?? []),
+      ]);
+      const completedRoots = uniqueValues(contentRuns.filter((run) => run.status === "complete").flatMap((run) => run.roots));
       const coverage: SearchCoverageDetails = {
-        roots: searchRoots,
-        ownerRoot,
-        packageRoots: selectedPackageRoots.map((item) => item.path),
-        omittedPackageRoots: Math.max(0, availablePackageRoots.length - selectedPackageRoots.length),
+        status: reasons.length === 0 ? "complete" : request.files.size === 0 && contentRuns.some((run) => run.status === "failed") && completedRoots.length === 0 ? "failed" : "partial",
+        roots: searchRoots, ownerRoot,
+        packageRoots: selectedPackageRoots.map((item) => item.path), omittedPackageRoots: omittedPackages.length,
+        omittedRelatedCandidates: omittedPackages.length + (related?.unresolved.length ?? 0) + (related?.skipped?.length ?? 0),
+        packagePolicy: { excludes: PACKAGE_SEARCH_EXCLUDES, respectsIgnoreFiles: false },
+        completedRoots,
+        unvisitedRoots: uniqueValues([...request.runs.filter((run) => run.kind !== "validation" && run.status !== "complete").flatMap((run) => run.roots), ...omittedPackages.map((item) => item.path)]),
+        reasons, runs: request.runs, excludes: DEFAULT_EXCLUDES, respectsIgnoreFiles: true,
+        retainedMatches: matches.length, omittedMatches: request.totalMatches - matches.length,
+        retainedBytes: request.retainedBytes, truncatedMatches: request.truncatedMatches, limits: request.limits,
       };
-
-      const allPathMatches = [...scope.pathMatches];
-      if (params.path && scope.fastPath) {
-        const hinted = await listPathMatches({ cwd: ctx.cwd, query: params.path, searchRoot: ".", signal });
-        for (const match of hinted) {
-          if (!allPathMatches.some((existing) => existing.path === match.path)) allPathMatches.push(match);
-        }
-      }
 
       const pathOnlyDiscovery = matches.length === 0 && !params.path && allPathMatches.length > 0;
       const allRankedCandidates = prioritizeRelatedResults(
-        rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, allPathMatches, context),
+        rankFileGroups(matches, params.path ?? params.query, maxMatchesPerFile, allPathMatches, context, request.files),
         related,
         primaryRoot,
       );
-      const rankedCandidates = matches.length > 0
-        ? allRankedCandidates.filter((file) => file.matches.length > 0)
+      const rankedCandidates = request.files.size > 0
+        ? allRankedCandidates.filter((file) => request.files.has(file.path))
         : (pathOnlyDiscovery ? allRankedCandidates : []);
       const ranked = withConfidence(rankedCandidates.slice(0, maxFiles));
-      const totalMatches = matches.length + (pathOnlyDiscovery ? allPathMatches.length : 0);
-      const totalFiles = matches.length > 0
-        ? new Set(matches.map((match) => match.path)).size
-        : (pathOnlyDiscovery ? new Set(allPathMatches.map((match) => match.path)).size : 0);
+      const totalMatches = request.totalMatches + (pathOnlyDiscovery ? allPathMatches.length : 0);
+      const totalFiles = request.files.size || (pathOnlyDiscovery ? allPathMatches.length : 0);
       const fallbackNotice = literalFallback ? "\n\n[agentic_search retried this as a literal string because ripgrep rejected the regex.]" : "";
       const relatedOptionName = "expand_related";
       const relatedNoun = related?.label === "import" ? "import" : related?.label === "mixin" ? "mixin" : "related";
@@ -1117,7 +786,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
           ? `Read this file first; ${relatedOptionName} also searched ${related.roots.length} resolved ${relatedNoun} file${related.roots.length === 1 ? "" : "s"} and ${coverage.packageRoots.length} imported package${coverage.packageRoots.length === 1 ? "" : "s"}.`
           : `Read this file first; ${relatedOptionName} also searched ${related.roots.length} resolved ${relatedNoun} file${related.roots.length === 1 ? "" : "s"} shown below as 1.x related targets.`)
         : undefined;
-      const formatted = `${formatSearchResults(params.query, ranked, totalMatches, notes, targetInstruction, related)}${fallbackNotice}`;
+      const formatted = `${formatSearchResults(params.query, ranked, totalMatches, notes, targetInstruction, related, coverage)}${fallbackNotice}`;
 
       const details: SearchDetails = {
         query: params.query,
@@ -1141,6 +810,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
 
       const text = await writeFullOutputIfTruncated(formatted, "pi-agentic-search-", details);
       return { content: [{ type: "text", text }], details };
+      } finally { request.dispose(); }
     },
 
     renderCall,

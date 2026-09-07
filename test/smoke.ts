@@ -582,7 +582,7 @@ assert.ok(dirExpandedResult.details.related !== undefined, "expand_related shoul
 assert.ok(dirExpandedResult.details.related.roots.length >= 2, "should resolve mixins from directory walk");
 assert.match(dirExpandedResult.content[0].text, /expand_related: searched/);
 
-// 5. Invalid regex pre-validation avoids the rg spawn (still returns results).
+// 5. Ripgrep compilation errors trigger a literal retry.
 const sigBraceResult = await searchTool.execute(
   "tool-call-new-5",
   { query: "sig {", max_files: 5 },
@@ -641,8 +641,7 @@ const importedPackageRender = searchTool.renderResult(
 ).render(220).join("\n");
 assert.match(importedPackageRender, /one-call coverage: owner \., 1 imported package/i);
 
-// 8. A scoped miss is decisive: path hints are reported as coverage, not fake
-// code matches, and the result closes discovery rather than recommending grep.
+// 8. A miss is complete only within its successfully searched scopes.
 const decisiveMissResult = await searchTool.execute(
   "tool-call-one-trip-miss",
   { query: "missingFilterMap", path: "src/response.ts", expand_related: true, max_files: 10 },
@@ -655,17 +654,12 @@ assert.equal(decisiveMissResult.details.totalMatches, 0);
 assert.equal(decisiveMissResult.details.files.length, 0);
 assert.match(decisiveMissText, /No code matches found for "missingFilterMap"/);
 assert.match(decisiveMissText, /Path hints are coverage, not code matches/i);
-assert.match(decisiveMissText, /Search complete for the reported one-call coverage/i);
-assert.match(decisiveMissText, /Do not repeat discovery with grep, find, or shell search/i);
+assert.equal(decisiveMissResult.details.coverage.status, "complete");
+assert.deepEqual(decisiveMissResult.details.coverage.completedRoots, ["src/response.ts", ".", "node_modules/@fixture/model-api"]);
 assert.doesNotMatch(decisiveMissText, /TARGET FILE:/);
 
 assert.ok(
   searchTool.promptGuidelines.some((guideline: string) => /one agentic_search call/i.test(guideline) && /owning package/i.test(guideline) && /imported packages/i.test(guideline)),
   "promptGuidelines should describe the one-call package/dependency coverage contract",
 );
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /Do not repeat discovery with grep, find, or shell search/i.test(guideline)),
-  "promptGuidelines should close discovery after agentic_search reports its coverage",
-);
-
 console.log("pi-agentic-search smoke test passed");

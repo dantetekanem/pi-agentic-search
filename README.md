@@ -45,14 +45,14 @@ Parameters:
 
 After the search, read the `TARGET FILE`. Use other candidates only when that file does not contain the requested context.
 
-Built-in grep and shell search are still useful for exact confirmation inside a known file. They should not restart discovery after `agentic_search` has already reported its coverage.
+Check `coverage.status` before treating a miss as decisive. `complete` applies only to the reported pattern and scopes. For `partial` or `failed` coverage, inspect `unvisitedRoots`, unresolved imports/mixins, and the reported budget or error reasons. Built-in grep and shell search remain useful for exact confirmation or those unfinished scopes.
 
 ## How it works
 
 ### Search scope
 
-- Exact paths search one file and skip the repository-wide path listing.
-- Filenames and partial paths are resolved against visible repository paths before content search.
+- An existing exact file without related expansion uses one content-search process and no path listings.
+- Filenames and partial paths are resolved against visible repository paths before content search. `max_files` limits displayed results, not the number of filename candidates searched.
 - Repository-wide path listings are memoized within one request. There is no cache between requests.
 - `expand_related` can continue through Ruby and Rails mixins, JavaScript and TypeScript relative imports, the owning package, and resolvable bare-package imports.
 
@@ -74,7 +74,9 @@ Scoring weights are defined in `src/extension.ts`.
 - A resolved path hint counts as searched coverage, not as a code match.
 - Missing or malformed tool details do not break result rendering.
 - Output beyond Pi's 2,000-line or 50KB display limit is saved to a file.
-- Streaming JSON parsing avoids large-buffer limits on large result sets.
+- Batch and live retrieval share a ripgrep JSON decoder. Ripgrep validates regex syntax; only a regex compilation error triggers literal fallback.
+- Retrieval visits up to 10,000 matching files within a 30-second request deadline. It keeps per-file counts, up to 16 snippets per file, 1,024 bytes per snippet line, and at most 8 MiB of serialized snippet payload. Individual rg JSON records are capped at 1 MiB. Reaching a retrieval/event budget produces partial coverage; snippet omission is reported separately without turning a completed search into a miss.
+- Path inventories are request-local and capped at 10,000 entries. Related traversal reports its file/depth/import limits and unresolved work. Repository searches use rg ignore rules and explicit exclusions; imported-package searches use a separate exclusion policy and `--no-ignore`.
 
 ## Examples
 
@@ -104,7 +106,7 @@ TARGET FILE: app/models/event_occurrence.rb. Read this file first; use other ran
    L4 [scope] scope :by_date_range, ->(start_date, end_date) { where(date: start_date..end_date) }
    L5 [scope] scope :with_budget, -> { where.not(budget_cents: nil) }
 
-Next step: read only the TARGET FILE, then propose the edit from that file. Discovery is complete for the reported one-call coverage; do not repeat it with grep, find, or shell search.
+Next step: read the TARGET FILE first; coverage applies only to the reported pattern and scopes.
 ```
 
 ### Disambiguation with context
@@ -125,12 +127,9 @@ The search starts with the target and its relative imports. If they do not defin
 
 ## Performance
 
-Synthetic benchmark results:
+Run the [committed benchmark](docs/benchmark.md) with `npm run benchmark`. Its original baseline records the reviewed implementation's failures, not the performance of the current code. Record new runs to a different output file.
 
-- 8,000 files and 385,602 lines: about 25 ms for an exact path, 72 ms for a basename hint, and 177 ms for a broad search.
-- 34,600 files and 2,213,002 lines: about 26 ms for an exact path, 308 ms for a basename hint, and 850 ms for a broad search.
-
-Exact paths are faster because ripgrep can search one file immediately. Basename hints require a visible-path scan first. Broad searches scan broad content and can produce large JSON output.
+Exact-file searches issue one rg process regardless of unrelated file count. Basename hints require a visible-path scan; broad content searches start without waiting for a repository listing. Counts and coverage remain independent of output limits.
 
 Sparse checkouts reduce the searchable tree because ripgrep only sees checked-out files.
 

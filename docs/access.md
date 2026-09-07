@@ -4,7 +4,7 @@
 
 ## Process execution
 
-The extension invokes the locally installed `rg` executable (ripgrep) as a subprocess via Node's `spawn` and `execFile` APIs. Search terms and paths are passed as arguments, not through a shell.
+The extension invokes the locally installed `rg` executable (ripgrep) through Node's `spawn` API. Search terms and paths are passed as arguments, not through a shell. One request deadline covers child processes and is forwarded to related traversal. Cancellation or a retrieval budget terminates the current child and reports incomplete coverage; process exit and signal information remain in the result details.
 
 ## Filesystem access
 
