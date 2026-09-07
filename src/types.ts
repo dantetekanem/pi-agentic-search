@@ -1,33 +1,46 @@
 import type { TruncationResult } from "@earendil-works/pi-coding-agent";
 import type { RelatedExpansionDetails } from "./related.ts";
 
+export type SearchIntent = "definition" | "references" | "tests" | "file" | "auto";
+export type MatchKind = "definition" | "reference" | "import" | "string" | "comment";
+export interface SearchEvidence {
+  tier: "definition" | "reference" | "text" | "path";
+  definitionCount: number;
+  referenceCount: number;
+  basis: "declaration-span" | "line-pattern" | "text" | "path";
+  competingCandidates: number;
+  contextRead?: "bounded" | "unavailable";
+}
+
 export interface CodeMatch {
   path: string;
   lineNumber: number;
   line: string;
   submatches: Array<{ text: string; start: number; end: number }>;
   isDefinition: boolean;
+  kind?: MatchKind;
+  contextBlock?: string;
 }
 export interface FileSummary {
   path: string;
   matchCount: number;
   definitionCount: number;
+  referenceCount: number;
   matches: CodeMatch[];
   complete: boolean;
 }
 export interface RankedFileResult {
   path: string;
   score: number;
-  confidence?: number;
+  evidence?: SearchEvidence;
   reasons: string[];
   matchCount: number;
   matches: CodeMatch[];
 }
 export interface PathMatch { path: string; score: number; reasons: string[] }
 export interface SearchTopMatch { lineNumber: number; marker: "def" | "ref" | "scope"; text: string }
-export interface SearchFileDetails extends Pick<RankedFileResult, "path" | "score" | "matchCount" | "reasons"> {
+export interface SearchFileDetails extends Pick<RankedFileResult, "path" | "score" | "matchCount" | "reasons" | "evidence"> {
   topMatch?: SearchTopMatch;
-  confidence?: number;
 }
 export interface SearchRun {
   kind?: "content" | "inventory" | "validation";
@@ -57,9 +70,15 @@ export interface SearchCoverageDetails {
   retainedBytes: number;
   truncatedMatches: number;
   limits: { candidates: number; snippetsPerFile: number; snippetBytes: number; retainedBytes: number; eventBytes: number };
+  contextRanking?: {
+    fileLimit: number; readByteLimit: number; blockByteLimit: number;
+    enrichedCandidates: number; unexaminedCandidates: number;
+  };
 }
 export interface SearchDetails {
   query: string;
+  intent?: SearchIntent;
+  anchorPath?: string;
   context?: string;
   totalMatches: number;
   totalFiles: number;

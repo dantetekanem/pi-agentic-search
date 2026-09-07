@@ -36,6 +36,7 @@ Parameters:
 
 - `query`: code syntax, a regular expression, or literal text. Search for the construct rather than the full request. For Rails scopes, use `scope\s+:`.
 - `context`: optional words used to rank matches without changing the `rg` query.
+- `intent`: `definition`, `references`, `tests`, `file`, or `auto` (default). Use `definition` to follow an imported symbol to its declaration; `file` and `auto` preserve preference for a named navigation anchor.
 - `path`: an optional exact path, filename, or partial path such as `event_occurrence.rb`.
 - `max_files`: maximum ranked files to return. Defaults to 5 and accepts up to 10.
 - `max_matches_per_file`: maximum snippets per file. Defaults to 10 and accepts up to 10.
@@ -58,13 +59,15 @@ Check `coverage.status` before treating a miss as decisive. `complete` applies o
 
 ### Ranking
 
-- Definitions score above references. Recognized definitions include functions, classes, types, Ruby classes, Rails scopes, Rust functions, and Go types.
-- Source files and implementation paths such as `src/`, `app/`, `lib/`, `packages/`, and `core/` receive a boost.
-- Tests, fixtures, mocks, generated files, vendor directories, build output, and lockfiles receive a penalty.
-- Context tokens can raise matching paths or snippets without changing the search query.
-- Results are grouped by file, trimmed to a small number of snippets, and assigned normalized confidence values.
+- Definition intent puts declaration evidence ahead of callers, even when the caller is the named file. Reference intent prefers reference evidence; test intent favors test paths.
+- JS/TS and Ruby classification compares rg's byte spans with declaration names on the matching line. Calls in another symbol's initializer or body are not declarations. Imports, inline strings, and comments receive separate classifications; Rails scopes count as definitions.
+- This is lexical matching, not a full parser. Multiline lexical context and dynamic declarations are not established. Broad construct regexes use declaration-span overlap or recognized prefixes; other languages retain line-pattern heuristics, identified in the evidence.
+- Content evidence sorts above path-only evidence without a score offset. Source paths receive a small boost. Test/generated/vendor penalties are conditional on intent and explicit scope.
+- Context words use identifier boundaries, including camel-case and underscore splitting. With context supplied, ranking reads at most eight candidate prefixes of 64 KiB each. Each retained match gets at most 512 bytes from its two neighboring lines on either side. Candidates not enriched are marked `contextRead: unavailable`.
+- Snippets prefer evidence relevant to the intent and suppress neighboring redundant hits, while retaining adjacent distinct declarations.
+- Results expose the evidence tier, declaration/reference counts, classification basis, and number of competing candidates in that tier. These describe visited evidence, not calibrated probabilities, and do not change when `max_files` changes.
 
-Scoring weights are defined in `src/extension.ts`.
+Scoring is in `src/ranking.ts`; declaration and snippet classification is in `src/evidence.ts`.
 
 ### Output and fallbacks
 
@@ -72,7 +75,7 @@ Scoring weights are defined in `src/extension.ts`.
 - Rails scopes receive scope-specific formatting.
 - Invalid regular expressions are retried as literal text and reported in the output.
 - A resolved path hint counts as searched coverage, not as a code match.
-- Missing or malformed tool details do not break result rendering.
+- Missing result counts fall back to the text summary when rendering.
 - Output beyond Pi's 2,000-line or 50KB display limit is saved to a file.
 - Batch and live retrieval share a ripgrep JSON decoder. Ripgrep validates regex syntax; only a regex compilation error triggers literal fallback.
 - Retrieval visits up to 10,000 matching files within a 30-second request deadline. It keeps per-file counts, up to 16 snippets per file, 1,024 bytes per snippet line, and at most 8 MiB of serialized snippet payload. Individual rg JSON records are capped at 1 MiB. Reaching a retrieval/event budget produces partial coverage; snippet omission is reported separately without turning a completed search into a miss.
@@ -97,10 +100,10 @@ agentic_search query="scope\\s+:" path="event_occurrence.rb"
 Example result:
 
 ```text
-agentic_search: "scope\\s+:" — 1 ranked file from 4 matches, confidence sum 1.000
+agentic_search: "scope\\s+:" — 1 ranked file from 4 matches
 TARGET FILE: app/models/event_occurrence.rb. Read this file first; use other ranked candidates if it lacks the requested context.
 
-1. app/models/event_occurrence.rb (score 113, confidence 1.000, 4 matches) — 4 matches, source file, implementation path
+1. app/models/event_occurrence.rb (score 406, 4 matches, evidence definition; declaration-span; 0 competing candidates) — primary target, exact filename match "event_occurrence.rb", path matches query tokens: event, occurrence, rb, content match
    L2 [scope] scope :upcoming, -> { where("date >= ?", Date.current).order(:date) }
    L3 [scope] scope :past, -> { where("date < ?", Date.current).order(date: :desc) }
    L4 [scope] scope :by_date_range, ->(start_date, end_date) { where(date: start_date..end_date) }
@@ -127,7 +130,7 @@ The search starts with the target and its relative imports. If they do not defin
 
 ## Performance
 
-Run the [committed benchmark](docs/benchmark.md) with `npm run benchmark`. Its original baseline records the reviewed implementation's failures, not the performance of the current code. Record new runs to a different output file.
+Run the [committed benchmark](docs/benchmark.md) with `npm run benchmark`. Its original baseline records the reviewed implementation's failures, not the performance of the current code. The [ranking report](docs/benchmarks/ranking.json) passes all 14 synthetic runs and reports top-1 accuracy and MRR separately for each intent. These regression fixtures are development evidence, not a representative quality estimate. Record new runs to a different output file.
 
 Exact-file searches issue one rg process regardless of unrelated file count. Basename hints require a visible-path scan; broad content searches start without waiting for a repository listing. Counts and coverage remain independent of output limits.
 

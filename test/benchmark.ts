@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { assess, benchmarkCases, percentile } from "./benchmark-cases.ts";
+import { assess, benchmarkCases, percentile, summarizeByIntent } from "./benchmark-cases.ts";
 
 interface ObservedDetails {
   totalMatches: number;
@@ -134,6 +134,7 @@ try {
     environment: { node: process.version, platform: process.platform, arch: process.arch, ripgrep: childProcess.execFileSync("rg", ["--version"], { encoding: "utf8" }).split("\n")[0] },
     methodology: { warmups: 1, samples, traversal: "--sort=path through isolated RIPGREP_CONFIG_PATH; test control, not production configuration", processCounting: "Node child_process spawn/execFile proxies, no subprocess wrapper", timing: "in-process tool execution on warm filesystem, includes ranking/rendering, excludes fixture creation and oracle" },
     unavailable: ["candidate relevance recall before output slicing", "cold-cache latency", "retained/peak memory", "tokenizer-specific emitted tokens", "model effort and task success", "held-out real-project accuracy"],
+    byIntent: summarizeByIntent(results),
     results,
   };
   const json = `${JSON.stringify(report, null, 2)}\n`;

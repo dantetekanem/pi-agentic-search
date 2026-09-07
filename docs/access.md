@@ -8,7 +8,7 @@ The extension invokes the locally installed `rg` executable (ripgrep) through No
 
 ## Filesystem access
 
-The extension reads files beneath the supplied working directory (`cwd`) to search and rank results. When related-import expansion is requested, it also reads source files, import targets, and package manifests needed to resolve related imports. Resolved package imports can be outside `cwd` when the local module resolver points there.
+The extension reads files beneath the supplied working directory (`cwd`) to search and rank results. When related-import expansion is requested, it also reads source files, import targets, and package manifests needed to resolve related imports. Resolved package imports can be outside `cwd` when the local module resolver points there. With a ranking context supplied, the extension also reads up to 64 KiB from each of eight candidate files, retaining at most 512 bytes of neighboring context per retained match. Those candidates can be outside `cwd` when an explicit root or related import points there.
 
 When a result exceeds Pi's output limits, the extension may write the complete result beneath the directory returned by Node's `os.tmpdir()`, using `pi-agentic-search-*/output.txt`, and reports the actual path in the truncated response. It does not write there for untruncated output.
 
