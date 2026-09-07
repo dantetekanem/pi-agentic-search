@@ -8,6 +8,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension, { parseRipgrepJsonLines } from "../index.ts";
 import { SearchRequest, RETRIEVAL_LIMITS, runRg } from "../src/retrieval.ts";
+import type { SearchDetails as Details } from "../src/types.ts";
 
 let registered: Pick<ToolDefinition, "execute"> | undefined;
 const adapter: Pick<ExtensionAPI, "registerTool" | "registerCommand"> = {
@@ -15,13 +16,6 @@ const adapter: Pick<ExtensionAPI, "registerTool" | "registerCommand"> = {
 };
 extension(adapter as ExtensionAPI);
 const tool = registered!;
-interface Details {
-  totalMatches: number; totalFiles: number;
-  files: Array<{ path: string; matchCount: number }>;
-  literalFallback?: boolean;
-  related?: { roots: string[]; skipped?: string[] };
-  coverage: { status: string; roots: string[]; completedRoots: string[]; unvisitedRoots: string[]; reasons: string[]; retainedMatches: number; omittedMatches: number };
-}
 async function search(cwd: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<Details> {
   const result = await tool.execute("retrieval-test", params, signal, undefined, { cwd } as ExtensionContext);
   return result.details as Details;
@@ -149,6 +143,19 @@ test("a 60-import file obeys the traversal cap and identifies skipped edges", ()
   assert.equal(result.related?.roots.length, 50);
   assert.equal(result.coverage.status, "partial");
   assert.ok(result.related?.skipped?.some((reason) => reason.includes("dependency-59")));
+}));
+
+test("omission counts survive the bounded diagnostic list", () => fixture(async (cwd) => {
+  const imports: string[] = [];
+  for (let index = 0; index < 600; index++) {
+    imports.push(`import './dependency-${index}';`);
+    await writeFile(join(cwd, `dependency-${index}.ts`), "export const needle = 1;\n");
+  }
+  await writeFile(join(cwd, "target.ts"), imports.join("\n"));
+  const result = await search(cwd, { query: "needle", path: "target.ts", expand_related: true });
+  assert.equal(result.related?.roots.length, 50);
+  assert.equal(result.coverage.omittedRelatedCandidates, 550);
+  assert.equal(result.coverage.status, "partial");
 }));
 
 test("one request deadline terminates a child and releases its listener", () => fixture(async (cwd) => {

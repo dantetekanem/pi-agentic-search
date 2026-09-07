@@ -1,5 +1,41 @@
 import type { TruncationResult } from "@earendil-works/pi-coding-agent";
-import type { RelatedExpansionDetails } from "./related.ts";
+
+export interface RelatedResolvedReference {
+  from: string;
+  name: string;
+  path: string;
+  relationship: string;
+  note: string;
+  kind?: "file" | "package";
+  entryPath?: string;
+  provenance?: string;
+}
+export interface RelatedPackageRoot {
+  from: string;
+  name: string;
+  path: string;
+  entryPath: string;
+  provenance?: string;
+}
+export interface RelatedExpansionDetails {
+  enabled: boolean;
+  label: "mixin" | "import" | "related";
+  roots: string[];
+  packageRoots: RelatedPackageRoot[];
+  resolved: RelatedResolvedReference[];
+  unresolved: Array<{ from: string; name: string }>;
+  skipped?: string[];
+  traversal?: {
+    visitedFiles: number; examinedEdges: number; omittedEdges: number; omittedFileCandidates: number;
+    sourceReads: number; bytesRead: number; inventories: number; omittedDiagnostics: number;
+    limits: Record<string, number>;
+  };
+}
+export interface RelationshipReference {
+  name: string;
+  relationship: string;
+  namespace?: string[];
+}
 
 export type SearchIntent = "definition" | "references" | "tests" | "file" | "auto";
 export type MatchKind = "definition" | "reference" | "import" | "string" | "comment";

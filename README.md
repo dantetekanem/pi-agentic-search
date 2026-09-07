@@ -55,7 +55,10 @@ Check `coverage.status` before treating a miss as decisive. `complete` applies o
 - An existing exact file without related expansion uses one content-search process and no path listings.
 - Filenames and partial paths are resolved against visible repository paths before content search. `max_files` limits displayed results, not the number of filename candidates searched.
 - Repository-wide path listings are memoized within one request. There is no cache between requests.
-- `expand_related` can continue through Ruby and Rails mixins, JavaScript and TypeScript relative imports, the owning package, and resolvable bare-package imports.
+- `expand_related` can continue through Ruby and Rails mixins, JavaScript and TypeScript relative imports, the owning package, and resolvable bare-package imports. Both language adapters share the same visible-path inventory and canonical source-text cache.
+- Ruby lookup indexes constant definitions in conventional `app/` and `lib/` roots, plus literal `autoload_paths`/`eager_load_paths` additions using `root.join` or `%w` lists. Lexical namespace lookup precedes filename fallback. `include`, `prepend`, and `extend` retain their relationship in results.
+- Ruby resolution is static discovery, not proof that a constant is loaded at runtime. It does not execute application configuration or dynamic mixin expressions; unsupported dynamic references and configuration are reported as unresolved or skipped.
+- Related results identify their resolution provenance. The JS adapter still uses the existing relative-path/Node fallback behavior; project-configured resolution is a separate change.
 
 ### Ranking
 
@@ -79,7 +82,9 @@ Scoring is in `src/ranking.ts`; declaration and snippet classification is in `sr
 - Output beyond Pi's 2,000-line or 50KB display limit is saved to a file.
 - Batch and live retrieval share a ripgrep JSON decoder. Ripgrep validates regex syntax; only a regex compilation error triggers literal fallback.
 - Retrieval visits up to 10,000 matching files within a 30-second request deadline. It keeps per-file counts, up to 16 snippets per file, 1,024 bytes per snippet line, and at most 8 MiB of serialized snippet payload. Individual rg JSON records are capped at 1 MiB. Reaching a retrieval/event budget produces partial coverage; snippet omission is reported separately without turning a completed search into a miss.
-- Path inventories are request-local and capped at 10,000 entries. Related traversal reports its file/depth/import limits and unresolved work. Repository searches use rg ignore rules and explicit exclusions; imported-package searches use a separate exclusion policy and `--no-ignore`.
+- Path inventories are request-local and capped at 10,000 entries per inventory. Repository searches and graph inventories use rg ignore rules and the same explicit exclusions; imported-package searches use a separate policy and `--no-ignore`.
+- Related traversal caps source nodes at 200, reference edges at 500, distinct related targets at 50 (up to 25 Ruby targets), and source/manifest reads at 500. Source prefixes are capped at 256 KiB, manifest/config reads at 64 KiB, and cached text at 8 MiB. Canonical and stat caches each allow 10,000 entries. Ruby indexing allows 16 autoload roots and 64 lexical nesting levels. Concurrent reads reserve the shared text budget before reading.
+- `related.traversal` reports these limits, visited files, reads, bytes, inventories, and known omitted edge/file candidates. Diagnostics retain up to 128 reasons; omission counts continue after that list fills. Unknown relationships beyond a truncated source remain uncertain, not certified absent.
 
 ## Examples
 
