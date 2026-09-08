@@ -30,7 +30,7 @@ function nativeText(value: unknown): string {
   if (typeof item.bytes === "string") return Buffer.from(item.bytes, "base64").toString("utf8");
   throw new Error("Invalid native rg JSON text");
 }
-function nativeSearch(source: PinnedSource, scenario: EvaluationCase, roots: string[], packageSearch = false, reroot = false) {
+export function nativeSearch(source: PinnedSource, scenario: EvaluationCase, roots: string[], packageSearch = false, reroot = false) {
   if (!roots.length) return { matches: [], text: "", candidates: [] };
   let cwd = source.root;
   if (reroot && roots.length === 1) {
@@ -39,7 +39,8 @@ function nativeSearch(source: PinnedSource, scenario: EvaluationCase, roots: str
     cwd = resolve(source.root, file ? dirname(path) : path);
     roots = [file ? basename(path) : "."];
   }
-  const args = ["--no-config", "--json", "--sort=path", "--hidden", scenario.params.case_sensitive ? "--case-sensitive" : "--smart-case"];
+  const caseFlag = scenario.params.case_sensitive === undefined ? "--smart-case" : scenario.params.case_sensitive ? "--case-sensitive" : "--ignore-case";
+  const args = ["--no-config", "--json", "--sort=path", "--hidden", caseFlag];
   if (scenario.params.literal) args.push("--fixed-strings");
   if (packageSearch) args.push("--no-ignore");
   for (const glob of packageSearch ? PACKAGE_SEARCH_EXCLUDES : DEFAULT_EXCLUDES) args.push("--glob", glob);
