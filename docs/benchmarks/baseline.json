@@ -1,0 +1,664 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "7af88927ee7dc2c9c4a5f3a640e8d0d5297b0676",
+  "runtimeDirty": false,
+  "runtimeHash": "4e7e8f161fcbed21640a373d2c114c2cbf8a2f6adaca36ae01bc38662d07416c",
+  "datasetHash": "5542f2fe85ddd136ab38b73f1a215e89524852f58e878b308348bc9d19e748e3",
+  "environment": {
+    "node": "v26.3.1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "ripgrep": "ripgrep 15.1.0"
+  },
+  "methodology": {
+    "warmups": 1,
+    "samples": 15,
+    "traversal": "--sort=path through isolated RIPGREP_CONFIG_PATH; test control, not production configuration",
+    "processCounting": "Node child_process spawn/execFile proxies, no subprocess wrapper",
+    "timing": "in-process tool execution on warm filesystem, includes ranking/rendering, excludes fixture creation and oracle"
+  },
+  "unavailable": [
+    "candidate relevance recall before output slicing",
+    "cold-cache latency",
+    "retained/peak memory",
+    "tokenizer-specific emitted tokens",
+    "model effort and task success",
+    "held-out real-project accuracy"
+  ],
+  "results": [
+    {
+      "id": "late-definition",
+      "intent": "definition",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "max_files": 10,
+        "intent": "definition"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/zzz-needle.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "."
+      ],
+      "fixtureHash": "f7fd6c7e7e7179326be2e36d72a0191719671fe35d2ae1c509a6a28129060793",
+      "fixtureFiles": 206,
+      "oracle": {
+        "matchingLines": 207,
+        "matchingFiles": 206
+      },
+      "observed": {
+        "matchingLines": 200,
+        "matchingFiles": 200,
+        "files": [
+          {
+            "path": "src/200.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/001.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/002.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/003.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/004.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/005.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/006.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/007.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/008.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/009.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "roots": [
+            "."
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 0,
+        "reciprocalRank": 0,
+        "recallAt5": 0,
+        "correctFirstSpan": false
+      },
+      "checks": {
+        "relevantFileFirst": false,
+        "relevantSpanFirst": false,
+        "allMatchingFilesRetrieved": false,
+        "allMatchingLinesCounted": false,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true,
+        "matchCount:src/200.ts": false
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 8.779667000000018,
+        "p95": 9.553999999999974
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 1849
+    },
+    {
+      "id": "ambiguous-filenames-limit-1",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "widget.ts",
+        "max_files": 1
+      },
+      "relevantTargets": [
+        {
+          "path": "widgets/6/widget.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "widgets/1/widget.ts",
+        "widgets/2/widget.ts",
+        "widgets/3/widget.ts",
+        "widgets/4/widget.ts",
+        "widgets/5/widget.ts",
+        "widgets/6/widget.ts"
+      ],
+      "fixtureHash": "bcfbd12b4b1542a01fa63383684351cee61b72c1e75d03cbbded448f9a558d79",
+      "fixtureFiles": 6,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 0,
+        "matchingFiles": 0,
+        "files": [],
+        "coverage": {
+          "roots": [
+            "widgets/1/widget.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 0,
+        "reciprocalRank": 0,
+        "recallAt5": 0,
+        "correctFirstSpan": false
+      },
+      "checks": {
+        "relevantFileFirst": false,
+        "relevantSpanFirst": false,
+        "allMatchingFilesRetrieved": false,
+        "allMatchingLinesCounted": false,
+        "requiredScopesSearched": false,
+        "effectiveRegexPreserved": true
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.741667000000007,
+        "p95": 6.632415999999921
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 234
+    },
+    {
+      "id": "ambiguous-filenames-limit-5",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "widget.ts",
+        "max_files": 5
+      },
+      "relevantTargets": [
+        {
+          "path": "widgets/6/widget.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "widgets/1/widget.ts",
+        "widgets/2/widget.ts",
+        "widgets/3/widget.ts",
+        "widgets/4/widget.ts",
+        "widgets/5/widget.ts",
+        "widgets/6/widget.ts"
+      ],
+      "fixtureHash": "bcfbd12b4b1542a01fa63383684351cee61b72c1e75d03cbbded448f9a558d79",
+      "fixtureFiles": 6,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 0,
+        "matchingFiles": 0,
+        "files": [],
+        "coverage": {
+          "roots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 0,
+        "reciprocalRank": 0,
+        "recallAt5": 0,
+        "correctFirstSpan": false
+      },
+      "checks": {
+        "relevantFileFirst": false,
+        "relevantSpanFirst": false,
+        "allMatchingFilesRetrieved": false,
+        "allMatchingLinesCounted": false,
+        "requiredScopesSearched": false,
+        "effectiveRegexPreserved": true
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.515999999999963,
+        "p95": 6.382082999999966
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 235
+    },
+    {
+      "id": "ambiguous-filenames-limit-10",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "widget.ts",
+        "max_files": 10
+      },
+      "relevantTargets": [
+        {
+          "path": "widgets/6/widget.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "widgets/1/widget.ts",
+        "widgets/2/widget.ts",
+        "widgets/3/widget.ts",
+        "widgets/4/widget.ts",
+        "widgets/5/widget.ts",
+        "widgets/6/widget.ts"
+      ],
+      "fixtureHash": "bcfbd12b4b1542a01fa63383684351cee61b72c1e75d03cbbded448f9a558d79",
+      "fixtureFiles": 6,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "widgets/6/widget.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "roots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.524499999999989,
+        "p95": 5.911334000000011
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 607
+    },
+    {
+      "id": "rg-inline-flag",
+      "intent": "references",
+      "query": "(?i)needle",
+      "params": {
+        "query": "(?i)needle",
+        "path": "src/case.ts"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/case.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/case.ts"
+      ],
+      "fixtureHash": "8f4cf8ca8d922f9ba8f6d748a7aaf2a54b4ef4b043ecd7897548ba6d86da8113",
+      "fixtureFiles": 1,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 0,
+        "matchingFiles": 0,
+        "files": [],
+        "coverage": {
+          "roots": [
+            "src/case.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": true
+      },
+      "metrics": {
+        "top1": 0,
+        "reciprocalRank": 0,
+        "recallAt5": 0,
+        "correctFirstSpan": false
+      },
+      "checks": {
+        "relevantFileFirst": false,
+        "relevantSpanFirst": false,
+        "allMatchingFilesRetrieved": false,
+        "allMatchingLinesCounted": false,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": false
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 7.98762499999998,
+        "p95": 8.877666999999974
+      },
+      "processCounts": {
+        "min": 3,
+        "max": 3
+      },
+      "repositoryListings": {
+        "min": 2,
+        "max": 2
+      },
+      "emittedBytes": 325
+    },
+    {
+      "id": "caller-versus-definition",
+      "intent": "definition",
+      "query": "resolveNeedle",
+      "params": {
+        "query": "resolveNeedle",
+        "intent": "definition"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/definition.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "."
+      ],
+      "fixtureHash": "70ec4e41d353b79594752c84815dc55e86b08f96a3df4747df9d8f1ff0560ca0",
+      "fixtureFiles": 2,
+      "oracle": {
+        "matchingLines": 2,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 2,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/caller.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/definition.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "roots": [
+            "."
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 0,
+        "reciprocalRank": 0.5,
+        "recallAt5": 1,
+        "correctFirstSpan": false
+      },
+      "checks": {
+        "relevantFileFirst": false,
+        "relevantSpanFirst": false,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.487332999999808,
+        "p95": 6.123082999999951
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 758
+    },
+    {
+      "id": "exact-file-0-unrelated",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/target.ts"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/target.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/target.ts"
+      ],
+      "fixtureHash": "080bc48640033ce4922efb72665b1a78ca64e5fee254739c0c86aa712d54f3bb",
+      "fixtureFiles": 1,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "src/target.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "roots": [
+            "src/target.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true,
+        "processBudget": false,
+        "listingBudget": false
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 7.876833000000033,
+        "p95": 8.460042000000158
+      },
+      "processCounts": {
+        "min": 3,
+        "max": 3
+      },
+      "repositoryListings": {
+        "min": 2,
+        "max": 2
+      },
+      "emittedBytes": 596
+    },
+    {
+      "id": "exact-file-7999-unrelated",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/target.ts"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/target.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/target.ts"
+      ],
+      "fixtureHash": "254ad17aa1f0ead2fe93047f9ddfff69f4fb6f0f918c3ac25275370869d81a39",
+      "fixtureFiles": 8000,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "src/target.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "roots": [
+            "src/target.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true,
+        "processBudget": false,
+        "listingBudget": false
+      },
+      "passes": false,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 24.4331659999998,
+        "p95": 26.319375000000036
+      },
+      "processCounts": {
+        "min": 3,
+        "max": 3
+      },
+      "repositoryListings": {
+        "min": 2,
+        "max": 2
+      },
+      "emittedBytes": 596
+    }
+  ]
+}

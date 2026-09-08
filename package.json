@@ -34,7 +34,9 @@
   },
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
-    "smoke": "tsx test/smoke.ts"
+    "smoke": "tsx test/smoke.ts",
+    "benchmark": "node --import tsx test/benchmark.ts",
+    "test:benchmark": "node --import tsx test/benchmark-metrics.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
