@@ -29,8 +29,9 @@ function parseRubySource(source: string, depthLimit: number): RubySource {
       for (const candidate of mixin[2]!.split(",")) {
         const name = candidate.replace(/\s+(?:if|unless)\b.*$/, "").trim();
         if (!name || name.replace(/^::/, "") === "ActiveSupport::Concern") continue;
+        // A qualified declaration (A::B) contributes one lexical frame, not A then B.
         references.push({
-          name, namespace: [...namespace()],
+          name, namespace: [...stack].reverse().flatMap((names) => names ? [names.join("::")] : []),
           relationship: mixin[1] === "prepend" ? "prepended by" : mixin[1] === "extend" ? "extended by" : "included by",
         });
       }
@@ -113,9 +114,9 @@ export class RubyResolver {
     if (!pending) { pending = this.buildIndex(project); this.indexes.set(project, pending); }
     const index = await pending;
     const name = reference.name.replace(/^::/, "");
-    const namespace = reference.name.startsWith("::") ? [] : reference.namespace ?? [];
-    for (let depth = namespace.length; depth >= 0; depth--) {
-      const qualified = [...namespace.slice(0, depth), name].join("::");
+    const namespaces = reference.name.startsWith("::") ? [] : reference.namespace ?? [];
+    for (const namespace of [...namespaces, ""]) {
+      const qualified = namespace ? `${namespace}::${name}` : name;
       const paths = index.get(qualified);
       if (paths?.length) return paths.map((path) => this.target(from, reference, path, "ruby-constant-index"));
     }
