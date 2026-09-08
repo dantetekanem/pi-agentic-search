@@ -45,6 +45,33 @@ test("Ruby lookup uses lexical namespace constants rather than guessing a filena
   assert.equal(result?.resolved[0]?.provenance, "ruby-constant-index");
 }));
 
+for (const declaration of ["class Admin::User", "module Admin::User"]) {
+  test(`${declaration} does not add Admin to lexical mixin lookup`, () => fixture({
+    "app/models/admin/user.rb": `${declaration}\n  include ScopeRules\nend\n`,
+    "app/models/admin/behavior.rb": "module Admin::ScopeRules\nend\n",
+    "app/models/concerns/scope_rules.rb": "module ScopeRules\nend\n",
+  }, async (cwd) => {
+    const result = await expandRelatedFiles(cwd, ["app/models/admin/user.rb"]);
+    assert.deepEqual(result?.roots, ["app/models/concerns/scope_rules.rb"]);
+    assert.equal(result?.resolved[0]?.provenance, "ruby-constant-index");
+    assert.deepEqual(result?.unresolved, []);
+  }));
+}
+
+for (const declaration of ["class Admin::User", "class ::Admin::User"]) {
+  test(`${declaration} preserves the actual outer lexical module`, () => fixture({
+    "app/models/outer.rb": `module Outer\n  ${declaration}\n    include ScopeRules\n  end\nend\n`,
+    "app/models/outer/rules.rb": "module Outer::ScopeRules\nend\n",
+    "app/models/outer/admin/rules.rb": "module Outer::Admin::ScopeRules\nend\n",
+    "app/models/admin/rules.rb": "module Admin::ScopeRules\nend\n",
+    "app/models/concerns/scope_rules.rb": "module ScopeRules\nend\n",
+  }, async (cwd) => {
+    const result = await expandRelatedFiles(cwd, ["app/models/outer.rb"]);
+    assert.deepEqual(result?.roots, ["app/models/outer/rules.rb"]);
+    assert.equal(result?.resolved[0]?.provenance, "ruby-constant-index");
+  }));
+}
+
 test("Ruby constant indexing honors literal configured autoload roots", () => fixture({
   "config/application.rb": "config.autoload_paths << Rails.root.join('domain')\n",
   "app/models/user.rb": "class User\n  include DomainScopes\nend\n",
