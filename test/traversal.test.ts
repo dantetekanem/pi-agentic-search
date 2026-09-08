@@ -166,7 +166,7 @@ test("cancellation during a source read stops subsequent graph expansion", () =>
     files.read = async (path, limit) => { const source = await read(path, limit); controller.abort(); return source; };
     const result = await expandRelatedFiles(cwd, ["src/main.ts"], controller.signal, files);
     assert.equal(result?.traversal?.visitedFiles, 1);
-    assert.equal(result?.traversal?.omittedEdges, 1);
+    assert.ok(result?.skipped?.some((reason) => reason.includes("resolution cancelled")));
     assert.equal(files.stats.sourceReads, 1);
   } finally { request.dispose(); }
 }));

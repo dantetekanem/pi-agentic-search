@@ -1,5 +1,6 @@
 import type { TruncationResult } from "@earendil-works/pi-coding-agent";
 
+export interface SymbolBinding { local: string; imported: string }
 export interface RelatedResolvedReference {
   from: string;
   name: string;
@@ -10,6 +11,8 @@ export interface RelatedResolvedReference {
   entryPath?: string;
   declarationPath?: string;
   implementationPath?: string;
+  symbols?: string[];
+  bindings?: SymbolBinding[];
   compilerVersion?: string;
   projectCompilerVersion?: string;
   configPath?: string;
@@ -28,11 +31,12 @@ export interface RelatedExpansionDetails {
   label: "mixin" | "import" | "related";
   roots: string[];
   packageRoots: RelatedPackageRoot[];
+  symbolSearches?: Array<{ path: string; symbol: string; querySymbol: string }>;
   resolved: RelatedResolvedReference[];
   unresolved: Array<{ from: string; name: string }>;
   skipped?: string[];
   traversal?: {
-    visitedFiles: number; examinedEdges: number; omittedEdges: number; omittedFileCandidates: number;
+    visitedFiles: number; visitedStates?: number; examinedEdges: number; omittedEdges: number; omittedFileCandidates: number;
     sourceReads: number; bytesRead: number; inventories: number; compilerPasses: number; omittedDiagnostics: number;
     limits: Record<string, number>;
   };
@@ -41,6 +45,10 @@ export interface RelationshipReference {
   name: string;
   relationship: string;
   namespace?: string[];
+  bindings?: SymbolBinding[];
+  symbols?: string[];
+  resolutionMode?: "import" | "require";
+  dynamic?: boolean;
 }
 
 export type SearchIntent = "definition" | "references" | "tests" | "file" | "auto";
