@@ -42,7 +42,7 @@ Parameters:
 - `max_matches_per_file`: maximum snippets per file. Defaults to 10 and accepts up to 10.
 - `expand_related`: includes related Ruby and Rails mixins, JavaScript and TypeScript imports, the owning package, and resolvable imported packages.
 - `literal`: treats `query` as literal text instead of a regular expression.
-- `case_sensitive`: enables case-sensitive matching. The default is ripgrep's smart-case behavior.
+- `case_sensitive`: `true` forces case-sensitive matching. `false` or omission uses ripgrep's smart-case behavior.
 
 After the search, read the `TARGET FILE`. Use other candidates only when that file does not contain the requested context.
 
@@ -147,6 +147,16 @@ The search reads the target first, follows relative imports and aliases, and che
 
 Run the [committed benchmark](docs/benchmark.md) with `npm run benchmark`. Its original baseline records the reviewed implementation's failures, not the performance of the current code. The [ranking report](docs/benchmarks/ranking.json) passes all 14 synthetic runs and reports top-1 accuracy and MRR separately for each intent. The [execution report](docs/benchmarks/execution.json) also passes all 14 runs at 15 samples each; its exact-file cases use one process and zero listings with both zero and 7,999 unrelated files. These regression fixtures are development evidence, not a representative quality estimate. Record new runs to a different output file.
 
+The [public evaluation](docs/evaluation.md) adds 15 frozen Pi, Rails and Zod cases, including six holdouts. Its [baseline report](docs/benchmarks/real-baseline.json) records:
+
+| Measure | Raw rg | Full search |
+| --- | ---: | ---: |
+| Correct first file, positive cases | 6/12 | 11/12 |
+| Correct first span, positive cases | 5/12 | 10/12 |
+| Valid negative misses | 3/3 | 3/3 |
+
+These manually selected cases are not a general accuracy estimate. Two Zod ranking/span limitations remain. The guide documents those failures, five feature ablations and nine successful model conditions on three seeded tasks; model success does not erase a ranking failure.
+
 Exact-file searches issue one rg process regardless of unrelated file count. Basename hints require a visible-path scan; broad content searches start without waiting for a repository listing. Counts and coverage remain independent of output limits.
 
 Sparse checkouts reduce the searchable tree because ripgrep only sees checked-out files.
@@ -168,14 +178,20 @@ Or use a local checkout:
 ```bash
 git clone https://github.com/dantetekanem/pi-agentic-search.git
 cd pi-agentic-search
-pnpm install
+npm ci
 pi install .
 ```
 
 ## Development
 
+npm is the supported package workflow. `package-lock.json` is authoritative for development, CI and publishing; do not maintain a second lockfile. Use Node.js 22, as CI does, and have `rg` on PATH.
+
 ```bash
-pnpm install
-pnpm check
-pnpm smoke
+npm ci
+npm run check
+npm test
+npm run smoke
+npm run benchmark -- --samples 15 --check --output /tmp/search-benchmark.json
 ```
+
+Keep dependency changes in `package.json` and `package-lock.json` together. Public-source and opt-in model measurements have separate [reproduction instructions](docs/evaluation.md#reproduction); normal tests do not make live model requests.
