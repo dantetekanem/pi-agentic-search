@@ -1,0 +1,86 @@
+[
+  {
+    "id": "zod-definition",
+    "project": "zod",
+    "split": "development",
+    "task": "Locate the public classic ZodString constructor declaration, not the core implementation or a type assertion.",
+    "params": {
+      "query": "ZodString",
+      "literal": true,
+      "path": "packages/zod/src/v4",
+      "context": "classic public string constructor",
+      "intent": "definition"
+    },
+    "targets": [{ "path": "packages/zod/src/v4/classic/schemas.ts", "startLine": 528, "endLine": 528 }],
+    "alternatives": [],
+    "requiredRoots": ["packages/zod/src/v4"]
+  },
+  {
+    "id": "zod-references",
+    "project": "zod",
+    "split": "development",
+    "task": "Find the classic string builder's call to the core _string helper.",
+    "params": {
+      "query": "\\b_string\\b",
+      "path": "packages/zod/src/v4",
+      "context": "classic public string builder caller",
+      "intent": "references"
+    },
+    "targets": [{ "path": "packages/zod/src/v4/classic/schemas.ts", "startLine": 619, "endLine": 619 }],
+    "alternatives": [],
+    "requiredRoots": ["packages/zod/src/v4"]
+  },
+  {
+    "id": "zod-tests",
+    "project": "zod",
+    "split": "development",
+    "task": "Find the v4 classic includesFromIndex2 fixture and its position-based string-includes checks.",
+    "params": {
+      "query": "includesFromIndex2",
+      "literal": true,
+      "path": "packages/zod/src",
+      "context": "v4 classic includes position checks",
+      "intent": "tests"
+    },
+    "targets": [{ "path": "packages/zod/src/v4/classic/tests/string.test.ts", "startLine": 30, "endLine": 36 }],
+    "alternatives": [{ "path": "packages/zod/src/v4/classic/tests/string.test.ts", "startLine": 11, "endLine": 11 }],
+    "requiredRoots": ["packages/zod/src"]
+  },
+  {
+    "id": "zod-reexport",
+    "project": "zod",
+    "split": "holdout",
+    "task": "Follow the classic ZodISODateTime re-export to its constructor declaration.",
+    "params": {
+      "query": "ZodISODateTime",
+      "literal": true,
+      "path": "packages/zod/src/v4/classic/external.ts",
+      "context": "classic ISO datetime constructor",
+      "intent": "definition",
+      "expand_related": true
+    },
+    "targets": [{ "path": "packages/zod/src/v4/classic/schemas.ts", "startLine": 643, "endLine": 643 }],
+    "alternatives": [],
+    "requiredRoots": [
+      "packages/zod/src/v4/classic/external.ts",
+      "packages/zod/src/v4/classic/iso.ts",
+      "packages/zod/src/v4/classic/schemas.ts"
+    ]
+  },
+  {
+    "id": "zod-negative",
+    "project": "zod",
+    "split": "holdout",
+    "task": "Determine whether zodBenchmarkAbsent_804e0f522747345d6b37581888899be420baa3e occurs in Zod source.",
+    "params": {
+      "query": "zodBenchmarkAbsent_804e0f522747345d6b37581888899be420baa3e",
+      "literal": true,
+      "case_sensitive": true,
+      "path": "packages/zod/src",
+      "intent": "auto"
+    },
+    "targets": [],
+    "alternatives": [],
+    "requiredRoots": ["packages/zod/src"]
+  }
+]

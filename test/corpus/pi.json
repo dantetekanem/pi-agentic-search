@@ -1,0 +1,93 @@
+[
+  {
+    "id": "ext-def-01",
+    "project": "pi",
+    "split": "development",
+    "task": "Find the findConflicts function that parses conflict markers in the example extensions.",
+    "params": {
+      "query": "findConflicts",
+      "literal": true,
+      "path": "packages/coding-agent/examples/extensions",
+      "context": "git merge conflict marker parsing helper",
+      "intent": "definition"
+    },
+    "targets": [{ "path": "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts", "startLine": 27, "endLine": 54 }],
+    "alternatives": [],
+    "requiredRoots": ["packages/coding-agent/examples/extensions"]
+  },
+  {
+    "id": "ext-ref-02",
+    "project": "pi",
+    "split": "development",
+    "task": "Find the command and shortcut handlers that call togglePlanMode.",
+    "params": {
+      "query": "togglePlanMode",
+      "literal": true,
+      "path": "packages/coding-agent/examples/extensions/plan-mode",
+      "context": "plan command and keyboard shortcut callers",
+      "intent": "references"
+    },
+    "targets": [
+      { "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts", "startLine": 143, "endLine": 143 },
+      { "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts", "startLine": 160, "endLine": 160 }
+    ],
+    "alternatives": [],
+    "requiredRoots": ["packages/coding-agent/examples/extensions/plan-mode"]
+  },
+  {
+    "id": "ext-test-03",
+    "project": "pi",
+    "split": "development",
+    "task": "Locate the tests for conflict handling in the git-merge-and-resolve example extension.",
+    "params": {
+      "query": "conflict",
+      "literal": true,
+      "path": "packages/coding-agent/test",
+      "context": "git merge resolve example extension conflict report",
+      "intent": "tests"
+    },
+    "targets": [{ "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts", "startLine": 143, "endLine": 175 }],
+    "alternatives": [
+      { "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts", "startLine": 87, "endLine": 105 },
+      { "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts", "startLine": 177, "endLine": 193 },
+      { "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts", "startLine": 195, "endLine": 205 }
+    ],
+    "requiredRoots": ["packages/coding-agent/test"]
+  },
+  {
+    "id": "ext-relative-04",
+    "project": "pi",
+    "split": "holdout",
+    "task": "Follow discoverAgents from the subagent extension's import to its exported definition.",
+    "params": {
+      "query": "discoverAgents",
+      "literal": true,
+      "path": "packages/coding-agent/examples/extensions/subagent/index.ts",
+      "context": "subagent local agent discovery implementation",
+      "intent": "definition",
+      "expand_related": true
+    },
+    "targets": [{ "path": "packages/coding-agent/examples/extensions/subagent/agents.ts", "startLine": 128, "endLine": 147 }],
+    "alternatives": [],
+    "requiredRoots": [
+      "packages/coding-agent/examples/extensions/subagent/index.ts",
+      "packages/coding-agent/examples/extensions/subagent/agents.ts"
+    ]
+  },
+  {
+    "id": "ext-negative-05",
+    "project": "pi",
+    "split": "holdout",
+    "task": "Determine whether PiCorpusBenchmarkAbsent_7e3c9a1d occurs in the example extensions.",
+    "params": {
+      "query": "PiCorpusBenchmarkAbsent_7e3c9a1d",
+      "literal": true,
+      "case_sensitive": true,
+      "path": "packages/coding-agent/examples/extensions",
+      "intent": "auto"
+    },
+    "targets": [],
+    "alternatives": [],
+    "requiredRoots": ["packages/coding-agent/examples/extensions"]
+  }
+]
