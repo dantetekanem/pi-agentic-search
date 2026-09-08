@@ -42,7 +42,7 @@ Parameters:
 - `max_matches_per_file`: maximum snippets per file. Defaults to 10 and accepts up to 10.
 - `expand_related`: includes related Ruby and Rails mixins, JavaScript and TypeScript imports, the owning package, and resolvable imported packages.
 - `literal`: treats `query` as literal text instead of a regular expression.
-- `case_sensitive`: `true` forces case-sensitive matching; `false` forces case-insensitive matching. Omit it for ripgrep's smart-case behavior.
+- `case_sensitive`: `true` forces case-sensitive matching. `false` or omission uses ripgrep's smart-case behavior.
 
 After the search, read the `TARGET FILE`. Use other candidates only when that file does not contain the requested context.
 

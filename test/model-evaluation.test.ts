@@ -8,6 +8,7 @@ import { PublicTools, projectResult } from "./evaluation/model-tools.ts";
 import { runSearch } from "../src/extension.ts";
 import { ModelClient, loadSdk, parseAction, type ProbeRuntime } from "./evaluation/model-client.ts";
 import { navigate } from "./evaluation/model-run.ts";
+import { measure } from "./evaluation/worker.ts";
 import type { EvaluationCase } from "./evaluation/core.ts";
 import test from "node:test";
 import { maximumReservation, usageDebit, SpendLedger, type PriceModel } from "./evaluation/model-budget.ts";
@@ -70,10 +71,10 @@ test("restart keeps unknown charges, disallows later refunds and checks the fixe
   await assert.rejects(SpendLedger.open(path, "b".repeat(64)), /configuration/);
 }));
 
-async function publicFixture(path: string) {
+async function publicFixture(path: string, content = "export const needle = 1;\nneedle;\n") {
   const root = join(dirname(path), "source");
   await mkdir(root);
-  await writeFile(join(root, "target.ts"), "export const needle = 1;\nneedle;\n");
+  await writeFile(join(root, "target.ts"), content);
   await writeFile(join(root, "AGENTS.md"), "ambient instruction sentinel needle\n");
   const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: root, encoding: "utf8" });
   git("init", "-q"); git("remote", "add", "origin", "https://github.com/fixture/public");
@@ -90,10 +91,19 @@ test("public tools read committed blobs and deny ambient instructions and escapi
   for (const name of ["../private.ts", "AGENTS.md", "/etc/passwd"]) assert.throws(() => tools.read(name, 1));
 }));
 
-test("raw probe respects an explicit case-insensitive query", () => temporary(async path => {
-  const tools = new PublicTools(await publicFixture(path));
-  const output = await tools.search({ query: "NEEDLE", path: "target.ts", case_sensitive: false }, "raw-rg");
-  assert.match(output.text, /target\.ts:1:export const needle/);
+test("raw and full measurements preserve smart-case when case_sensitive is false", () => temporary(async path => {
+  const source = await publicFixture(path, "export const NEEDLE = 1;\nexport const needle = 2;\n");
+  const scenario: EvaluationCase = {
+    id: "case-contract", project: "fixture", split: "development", task: "Find the uppercase NEEDLE declaration.",
+    params: { query: "NEEDLE", path: "target.ts", case_sensitive: false },
+    targets: [{ path: "target.ts", startLine: 1, endLine: 1 }], alternatives: [], requiredRoots: ["target.ts"],
+  };
+  for (const mode of ["raw-rg", "full"] as const) {
+    const { observation } = await measure(source.root, source.pin, scenario, mode, 1);
+    assert.deepEqual(observation.matchedLineCounts, { "target.ts": 1 }, mode);
+    assert.deepEqual(observation.oracleLineCounts, { "target.ts": 1 }, mode);
+    assert.deepEqual(observation.returned, [{ path: "target.ts", line: 1 }], mode);
+  }
 }));
 
 test("projection preserves ranked snippets while removing non-public paths and opaque diagnostics", () => temporary(async path => {

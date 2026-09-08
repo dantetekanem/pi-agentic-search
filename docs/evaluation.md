@@ -146,4 +146,6 @@ A new live experiment requires separate spending approval and configured credent
 | [Zod model probe](benchmarks/model-zod.json) | `f618d02ec538d4f1465e8001f3e981c60eed14d1` |
 | [Rails model probe](benchmarks/model-rails.json) | `6ba49e347325b1a52b0e24625eb6ee910af49ca7` |
 
+Final acceptance corrected a test-side case-handling mistake introduced with the model harness: the raw helper briefly treated `case_sensitive: false` as forced case-insensitive matching. The public tool has always used smart-case for false or omission, and the helper now matches that contract. None of the 15 frozen cases or model searches used false; their results remain unchanged. The historical reports and runner hashes are preserved.
+
 Report commits follow their measured source commits. The JSON files contain runtime, runner and dataset hashes. Ablation and model reports also record a configuration hash; the initial real baseline predates that field. Model reports identify the SDK adapter. Evaluation file-set hashes use sorted path, NUL, then content. All model conditions share configuration `2cfae70aa876909a44f232e2ff1576dd74015192631554f2417ac8a64d365f31`. Preserve the original synthetic, execution and real baseline artifacts when measuring another revision.

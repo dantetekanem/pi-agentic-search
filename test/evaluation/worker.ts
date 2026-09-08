@@ -39,7 +39,7 @@ export function nativeSearch(source: PinnedSource, scenario: EvaluationCase, roo
     cwd = resolve(source.root, file ? dirname(path) : path);
     roots = [file ? basename(path) : "."];
   }
-  const caseFlag = scenario.params.case_sensitive === undefined ? "--smart-case" : scenario.params.case_sensitive ? "--case-sensitive" : "--ignore-case";
+  const caseFlag = scenario.params.case_sensitive ? "--case-sensitive" : "--smart-case";
   const args = ["--no-config", "--json", "--sort=path", "--hidden", caseFlag];
   if (scenario.params.literal) args.push("--fixed-strings");
   if (packageSearch) args.push("--no-ignore");
