@@ -9,11 +9,12 @@ export const RESOLUTION_LIMITS = {
   nodes: 200, edges: 500, relatedFiles: 50, rubyFiles: 25,
   sourceBytes: 256 * 1024, textBytes: 8 * 1024 * 1024,
   reads: 500, probes: 10_000, diagnostics: 128, autoloadRoots: 16, namespaceDepth: 64,
+  compilerRounds: 64, compilerPasses: 2_000,
 };
 
 export class ProjectFiles {
   readonly skipped: string[] = [];
-  readonly stats = { sourceReads: 0, bytesRead: 0, inventories: 0, omittedDiagnostics: 0, omittedFileCandidates: 0 };
+  readonly stats = { sourceReads: 0, bytesRead: 0, inventories: 0, compilerPasses: 0, omittedDiagnostics: 0, omittedFileCandidates: 0 };
   private readonly paths = new Map<string, Promise<string>>();
   private readonly metadata = new Map<string, Promise<Stats | undefined>>();
   private readonly texts = new Map<string, Promise<string | undefined>>();

@@ -5,7 +5,7 @@ import { SearchRequest } from "./retrieval.ts";
 import { JavascriptResolver } from "./resolvers/javascript.ts";
 import { RubyResolver } from "./resolvers/ruby.ts";
 import { normalizeRepoRelativePath } from "./shared.ts";
-import type { RelatedExpansionDetails, RelatedResolvedReference } from "./types.ts";
+import type { RelatedExpansionDetails, RelatedResolvedReference, SearchIntent } from "./types.ts";
 export type { RelatedExpansionDetails, RelatedResolvedReference, RelatedPackageRoot } from "./types.ts";
 
 type Language = "ruby" | "javascript";
@@ -22,7 +22,7 @@ export function relatedReferencesForPath(related: RelatedExpansionDetails | unde
   }) ?? [];
 }
 
-async function traverse(files: ProjectFiles, roots: string[], only?: Language): Promise<RelatedExpansionDetails> {
+async function traverse(files: ProjectFiles, roots: string[], only?: Language, intent?: SearchIntent): Promise<RelatedExpansionDetails> {
   const details: RelatedExpansionDetails = { enabled: true, label: "related", roots: [], packageRoots: [], resolved: [], unresolved: [], skipped: files.skipped };
   const queue: string[] = [];
   const explicitFiles = new Set<string>();
@@ -31,7 +31,7 @@ async function traverse(files: ProjectFiles, roots: string[], only?: Language): 
   const packages = new Set<string>();
   const languages = new Set<Language>();
   const ruby = new RubyResolver(files);
-  const javascript = new JavascriptResolver(files);
+  const javascript = new JavascriptResolver(files, { intent });
   let examinedEdges = 0;
   let omittedEdges = 0;
   let rubyFiles = 0;
@@ -106,14 +106,14 @@ async function traverse(files: ProjectFiles, roots: string[], only?: Language): 
   return details;
 }
 
-async function expand(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, only?: Language): Promise<RelatedExpansionDetails> {
+async function expand(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, only?: Language, intent?: SearchIntent): Promise<RelatedExpansionDetails> {
   const request = files?.request ?? new SearchRequest(signal);
-  try { return await traverse(files ?? new ProjectFiles(cwd, request), roots, only); }
+  try { return await traverse(files ?? new ProjectFiles(cwd, request), roots, only, intent); }
   finally { if (!files) request.dispose(); }
 }
 
-export async function expandRelatedFiles(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles): Promise<RelatedExpansionDetails | undefined> {
-  const details = await expand(cwd, roots, signal, files);
+export async function expandRelatedFiles(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, intent?: SearchIntent): Promise<RelatedExpansionDetails | undefined> {
+  const details = await expand(cwd, roots, signal, files, undefined, intent);
   return details.resolved.length || details.unresolved.length || details.skipped?.length ? details : undefined;
 }
 export function expandRubyMixins(cwd: string, roots: string[], signal?: AbortSignal): Promise<RelatedExpansionDetails> {
