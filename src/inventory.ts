@@ -9,7 +9,7 @@ export const RESOLUTION_LIMITS = {
   nodes: 200, edges: 500, relatedFiles: 50, rubyFiles: 25,
   sourceBytes: 256 * 1024, textBytes: 8 * 1024 * 1024,
   reads: 500, probes: 10_000, diagnostics: 128, autoloadRoots: 16, namespaceDepth: 64,
-  compilerRounds: 64, compilerPasses: 2_000,
+  compilerRounds: 64, compilerPasses: 2_000, symbolBindings: 32, symbolSearches: 200,
 };
 
 export class ProjectFiles {

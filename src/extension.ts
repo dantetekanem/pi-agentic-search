@@ -97,7 +97,8 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
   const intent = params.intent ?? "auto";
   const files = new ProjectFiles(cwd, request);
   const scope = await resolveSearchScope(cwd, params.path, files);
-  const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal, files, intent) : undefined;
+  const querySymbol = /^[$_\p{ID_Start}][$\p{ID_Continue}\u200c\u200d]*$/u.test(params.query) && (params.literal || !params.query.includes("$")) ? params.query : undefined;
+  const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal, files, intent, querySymbol) : undefined;
   const searchRoots = uniqueValues([...scope.roots, ...(related?.roots ?? [])]);
   let literal = params.literal ?? false;
   let literalFallback = false;
@@ -142,6 +143,7 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
   const reasons = uniqueValues([
     ...request.inventoryReasons, ...contentRuns.flatMap((run) => run.reason ?? run.error ?? []),
     ...(related?.unresolved.map((item) => `unresolved ${item.name} from ${item.from}`) ?? []),
+    ...(related?.symbolSearches?.filter((item) => item.symbol !== params.query).map((item) => `unsearched alias symbol ${item.symbol} in ${item.path}`) ?? []),
     ...omittedPackages.map((pkg) => `unsearched imported package ${pkg.path}`), ...(related?.skipped ?? []),
   ]);
   const completedRoots = uniqueValues(contentRuns.filter((run) => run.status === "complete").flatMap((run) => run.roots));

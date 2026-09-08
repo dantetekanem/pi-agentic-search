@@ -1,6 +1,7 @@
 import { createRequire, isBuiltin } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDeclarationFile, ProjectCompiler } from "./compiler.ts";
+import { inspectJavascript } from "./javascript-symbols.ts";
 import { ProjectFiles } from "../inventory.ts";
 import { uniqueValues } from "../shared.ts";
 import type { RelatedResolvedReference, RelationshipReference, SearchIntent } from "../types.ts";
@@ -17,20 +18,12 @@ export class JavascriptResolver {
     this.compiler = new ProjectCompiler(files);
   }
 
-  references(source: string): RelationshipReference[] {
-    const specifiers: string[] = [];
-    const patterns = [
-      /\bimport\s+(?:type\s+)?(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g,
-      /\bexport\s+(?:type\s+)?[^"']*?\s+from\s+["']([^"']+)["']/g,
-      /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-    ];
-    for (const pattern of patterns) {
-      for (const match of source.matchAll(pattern)) {
-        const specifier = match[1]?.trim();
-        if (specifier && !isBuiltin(specifier)) specifiers.push(specifier);
-      }
+  async inspect(source: string, from: string, symbols: string[] = []) {
+    try { return await inspectJavascript(source, from, symbols, this.files); }
+    catch {
+      this.files.skip(`JavaScript syntax discovery failed at ${this.files.display(from)}`);
+      return { references: [], localSymbols: [] };
     }
-    return uniqueValues(specifiers).map((name) => ({ name, relationship: "imported by" }));
   }
 
   private async findPackageRoot(entry: string, name: string): Promise<string | undefined> {
@@ -105,14 +98,17 @@ export class JavascriptResolver {
     return;
   }
   async resolve(from: string, reference: RelationshipReference): Promise<RelatedResolvedReference[]> {
+    if (reference.dynamic) { this.files.skip(`unresolved ${reference.name} from ${this.files.display(from)}`); return []; }
     if (isBuiltin(reference.name) || !this.files.alive()) return [];
-    const resolution = await this.compiler.resolve(from, reference.name);
+    const resolution = await this.compiler.resolve(from, reference.name, reference.resolutionMode);
     if (!resolution || !this.files.alive()) return [];
     const { api, implementation } = resolution;
     const selected = this.options.intent === "definition" ? api ?? implementation : implementation ?? api;
     const name = packageName(reference.name);
     if (!selected) {
-      if (!resolution.configPath && name && !await this.projectPackage(from, name)) return this.resolvePackage(from, reference.name);
+      if (!resolution.configPath && name && !await this.projectPackage(from, name)) {
+        return (await this.resolvePackage(from, reference.name)).map((target) => ({ ...target, symbols: reference.symbols, bindings: reference.bindings }));
+      }
       return [];
     }
     const entry = await this.files.canonical(selected.resolvedFileName);
@@ -127,7 +123,7 @@ export class JavascriptResolver {
     if (typeof projectVersion === "string" && projectVersion !== resolution.compilerVersion) {
       this.files.skip(`project TypeScript ${projectVersion} differs from trusted resolver ${resolution.compilerVersion}`);
     }
-    return [{ ...target, entryPath: this.files.display(entry),
+    return [{ ...target, entryPath: this.files.display(entry), symbols: reference.symbols, bindings: reference.bindings,
       declarationPath: api && isDeclarationFile(api.resolvedFileName) ? this.files.display(await this.files.canonical(api.resolvedFileName)) : undefined,
       implementationPath: implementation ? this.files.display(await this.files.canonical(implementation.resolvedFileName)) : undefined,
       compilerVersion: resolution.compilerVersion, projectCompilerVersion: typeof projectVersion === "string" ? projectVersion : undefined,

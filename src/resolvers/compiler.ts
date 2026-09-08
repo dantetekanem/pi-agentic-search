@@ -54,7 +54,7 @@ export class ProjectCompiler {
     return { options: parsed.options, path: parsed.path, caches: new Map() };
   }
 
-  async resolve(from: string, specifier: string): Promise<CompilerResolution | undefined> {
+  async resolve(from: string, specifier: string, requestedMode?: "import" | "require"): Promise<CompilerResolution | undefined> {
     if (!this.files.alive()) return;
     // Resolve the extension's installed dependency, never require a compiler or
     // plugin from the searched repository. Project configuration remains data.
@@ -63,8 +63,9 @@ export class ProjectCompiler {
     if (!configuration || !this.files.alive()) return;
     return this.host.run(() => {
       const { options, caches } = configuration;
-      const mode = ts.getImpliedNodeFormatForFile(from, undefined, this.host.api, options)
-        ?? (options.module === ts.ModuleKind.CommonJS ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext);
+      const mode = requestedMode === "require" ? ts.ModuleKind.CommonJS : requestedMode === "import" ? ts.ModuleKind.ESNext
+        : ts.getImpliedNodeFormatForFile(from, undefined, this.host.api, options)
+          ?? (options.module === ts.ModuleKind.CommonJS ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext);
       const resolveSurface = (surface: "api" | "implementation") => {
         let cache = caches.get(surface);
         if (!cache) {
