@@ -10,6 +10,9 @@ import { measure, type Mode } from "./evaluation/worker.ts";
 import { loadCases, measureFresh } from "./evaluation/run.ts";
 import { assertComparisons, parseModes } from "./evaluation/variants.ts";
 import { runSearch } from "../src/extension.ts";
+import { SearchRequest } from "../src/retrieval.ts";
+import { ProjectFiles } from "../src/inventory.ts";
+import { SearchExecutor } from "../src/execution.ts";
 
 const scenario: EvaluationCase = {
   id: "example", project: "fixture", split: "development", task: "Locate needle's definition.",
@@ -243,4 +246,54 @@ test("guidance ablation preserves retrieval and ranking while reducing emitted i
   assert.equal(unguided.details.coverage.status, "partial");
   assert.deepEqual(unguided.details.files, interrupted.details.files);
   assert.ok(Buffer.byteLength(unguided.content[0]!.text) < Buffer.byteLength(interrupted.content[0]!.text));
+}));
+
+test("synthetic Unicode aliases retain the implementation and declaration evidence", () => repository({
+  "main.ts": "import { mañana as acción } from './mañana.ts';\nacción();\n",
+  "mañana.ts": "export function mañana() {}\n",
+}, async (root, pin) => {
+  const item: EvaluationCase = { ...scenario, id: "synthetic-unicode", params: { query: "acción", literal: true, path: "main.ts", intent: "definition", expand_related: true },
+    targets: [{ path: "mañana.ts", startLine: 1, endLine: 1 }], requiredRoots: ["main.ts", "mañana.ts"] };
+  const measured = await measure(root, pin, item, "full", 1);
+  assert.equal(measured.metrics.top1, 1);
+  assert.equal(measured.metrics.correctFirstSpan, true);
+  assert.deepEqual(measured.observation.matchedLineCounts, measured.observation.oracleLineCounts);
+  assert.equal(measured.observation.totalMatches, 3);
+  const result = await runSearch(item.params, root);
+  assert.equal(result.details.files[0]?.evidence?.definitionCount, 1);
+  assert.equal(result.details.files[0]?.topMatch?.marker, "def");
+}));
+
+test("synthetic generated candidates, callers and negatives keep their distinct contracts", () => repository({
+  "src/helper.ts": "export function needle() {}\n", "generated/needle.bundle.ts": "export function needle() {}\n", "src/caller.ts": "needle();\n",
+}, async (root, pin) => {
+  const definition: EvaluationCase = { ...scenario, id: "synthetic-generated", params: { query: "needle", literal: true, path: ".", intent: "definition" },
+    targets: [{ path: "src/helper.ts", startLine: 1, endLine: 1 }] };
+  const ranked = await measure(root, pin, definition, "full", 1);
+  assert.equal(ranked.metrics.top1, 1);
+  assert.ok(ranked.observation.candidates.includes("generated/needle.bundle.ts"));
+  const references: EvaluationCase = { ...definition, params: { ...definition.params, intent: "references" }, targets: [{ path: "src/caller.ts", startLine: 1, endLine: 1 }] };
+  assert.equal((await measure(root, pin, references, "full", 1)).metrics.correctFirstSpan, true);
+  const negative = { ...definition, params: { query: "SyntheticCorpusAbsent_ñ_42", literal: true, path: "." }, targets: [] };
+  assert.equal((await measure(root, pin, negative, "full", 1)).metrics.validMiss, true);
+}));
+
+test("synthetic overlapping scopes and duplicate imports preserve native matching-line counts", () => repository({
+  "src/main.ts": "import { needle } from './impl.ts';\nexport { needle } from './impl.ts';\nneedle();\n",
+  "src/impl.ts": "export function needle() {}\nneedle();\n",
+}, async (root, pin) => {
+  const item: EvaluationCase = { ...scenario, id: "synthetic-overlap", params: { query: "needle", literal: true, path: "src", intent: "definition" },
+    targets: [{ path: "src/impl.ts", startLine: 1, endLine: 1 }], requiredRoots: ["src/main.ts", "src/impl.ts"] };
+  const oracle = (await measure(root, pin, item, "raw-rg", 1)).observation;
+  const expanded = await measure(root, pin, { ...item, params: { ...item.params, path: "src/main.ts", expand_related: true } }, "full", 1);
+  assert.equal(expanded.observation.totalMatches, oracle.totalMatches);
+  assert.deepEqual(expanded.observation.matchedLineCounts, oracle.oracleLineCounts);
+  const request = new SearchRequest();
+  try {
+    const executor = new SearchExecutor(new ProjectFiles(root, request), "needle", true);
+    await executor.searchRoots(["src", "src/impl.ts", "src"], "target");
+    await executor.searchRoot("src/impl.ts", "related");
+    assert.equal(request.totalMatches, oracle.totalMatches);
+    assert.deepEqual(Object.fromEntries([...request.files].map(([path, summary]) => [path, summary.matchCount])), oracle.oracleLineCounts);
+  } finally { request.dispose(); }
 }));
