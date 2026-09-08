@@ -1,0 +1,2554 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "c733d3650f4cfc495e967ee4969c90ef6225ef23",
+  "runtimeDirty": false,
+  "runtimeHash": "420ba37372490fe0c52520572cfbf30ffc66143ad84c8acade2ca89ce4b4768b",
+  "datasetHash": "9e629b4b15fb997918f387e9d8a62a483410c285d340c0bc97881f5d26cbfe84",
+  "environment": {
+    "node": "v26.3.1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "ripgrep": "ripgrep 15.1.0"
+  },
+  "methodology": {
+    "warmups": 1,
+    "samples": 15,
+    "traversal": "--sort=path through isolated RIPGREP_CONFIG_PATH; test control, not production configuration",
+    "processCounting": "Node child_process spawn/execFile proxies, no subprocess wrapper",
+    "timing": "in-process tool execution on warm filesystem, includes ranking/rendering, excludes fixture creation and oracle"
+  },
+  "unavailable": [
+    "candidate relevance recall before output slicing",
+    "cold-cache latency",
+    "retained/peak memory",
+    "tokenizer-specific emitted tokens",
+    "model effort and task success",
+    "held-out real-project accuracy"
+  ],
+  "byIntent": {
+    "definition": {
+      "cases": 4,
+      "top1": 1,
+      "mrr": 1
+    },
+    "file": {
+      "cases": 6,
+      "top1": 1,
+      "mrr": 1
+    },
+    "auto": {
+      "cases": 1,
+      "top1": 1,
+      "mrr": 1
+    },
+    "references": {
+      "cases": 2,
+      "top1": 1,
+      "mrr": 1
+    },
+    "tests": {
+      "cases": 1,
+      "top1": 1,
+      "mrr": 1
+    }
+  },
+  "results": [
+    {
+      "id": "navigation-anchor-definition",
+      "intent": "definition",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/main.ts",
+        "expand_related": true,
+        "intent": "definition"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/impl.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/main.ts",
+        "src/impl.ts"
+      ],
+      "fixtureHash": "7b6f4b804b350f21fe0545e982285de30a0e8203f8c8c32922fd6ccebe73e43a",
+      "fixtureFiles": 2,
+      "oracle": {
+        "matchingLines": 3,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 3,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/impl.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/main.ts",
+            "matchCount": 2
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src/main.ts",
+            "src/impl.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src/main.ts",
+            "src/impl.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src/main.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            },
+            {
+              "roots": [
+                "src/impl.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "related"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 3,
+          "omittedMatches": 0,
+          "retainedBytes": 499,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 7.276166999999987,
+        "p95": 9.207708000000025
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 995
+    },
+    {
+      "id": "navigation-anchor-file",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/main.ts",
+        "expand_related": true,
+        "intent": "file"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/main.ts",
+          "line": 2
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/main.ts",
+        "src/impl.ts"
+      ],
+      "fixtureHash": "7b6f4b804b350f21fe0545e982285de30a0e8203f8c8c32922fd6ccebe73e43a",
+      "fixtureFiles": 2,
+      "oracle": {
+        "matchingLines": 3,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 3,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/main.ts",
+            "matchCount": 2
+          },
+          {
+            "path": "src/impl.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src/main.ts",
+            "src/impl.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src/main.ts",
+            "src/impl.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src/main.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            },
+            {
+              "roots": [
+                "src/impl.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "related"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 3,
+          "omittedMatches": 0,
+          "retainedBytes": 499,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 6.774042000000009,
+        "p95": 6.972667000000001
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 944
+    },
+    {
+      "id": "navigation-anchor-auto",
+      "intent": "auto",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/main.ts",
+        "expand_related": true,
+        "intent": "auto"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/main.ts",
+          "line": 2
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/main.ts",
+        "src/impl.ts"
+      ],
+      "fixtureHash": "7b6f4b804b350f21fe0545e982285de30a0e8203f8c8c32922fd6ccebe73e43a",
+      "fixtureFiles": 2,
+      "oracle": {
+        "matchingLines": 3,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 3,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/main.ts",
+            "matchCount": 2
+          },
+          {
+            "path": "src/impl.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src/main.ts",
+            "src/impl.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src/main.ts",
+            "src/impl.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src/main.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            },
+            {
+              "roots": [
+                "src/impl.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "related"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 3,
+          "omittedMatches": 0,
+          "retainedBytes": 499,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 6.745042000000012,
+        "p95": 7.560375000000022
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 944
+    },
+    {
+      "id": "requested-references",
+      "intent": "references",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "intent": "references",
+        "path": "src"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/caller.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src"
+      ],
+      "fixtureHash": "58afdf02dac459e866ba10308d6061bbe0b84a90916ed29c172546295f8aad78",
+      "fixtureFiles": 3,
+      "oracle": {
+        "matchingLines": 2,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 2,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/caller.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/needle.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 2,
+          "omittedMatches": 0,
+          "retainedBytes": 318,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.7927920000000768,
+        "p95": 3.2902500000000146
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 743
+    },
+    {
+      "id": "requested-tests",
+      "intent": "tests",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "intent": "tests"
+      },
+      "relevantTargets": [
+        {
+          "path": "test/needle.test.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "."
+      ],
+      "fixtureHash": "58afdf02dac459e866ba10308d6061bbe0b84a90916ed29c172546295f8aad78",
+      "fixtureFiles": 3,
+      "oracle": {
+        "matchingLines": 3,
+        "matchingFiles": 3
+      },
+      "observed": {
+        "matchingLines": 3,
+        "matchingFiles": 3,
+        "files": [
+          {
+            "path": "test/needle.test.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/needle.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/caller.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "."
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "."
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 3,
+          "omittedMatches": 0,
+          "retainedBytes": 555,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.886500000000069,
+        "p95": 3.332499999999982
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 982
+    },
+    {
+      "id": "context-surrounding-block",
+      "intent": "definition",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "intent": "definition",
+        "context": "sale"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/z.ts",
+          "line": 2
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "."
+      ],
+      "fixtureHash": "06ec25f4a33c9e69be02827a6f49ea9a8bd6d39be237337892a38394143c953f",
+      "fixtureFiles": 2,
+      "oracle": {
+        "matchingLines": 2,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 2,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/z.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/a.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "."
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "."
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 2,
+          "omittedMatches": 0,
+          "retainedBytes": 328,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          },
+          "contextRanking": {
+            "fileLimit": 8,
+            "readByteLimit": 65536,
+            "blockByteLimit": 512,
+            "enrichedCandidates": 2,
+            "unexaminedCandidates": 0
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 3.0136670000001686,
+        "p95": 3.4355000000000473
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 895
+    },
+    {
+      "id": "late-definition",
+      "intent": "definition",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "max_files": 10,
+        "intent": "definition"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/zzz-needle.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "."
+      ],
+      "fixtureHash": "f7fd6c7e7e7179326be2e36d72a0191719671fe35d2ae1c509a6a28129060793",
+      "fixtureFiles": 206,
+      "oracle": {
+        "matchingLines": 207,
+        "matchingFiles": 206
+      },
+      "observed": {
+        "matchingLines": 207,
+        "matchingFiles": 206,
+        "files": [
+          {
+            "path": "src/zzz-needle.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/200.ts",
+            "matchCount": 2
+          },
+          {
+            "path": "src/001.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/002.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/003.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/004.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/005.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/006.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/007.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/008.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "."
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "."
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 207,
+          "omittedMatches": 0,
+          "retainedBytes": 30272,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true,
+        "matchCount:src/200.ts": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.752500000000055,
+        "p95": 7.980874999999969
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 2207
+    },
+    {
+      "id": "ambiguous-filenames-limit-1",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "widget.ts",
+        "max_files": 1
+      },
+      "relevantTargets": [
+        {
+          "path": "widgets/6/widget.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "widgets/1/widget.ts",
+        "widgets/2/widget.ts",
+        "widgets/3/widget.ts",
+        "widgets/4/widget.ts",
+        "widgets/5/widget.ts",
+        "widgets/6/widget.ts"
+      ],
+      "fixtureHash": "bcfbd12b4b1542a01fa63383684351cee61b72c1e75d03cbbded448f9a558d79",
+      "fixtureFiles": 6,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "widgets/6/widget.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "kind": "inventory"
+            },
+            {
+              "roots": [
+                "widgets/1/widget.ts",
+                "widgets/2/widget.ts",
+                "widgets/3/widget.ts",
+                "widgets/4/widget.ts",
+                "widgets/5/widget.ts",
+                "widgets/6/widget.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 1,
+          "omittedMatches": 0,
+          "retainedBytes": 172,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.6440000000000055,
+        "p95": 7.4680419999999685
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 734
+    },
+    {
+      "id": "ambiguous-filenames-limit-5",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "widget.ts",
+        "max_files": 5
+      },
+      "relevantTargets": [
+        {
+          "path": "widgets/6/widget.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "widgets/1/widget.ts",
+        "widgets/2/widget.ts",
+        "widgets/3/widget.ts",
+        "widgets/4/widget.ts",
+        "widgets/5/widget.ts",
+        "widgets/6/widget.ts"
+      ],
+      "fixtureHash": "bcfbd12b4b1542a01fa63383684351cee61b72c1e75d03cbbded448f9a558d79",
+      "fixtureFiles": 6,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "widgets/6/widget.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "kind": "inventory"
+            },
+            {
+              "roots": [
+                "widgets/1/widget.ts",
+                "widgets/2/widget.ts",
+                "widgets/3/widget.ts",
+                "widgets/4/widget.ts",
+                "widgets/5/widget.ts",
+                "widgets/6/widget.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 1,
+          "omittedMatches": 0,
+          "retainedBytes": 172,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.1896670000000995,
+        "p95": 5.983042000000069
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 734
+    },
+    {
+      "id": "ambiguous-filenames-limit-10",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "widget.ts",
+        "max_files": 10
+      },
+      "relevantTargets": [
+        {
+          "path": "widgets/6/widget.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "widgets/1/widget.ts",
+        "widgets/2/widget.ts",
+        "widgets/3/widget.ts",
+        "widgets/4/widget.ts",
+        "widgets/5/widget.ts",
+        "widgets/6/widget.ts"
+      ],
+      "fixtureHash": "bcfbd12b4b1542a01fa63383684351cee61b72c1e75d03cbbded448f9a558d79",
+      "fixtureFiles": 6,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "widgets/6/widget.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "widgets/1/widget.ts",
+            "widgets/2/widget.ts",
+            "widgets/3/widget.ts",
+            "widgets/4/widget.ts",
+            "widgets/5/widget.ts",
+            "widgets/6/widget.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "kind": "inventory"
+            },
+            {
+              "roots": [
+                "widgets/1/widget.ts",
+                "widgets/2/widget.ts",
+                "widgets/3/widget.ts",
+                "widgets/4/widget.ts",
+                "widgets/5/widget.ts",
+                "widgets/6/widget.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 1,
+          "omittedMatches": 0,
+          "retainedBytes": 172,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.207708000000139,
+        "p95": 5.828457999999955
+      },
+      "processCounts": {
+        "min": 2,
+        "max": 2
+      },
+      "repositoryListings": {
+        "min": 1,
+        "max": 1
+      },
+      "emittedBytes": 734
+    },
+    {
+      "id": "rg-inline-flag",
+      "intent": "references",
+      "query": "(?i)needle",
+      "params": {
+        "query": "(?i)needle",
+        "path": "src/case.ts"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/case.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/case.ts"
+      ],
+      "fixtureHash": "8f4cf8ca8d922f9ba8f6d748a7aaf2a54b4ef4b043ecd7897548ba6d86da8113",
+      "fixtureFiles": 1,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "src/case.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src/case.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src/case.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src/case.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 1,
+          "omittedMatches": 0,
+          "retainedBytes": 144,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.4208329999999023,
+        "p95": 2.638541999999916
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 535
+    },
+    {
+      "id": "caller-versus-definition",
+      "intent": "definition",
+      "query": "resolveNeedle",
+      "params": {
+        "query": "resolveNeedle",
+        "intent": "definition"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/definition.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "."
+      ],
+      "fixtureHash": "70ec4e41d353b79594752c84815dc55e86b08f96a3df4747df9d8f1ff0560ca0",
+      "fixtureFiles": 2,
+      "oracle": {
+        "matchingLines": 2,
+        "matchingFiles": 2
+      },
+      "observed": {
+        "matchingLines": 2,
+        "matchingFiles": 2,
+        "files": [
+          {
+            "path": "src/definition.ts",
+            "matchCount": 1
+          },
+          {
+            "path": "src/caller.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "."
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "."
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "."
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 2,
+          "omittedMatches": 0,
+          "retainedBytes": 367,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.4999579999998787,
+        "p95": 2.9707919999998467
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 785
+    },
+    {
+      "id": "exact-file-0-unrelated",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/target.ts"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/target.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/target.ts"
+      ],
+      "fixtureHash": "080bc48640033ce4922efb72665b1a78ca64e5fee254739c0c86aa712d54f3bb",
+      "fixtureFiles": 1,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "src/target.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src/target.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src/target.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src/target.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 1,
+          "omittedMatches": 0,
+          "retainedBytes": 166,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true,
+        "processBudget": true,
+        "listingBudget": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.4709159999999883,
+        "p95": 2.988375000000133
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 567
+    },
+    {
+      "id": "exact-file-7999-unrelated",
+      "intent": "file",
+      "query": "needle",
+      "params": {
+        "query": "needle",
+        "path": "src/target.ts"
+      },
+      "relevantTargets": [
+        {
+          "path": "src/target.ts",
+          "line": 1
+        }
+      ],
+      "validAlternativeTargets": [],
+      "requiredRoots": [
+        "src/target.ts"
+      ],
+      "fixtureHash": "254ad17aa1f0ead2fe93047f9ddfff69f4fb6f0f918c3ac25275370869d81a39",
+      "fixtureFiles": 8000,
+      "oracle": {
+        "matchingLines": 1,
+        "matchingFiles": 1
+      },
+      "observed": {
+        "matchingLines": 1,
+        "matchingFiles": 1,
+        "files": [
+          {
+            "path": "src/target.ts",
+            "matchCount": 1
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "roots": [
+            "src/target.ts"
+          ],
+          "packageRoots": [],
+          "omittedPackageRoots": 0,
+          "omittedRelatedCandidates": 0,
+          "packagePolicy": {
+            "excludes": [
+              "!.git/**",
+              "!**/.git/**",
+              "!node_modules/**",
+              "!**/node_modules/**",
+              "!coverage/**",
+              "!**/coverage/**",
+              "!*.map",
+              "!**/*.map",
+              "!*.min.*",
+              "!**/*.min.*",
+              "!*.lock",
+              "!**/*.lock",
+              "!package-lock.json",
+              "!**/package-lock.json",
+              "!pnpm-lock.yaml",
+              "!**/pnpm-lock.yaml",
+              "!yarn.lock",
+              "!**/yarn.lock"
+            ],
+            "respectsIgnoreFiles": false
+          },
+          "completedRoots": [
+            "src/target.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [],
+          "runs": [
+            {
+              "roots": [
+                "src/target.ts"
+              ],
+              "status": "complete",
+              "exitCode": 0,
+              "signal": null,
+              "stage": "target"
+            }
+          ],
+          "excludes": [
+            "!.git/**",
+            "!**/.git/**",
+            "!node_modules/**",
+            "!**/node_modules/**",
+            "!vendor/**",
+            "!**/vendor/**",
+            "!dist/**",
+            "!**/dist/**",
+            "!build/**",
+            "!**/build/**",
+            "!coverage/**",
+            "!**/coverage/**",
+            "!tmp/**",
+            "!**/tmp/**",
+            "!log/**",
+            "!**/log/**",
+            "!.next/**",
+            "!**/.next/**",
+            "!.turbo/**",
+            "!**/.turbo/**",
+            "!target/**",
+            "!**/target/**",
+            "!*.lock",
+            "!**/*.lock",
+            "!package-lock.json",
+            "!**/package-lock.json",
+            "!pnpm-lock.yaml",
+            "!**/pnpm-lock.yaml",
+            "!yarn.lock",
+            "!**/yarn.lock"
+          ],
+          "respectsIgnoreFiles": true,
+          "retainedMatches": 1,
+          "omittedMatches": 0,
+          "retainedBytes": 166,
+          "truncatedMatches": 0,
+          "limits": {
+            "candidates": 10000,
+            "snippetsPerFile": 16,
+            "snippetBytes": 1024,
+            "retainedBytes": 8388608,
+            "eventBytes": 1048576
+          },
+          "executionLimits": {
+            "packageConcurrency": 3,
+            "packages": 20,
+            "rootBatch": 32,
+            "replayBytes": 8388608
+          }
+        },
+        "literalFallback": false
+      },
+      "metrics": {
+        "top1": 1,
+        "reciprocalRank": 1,
+        "recallAt5": 1,
+        "correctFirstSpan": true
+      },
+      "checks": {
+        "relevantFileFirst": true,
+        "relevantSpanFirst": true,
+        "allMatchingFilesRetrieved": true,
+        "allMatchingLinesCounted": true,
+        "requiredScopesSearched": true,
+        "effectiveRegexPreserved": true,
+        "processBudget": true,
+        "listingBudget": true
+      },
+      "passes": true,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.4433750000002874,
+        "p95": 2.786750000000211
+      },
+      "processCounts": {
+        "min": 1,
+        "max": 1
+      },
+      "repositoryListings": {
+        "min": 0,
+        "max": 0
+      },
+      "emittedBytes": 567
+    }
+  ]
+}

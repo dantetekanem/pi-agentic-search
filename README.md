@@ -145,7 +145,7 @@ The search reads the target first, follows relative imports and aliases, and che
 
 ## Performance
 
-Run the [committed benchmark](docs/benchmark.md) with `npm run benchmark`. Its original baseline records the reviewed implementation's failures, not the performance of the current code. The [ranking report](docs/benchmarks/ranking.json) passes all 14 synthetic runs and reports top-1 accuracy and MRR separately for each intent. These regression fixtures are development evidence, not a representative quality estimate. Record new runs to a different output file.
+Run the [committed benchmark](docs/benchmark.md) with `npm run benchmark`. Its original baseline records the reviewed implementation's failures, not the performance of the current code. The [ranking report](docs/benchmarks/ranking.json) passes all 14 synthetic runs and reports top-1 accuracy and MRR separately for each intent. The [execution report](docs/benchmarks/execution.json) also passes all 14 runs at 15 samples each; its exact-file cases use one process and zero listings with both zero and 7,999 unrelated files. These regression fixtures are development evidence, not a representative quality estimate. Record new runs to a different output file.
 
 Exact-file searches issue one rg process regardless of unrelated file count. Basename hints require a visible-path scan; broad content searches start without waiting for a repository listing. Counts and coverage remain independent of output limits.
 
