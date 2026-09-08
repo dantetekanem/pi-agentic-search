@@ -78,6 +78,7 @@ export interface FileSummary {
   referenceCount: number;
   matches: CodeMatch[];
   complete: boolean;
+  truncatedMatches?: number;
 }
 export interface RankedFileResult {
   path: string;
@@ -93,6 +94,7 @@ export interface SearchFileDetails extends Pick<RankedFileResult, "path" | "scor
   topMatch?: SearchTopMatch;
 }
 export interface SearchRun {
+  stage?: "target" | "related" | "alias" | "entry" | "owner" | "package";
   kind?: "content" | "inventory" | "validation";
   roots: string[];
   status: "complete" | "partial" | "failed";
@@ -120,6 +122,7 @@ export interface SearchCoverageDetails {
   retainedBytes: number;
   truncatedMatches: number;
   limits: { candidates: number; snippetsPerFile: number; snippetBytes: number; retainedBytes: number; eventBytes: number };
+  executionLimits?: { packageConcurrency: number; packages: number; rootBatch: number; replayBytes: number };
   contextRanking?: {
     fileLimit: number; readByteLimit: number; blockByteLimit: number;
     enrichedCandidates: number; unexaminedCandidates: number;

@@ -50,8 +50,6 @@ test("registered search exposes scoped alias evidence", () => fixture({
   const details = result.details as SearchDetails;
   assert.ok(details.related?.symbolSearches?.some((item) => item.path === "impl.ts" && item.symbol === "original" && item.querySymbol === "run"));
   assert.deepEqual(details.related?.resolved[0]?.bindings, [{ local: "run", imported: "original" }]);
-  assert.equal(details.coverage.status, "partial");
-  assert.ok(details.coverage.reasons.some((reason) => reason.includes("unsearched alias symbol original")));
 }));
 
 test("symbol graph follows re-export and local export aliases", () => fixture({

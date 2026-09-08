@@ -76,7 +76,7 @@ export async function inspectJavascript(source: string, from: string, wanted: st
   }))];
   for (const reference of references) {
     const bindings = reference.bindings ?? [];
-    const matching = bindings.filter((binding) => binding.local === "*" || localSymbols.includes(binding.local));
+    const matching = bindings.filter((binding) => binding.local === "*" || localSymbols.includes(binding.local) || localSymbols.includes(binding.imported));
     const symbols = [...new Set(matching.flatMap((binding) => binding.imported === "*" ? localSymbols : [binding.imported]))];
     reference.symbols = symbols.slice(0, files.limits.symbolBindings);
     reference.bindings = [...matching, ...bindings.filter((binding) => !matching.includes(binding))].slice(0, files.limits.symbolBindings);
