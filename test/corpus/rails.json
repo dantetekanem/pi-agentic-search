@@ -1,0 +1,86 @@
+[
+  {
+    "id": "rails-nav-scope-declaration",
+    "project": "rails",
+    "split": "development",
+    "task": "Locate Post's containing_the_letter_a named-scope declaration.",
+    "params": {
+      "query": "containing_the_letter_a",
+      "literal": true,
+      "path": "activerecord/test/models",
+      "context": "Post named scope declaration",
+      "intent": "definition"
+    },
+    "targets": [{ "path": "activerecord/test/models/post.rb", "startLine": 35, "endLine": 35 }],
+    "alternatives": [],
+    "requiredRoots": ["activerecord/test/models"]
+  },
+  {
+    "id": "rails-nav-scope-caller",
+    "project": "rails",
+    "split": "development",
+    "task": "Find the named-scoping tests that call containing_the_letter_a through Post, associations or STI.",
+    "params": {
+      "query": "containing_the_letter_a",
+      "literal": true,
+      "path": "activerecord/test/cases/scoping",
+      "context": "Post association and STI named scoping callers",
+      "intent": "references"
+    },
+    "targets": [
+      { "path": "activerecord/test/cases/scoping/named_scoping_test.rb", "startLine": 173, "endLine": 177 },
+      { "path": "activerecord/test/cases/scoping/named_scoping_test.rb", "startLine": 181, "endLine": 182 }
+    ],
+    "alternatives": [],
+    "requiredRoots": ["activerecord/test/cases/scoping"]
+  },
+  {
+    "id": "rails-nav-tests-lookup",
+    "project": "rails",
+    "split": "development",
+    "task": "Find the test that applies delete_all to Post.most_commented with group-by and having conditions.",
+    "params": {
+      "query": "Post.most_commented",
+      "literal": true,
+      "path": "activerecord/test/cases/relation",
+      "context": "delete_all group by having",
+      "intent": "tests"
+    },
+    "targets": [{ "path": "activerecord/test/cases/relation/delete_all_test.rb", "startLine": 68, "endLine": 81 }],
+    "alternatives": [],
+    "requiredRoots": ["activerecord/test/cases/relation"]
+  },
+  {
+    "id": "rails-nav-scoping-mixin",
+    "project": "rails",
+    "split": "holdout",
+    "task": "Follow ActiveRecord::Base's Scoping include to the concern entry that includes Default and Named.",
+    "params": {
+      "query": "Scoping",
+      "literal": true,
+      "path": "activerecord/lib/active_record/base.rb",
+      "context": "Scoping concern entry Default Named",
+      "intent": "definition",
+      "expand_related": true
+    },
+    "targets": [{ "path": "activerecord/lib/active_record/scoping.rb", "startLine": 5, "endLine": 11 }],
+    "alternatives": [],
+    "requiredRoots": ["activerecord/lib/active_record/base.rb", "activerecord/lib/active_record/scoping.rb"]
+  },
+  {
+    "id": "rails-nav-negative-unique",
+    "project": "rails",
+    "split": "holdout",
+    "task": "Determine whether RailsBenchmarkSentinel__e970c80f__absent occurs in Active Record.",
+    "params": {
+      "query": "RailsBenchmarkSentinel__e970c80f__absent",
+      "literal": true,
+      "case_sensitive": true,
+      "path": "activerecord",
+      "intent": "auto"
+    },
+    "targets": [],
+    "alternatives": [],
+    "requiredRoots": ["activerecord"]
+  }
+]

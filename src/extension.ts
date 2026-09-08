@@ -8,7 +8,7 @@ import { Type, type Static } from "typebox";
 import { DEFAULT_EXCLUDES, PACKAGE_SEARCH_EXCLUDES, JS_TS_EXTENSIONS } from "./classifications.ts";
 import { expandRelatedFiles } from "./related.ts";
 import { formatSearchResults, formatTopMatch, renderCall, renderResult } from "./render.ts";
-import { CONTEXT_LIMITS, contextTokens, enrichContext, pathDepth, rankFileGroups, scorePathQueryMatch } from "./ranking.ts";
+import { CONTEXT_LIMITS, contextTokens, enrichContext, pathDepth, rankFileGroups, scorePathQueryMatch, type RankingFeatures } from "./ranking.ts";
 import { SearchRequest } from "./retrieval.ts";
 import { EXECUTION_LIMITS, SearchExecutor, inPool } from "./execution.ts";
 import { ProjectFiles } from "./inventory.ts";
@@ -83,7 +83,16 @@ function coverageNotes(coverage: SearchCoverageDetails): string[] {
   ];
 }
 
-async function executeSearch(params: SearchInput, cwd: string, request: SearchRequest) {
+type SearchFeatures = RankingFeatures & { guidance?: boolean };
+
+// Feature switches support evaluation; the registered tool always uses the defaults.
+export async function runSearch(params: SearchInput, cwd: string, signal?: AbortSignal, features: SearchFeatures = {}) {
+  const request = new SearchRequest(signal, undefined, undefined, { intent: params.intent, context: contextTokens(params.context) });
+  try { return await executeSearch(params, cwd, request, features); }
+  finally { request.dispose(); }
+}
+
+async function executeSearch(params: SearchInput, cwd: string, request: SearchRequest, features: SearchFeatures) {
   const maxFiles = clampInt(params.max_files, 5, 1, 10);
   const maxMatches = clampInt(params.max_matches_per_file, 10, 1, 10);
   const context = params.context?.trim() || undefined;
@@ -133,7 +142,7 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     retainedBytes: request.retainedBytes, truncatedMatches: request.truncatedMatches, limits: request.limits,
     executionLimits: { ...EXECUTION_LIMITS, replayBytes: request.limits.retainedBytes },
   };
-  const options = { intent, anchorPath: params.path ? primaryRoot : undefined, related };
+  const options = { intent, anchorPath: params.path ? primaryRoot : undefined, related, features };
   let ranked = request.checkpoint() ? rankFileGroups(request.matches, params.query, maxMatches, pathMatches, context, request.files, options) : [];
   if (context && request.checkpoint()) {
     const enriched = await enrichContext(request.matches, ranked, cwd, request.signal);
@@ -163,11 +172,11 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     files: ranked.map((file) => ({ path: file.path, score: file.score, matchCount: file.matchCount, reasons: file.reasons, evidence: file.evidence, topMatch: file.matches[0] ? formatTopMatch(file.matches[0]) : undefined })),
     coverage, related, literalFallback, regexError,
   };
-  let text = request.checkpoint() ? formatSearchResults(params.query, ranked, totalMatches, notes, undefined, related, coverage) : "";
+  let text = request.checkpoint() ? formatSearchResults(params.query, ranked, totalMatches, notes, undefined, related, coverage, features.guidance) : "";
   if (!request.checkpoint()) {
     coverage.status = "partial";
     coverage.reasons = uniqueValues([...coverage.reasons, String(request.signal.reason ?? "cancelled")]);
-    text = `Search interrupted: ${String(request.signal.reason ?? "cancelled").slice(0, 512)}. Retrieved ${details.totalFiles} files; see coverage details for completed work.`;
+    text = `Search interrupted: ${String(request.signal.reason ?? "cancelled").slice(0, 512)}. Retrieved ${details.totalFiles} files${features.guidance === false ? "." : "; see coverage details for completed work."}`;
   }
   if (literalFallback) text += "\n\n[agentic_search retried this as a literal string because ripgrep rejected the regex.]";
   const truncation = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
@@ -197,11 +206,7 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       "A complete agentic_search miss applies only to the reported pattern and completed scopes. Partial or failed coverage requires inspecting its unvisited roots or unresolved relationships.",
     ],
     parameters: SearchParams,
-    async execute(_id, params, signal, _onUpdate, ctx) {
-      const request = new SearchRequest(signal, undefined, undefined, { intent: params.intent, context: contextTokens(params.context) });
-      try { return await executeSearch(params, ctx.cwd, request); }
-      finally { request.dispose(); }
-    },
+    async execute(_id, params, signal, _onUpdate, ctx) { return runSearch(params, ctx.cwd, signal); },
     renderCall, renderResult,
   });
   pi.registerCommand("agentic-search-info", {

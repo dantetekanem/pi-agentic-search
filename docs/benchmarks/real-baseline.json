@@ -1,0 +1,4537 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-08T04:20:51.703Z",
+  "sourceRevision": "ea81a506e3857b8c9439d36a8cdf97680a84ce3c",
+  "runtimeDirty": false,
+  "runtimeHash": "460ebf856df997eb30f824edd6692047489accf3adff867245a177ad4908a2e2",
+  "runnerHash": "5fe9da53896dc7f6638754189fac1e5016662e8f9928cc5ef41ca698389863ed",
+  "datasetHash": "fb4461c82ec74d60763d3ac7b4736050528b5a3283780befa6e642db30881e8a",
+  "environment": {
+    "node": "v26.3.1",
+    "os": "darwin",
+    "arch": "arm64",
+    "rg": "ripgrep 15.1.0"
+  },
+  "methodology": {
+    "corpus": "Manually labeled revision-pinned public navigation cases, not a representative accuracy estimate. Holdout labels are not used for tuning.",
+    "warm": "One warmup, then timed queries including observation capture; excludes source validation and independent native oracle.",
+    "firstQuery": "First query in each fresh worker, including observation capture but excluding loader, harness validation and oracle. Filesystem caches are not flushed.",
+    "freshProcess": "Node process uptime through its first query, including loader/SDK and harness validation. Exactly one query; excludes oracle and result serialization. Filesystem caches are not flushed.",
+    "freshProcessTotal": "Parent-observed process lifetime, including validation, oracle and JSON transfer; not single-query latency.",
+    "memory": "Worker lifetime peak RSS includes loader, validation, instrumentation and oracle; excludes rg child RSS. Retained snippet bytes are serialized content, not heap size.",
+    "tokens": "This runner has no configured tokenizer. Emitted tokens unavailable; byte/4 is an explicitly labeled estimate, not billing usage.",
+    "relevance": "File recall uses distinct labeled targets/alternatives. MRR uses the returned shortlist (default five files). Positive ranking metrics exclude negative cases; valid-miss rate uses negatives only. Both denominators are reported.",
+    "completeness": "Compare candidates and per-file matching-line counts to an independent native decoder in reported completed public scopes, reproducing target/package ignore policy and scoped aliases. Required-root coverage is a separate geometric metric, not proof of task success.",
+    "unavailable": [
+      "cold filesystem-cache latency",
+      "rg child peak memory",
+      "tokenizer-exact emitted tokens"
+    ]
+  },
+  "byMode": {
+    "raw-rg": {
+      "development": {
+        "definition": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 0.6666666666666666,
+          "mrr": 0.7777777777777778,
+          "correctFirstSpan": 0.6666666666666666,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        },
+        "references": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 1,
+          "mrr": 1,
+          "correctFirstSpan": 0.6666666666666666,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        },
+        "tests": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 0.3333333333333333,
+          "mrr": 0.611111111111111,
+          "correctFirstSpan": 0.3333333333333333,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        }
+      },
+      "holdout": {
+        "definition": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 0,
+          "recallAt5": 0,
+          "top1": 0,
+          "mrr": 0,
+          "correctFirstSpan": 0,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 0
+        },
+        "auto": {
+          "cases": 3,
+          "positiveCases": 0,
+          "negativeCases": 3,
+          "candidateRecall": null,
+          "recallAt5": null,
+          "top1": null,
+          "mrr": null,
+          "correctFirstSpan": null,
+          "validMiss": 1,
+          "falseMiss": null,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        }
+      }
+    },
+    "full": {
+      "development": {
+        "definition": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 1,
+          "mrr": 1,
+          "correctFirstSpan": 0.6666666666666666,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        },
+        "references": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 0.6666666666666666,
+          "mrr": 0.8333333333333334,
+          "correctFirstSpan": 0.6666666666666666,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        },
+        "tests": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 1,
+          "mrr": 1,
+          "correctFirstSpan": 1,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        }
+      },
+      "holdout": {
+        "definition": {
+          "cases": 3,
+          "positiveCases": 3,
+          "negativeCases": 0,
+          "candidateRecall": 1,
+          "recallAt5": 1,
+          "top1": 1,
+          "mrr": 1,
+          "correctFirstSpan": 1,
+          "validMiss": null,
+          "falseMiss": 0,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        },
+        "auto": {
+          "cases": 3,
+          "positiveCases": 0,
+          "negativeCases": 3,
+          "candidateRecall": null,
+          "recallAt5": null,
+          "top1": null,
+          "mrr": null,
+          "correctFirstSpan": null,
+          "validMiss": 1,
+          "falseMiss": null,
+          "completenessError": 0,
+          "requiredCoverage": 1
+        }
+      }
+    }
+  },
+  "results": [
+    {
+      "scenario": {
+        "id": "ext-def-01",
+        "project": "pi",
+        "split": "development",
+        "task": "Find the findConflicts function that parses conflict markers in the example extensions.",
+        "params": {
+          "query": "findConflicts",
+          "literal": true,
+          "path": "packages/coding-agent/examples/extensions",
+          "context": "git merge conflict marker parsing helper",
+          "intent": "definition"
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts",
+            "startLine": 27,
+            "endLine": 54
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts",
+            "line": 27
+          }
+        ],
+        "totalMatches": 2,
+        "oracleCandidates": [
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 352,
+        "emittedBytes": 282,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 5.028415999999993,
+      "firstQueryCompletedUptimeMs": 576.079583,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 4.197750000000042,
+        "p95": 4.771624999999972
+      },
+      "workerPeakRssKiB": 201488,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 71,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 578.695666,
+        "p95": 584.8133330000001
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 5.215749999999957,
+        "p95": 5.481666999999902
+      },
+      "freshProcessTotalMs": [
+        598.000042,
+        605.068334,
+        599.560209
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-def-01",
+        "project": "pi",
+        "split": "development",
+        "task": "Find the findConflicts function that parses conflict markers in the example extensions.",
+        "params": {
+          "query": "findConflicts",
+          "literal": true,
+          "path": "packages/coding-agent/examples/extensions",
+          "context": "git merge conflict marker parsing helper",
+          "intent": "definition"
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts",
+            "startLine": 27,
+            "endLine": 54
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts",
+            "line": 27
+          }
+        ],
+        "totalMatches": 2,
+        "oracleCandidates": [
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/examples/extensions/git-merge-and-resolve.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 549,
+        "emittedBytes": 1022,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 8.938874999999939,
+      "firstQueryCompletedUptimeMs": 583.6363329999999,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 4.677415999999994,
+        "p95": 5.3079589999999826
+      },
+      "workerPeakRssKiB": 196448,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 256,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 581.774083,
+        "p95": 587.3785839999999
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 9.400916000000052,
+        "p95": 9.541207999999983
+      },
+      "freshProcessTotalMs": [
+        606.6231660000003,
+        607.221333,
+        613.457625
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-ref-02",
+        "project": "pi",
+        "split": "development",
+        "task": "Find the command and shortcut handlers that call togglePlanMode.",
+        "params": {
+          "query": "togglePlanMode",
+          "literal": true,
+          "path": "packages/coding-agent/examples/extensions/plan-mode",
+          "context": "plan command and keyboard shortcut callers",
+          "intent": "references"
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts",
+            "startLine": 143,
+            "endLine": 143
+          },
+          {
+            "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts",
+            "startLine": 160,
+            "endLine": 160
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions/plan-mode"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts",
+            "line": 125
+          }
+        ],
+        "totalMatches": 3,
+        "oracleCandidates": [
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts": 3
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts": 3
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions/plan-mode"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 457,
+        "emittedBytes": 351,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 3.7965000000000373,
+      "firstQueryCompletedUptimeMs": 584.916708,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.787541000000033,
+        "p95": 3.1903750000000173
+      },
+      "workerPeakRssKiB": 201392,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 88,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 587.140125,
+        "p95": 590.4707500000001
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 3.6916669999999385,
+        "p95": 3.9710830000000215
+      },
+      "freshProcessTotalMs": [
+        605.5380000000005,
+        607.3863340000007,
+        610.3435420000005
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-ref-02",
+        "project": "pi",
+        "split": "development",
+        "task": "Find the command and shortcut handlers that call togglePlanMode.",
+        "params": {
+          "query": "togglePlanMode",
+          "literal": true,
+          "path": "packages/coding-agent/examples/extensions/plan-mode",
+          "context": "plan command and keyboard shortcut callers",
+          "intent": "references"
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts",
+            "startLine": 143,
+            "endLine": 143
+          },
+          {
+            "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts",
+            "startLine": 160,
+            "endLine": 160
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions/plan-mode"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/examples/extensions/plan-mode/index.ts",
+            "line": 143
+          }
+        ],
+        "totalMatches": 3,
+        "oracleCandidates": [
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts": 3
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/examples/extensions/plan-mode/index.ts": 3
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions/plan-mode"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 756,
+        "emittedBytes": 1045,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 7.720416,
+      "firstQueryCompletedUptimeMs": 588.503166,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 3.346125000000029,
+        "p95": 3.503125000000068
+      },
+      "workerPeakRssKiB": 205840,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 262,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 589.554833,
+        "p95": 595.32825
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 7.853749999999991,
+        "p95": 7.860209000000054
+      },
+      "freshProcessTotalMs": [
+        606.3210830000007,
+        613.6645830000016,
+        618.6817919999994
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-test-03",
+        "project": "pi",
+        "split": "development",
+        "task": "Locate the tests for conflict handling in the git-merge-and-resolve example extension.",
+        "params": {
+          "query": "conflict",
+          "literal": true,
+          "path": "packages/coding-agent/test",
+          "context": "git merge resolve example extension conflict report",
+          "intent": "tests"
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 143,
+            "endLine": 175
+          }
+        ],
+        "alternatives": [
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 87,
+            "endLine": 105
+          },
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 177,
+            "endLine": 193
+          },
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 195,
+            "endLine": 205
+          }
+        ],
+        "requiredRoots": [
+          "packages/coding-agent/test"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/test/extensions-runner.test.ts",
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl",
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+          "packages/coding-agent/test/interactive-mode-status.test.ts",
+          "packages/coding-agent/test/resource-loader.test.ts",
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts",
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/test/extensions-runner.test.ts",
+            "line": 3
+          },
+          {
+            "path": "packages/coding-agent/test/fixtures/before-compaction.jsonl",
+            "line": 871
+          },
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "line": 87
+          },
+          {
+            "path": "packages/coding-agent/test/interactive-mode-status.test.ts",
+            "line": 586
+          },
+          {
+            "path": "packages/coding-agent/test/resource-loader.test.ts",
+            "line": 277
+          }
+        ],
+        "totalMatches": 36,
+        "oracleCandidates": [
+          "packages/coding-agent/test/extensions-runner.test.ts",
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl",
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+          "packages/coding-agent/test/interactive-mode-status.test.ts",
+          "packages/coding-agent/test/resource-loader.test.ts",
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts",
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/test/extensions-runner.test.ts": 14,
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl": 1,
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts": 10,
+          "packages/coding-agent/test/interactive-mode-status.test.ts": 2,
+          "packages/coding-agent/test/resource-loader.test.ts": 5,
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts": 2,
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/test/extensions-runner.test.ts": 14,
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl": 1,
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts": 10,
+          "packages/coding-agent/test/interactive-mode-status.test.ts": 2,
+          "packages/coding-agent/test/resource-loader.test.ts": 5,
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts": 2,
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/test"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 23289,
+        "emittedBytes": 21746,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 0,
+        "mrr": 0.3333333333333333,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 8.702209000000039,
+      "firstQueryCompletedUptimeMs": 611.1047910000001,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 7.489583000000039,
+        "p95": 8.380791999999929
+      },
+      "workerPeakRssKiB": 196176,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 5437,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 605.329167,
+        "p95": 611.0857910000001
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 8.538124999999923,
+        "p95": 8.732874999999922
+      },
+      "freshProcessTotalMs": [
+        631.0837080000001,
+        624.8066250000011,
+        625.269459000001
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-test-03",
+        "project": "pi",
+        "split": "development",
+        "task": "Locate the tests for conflict handling in the git-merge-and-resolve example extension.",
+        "params": {
+          "query": "conflict",
+          "literal": true,
+          "path": "packages/coding-agent/test",
+          "context": "git merge resolve example extension conflict report",
+          "intent": "tests"
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 143,
+            "endLine": 175
+          }
+        ],
+        "alternatives": [
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 87,
+            "endLine": 105
+          },
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 177,
+            "endLine": 193
+          },
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "startLine": 195,
+            "endLine": 205
+          }
+        ],
+        "requiredRoots": [
+          "packages/coding-agent/test"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/test/extensions-runner.test.ts",
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl",
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+          "packages/coding-agent/test/interactive-mode-status.test.ts",
+          "packages/coding-agent/test/resource-loader.test.ts",
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts",
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+            "line": 89
+          },
+          {
+            "path": "packages/coding-agent/test/extensions-runner.test.ts",
+            "line": 160
+          },
+          {
+            "path": "packages/coding-agent/test/resource-loader.test.ts",
+            "line": 845
+          },
+          {
+            "path": "packages/coding-agent/test/interactive-mode-status.test.ts",
+            "line": 586
+          },
+          {
+            "path": "packages/coding-agent/test/suite/agent-session-queue.test.ts",
+            "line": 431
+          }
+        ],
+        "totalMatches": 36,
+        "oracleCandidates": [
+          "packages/coding-agent/test/extensions-runner.test.ts",
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl",
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts",
+          "packages/coding-agent/test/interactive-mode-status.test.ts",
+          "packages/coding-agent/test/resource-loader.test.ts",
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts",
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/test/extensions-runner.test.ts": 14,
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl": 1,
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts": 10,
+          "packages/coding-agent/test/interactive-mode-status.test.ts": 2,
+          "packages/coding-agent/test/resource-loader.test.ts": 5,
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts": 2,
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/test/extensions-runner.test.ts": 14,
+          "packages/coding-agent/test/fixtures/before-compaction.jsonl": 1,
+          "packages/coding-agent/test/git-merge-and-resolve-extension.test.ts": 10,
+          "packages/coding-agent/test/interactive-mode-status.test.ts": 2,
+          "packages/coding-agent/test/resource-loader.test.ts": 5,
+          "packages/coding-agent/test/suite/agent-session-queue.test.ts": 2,
+          "packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/test"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 10568,
+        "emittedBytes": 4130,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 14.061416000000008,
+      "firstQueryCompletedUptimeMs": 610.5012079999999,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 9.381792000000019,
+        "p95": 10.958166000000006
+      },
+      "workerPeakRssKiB": 219648,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 1033,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 613.3547080000001,
+        "p95": 613.4394589999999
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 13.699625000000083,
+        "p95": 14.137500000000045
+      },
+      "freshProcessTotalMs": [
+        638.3111669999998,
+        641.7342090000002,
+        641.5498749999988
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-relative-04",
+        "project": "pi",
+        "split": "holdout",
+        "task": "Follow discoverAgents from the subagent extension's import to its exported definition.",
+        "params": {
+          "query": "discoverAgents",
+          "literal": true,
+          "path": "packages/coding-agent/examples/extensions/subagent/index.ts",
+          "context": "subagent local agent discovery implementation",
+          "intent": "definition",
+          "expand_related": true
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/examples/extensions/subagent/agents.ts",
+            "startLine": 128,
+            "endLine": 147
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions/subagent/index.ts",
+          "packages/coding-agent/examples/extensions/subagent/agents.ts"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/examples/extensions/subagent/index.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/examples/extensions/subagent/index.ts",
+            "line": 31
+          }
+        ],
+        "totalMatches": 2,
+        "oracleCandidates": [
+          "packages/coding-agent/examples/extensions/subagent/index.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/examples/extensions/subagent/index.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/examples/extensions/subagent/index.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions/subagent/index.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 338,
+        "emittedBytes": 265,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 0,
+        "recallAt5": 0,
+        "top1": 0,
+        "mrr": 0,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": false
+      },
+      "firstQueryMs": 3.0427089999999453,
+      "firstQueryCompletedUptimeMs": 576.688459,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.537708000000066,
+        "p95": 2.957499999999982
+      },
+      "workerPeakRssKiB": 196288,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 67,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 577.2199999999999,
+        "p95": 578.317667
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 3.163208000000054,
+        "p95": 3.299374999999941
+      },
+      "freshProcessTotalMs": [
+        597.3742500000008,
+        598.1924579999977,
+        597.1600419999995
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-relative-04",
+        "project": "pi",
+        "split": "holdout",
+        "task": "Follow discoverAgents from the subagent extension's import to its exported definition.",
+        "params": {
+          "query": "discoverAgents",
+          "literal": true,
+          "path": "packages/coding-agent/examples/extensions/subagent/index.ts",
+          "context": "subagent local agent discovery implementation",
+          "intent": "definition",
+          "expand_related": true
+        },
+        "targets": [
+          {
+            "path": "packages/coding-agent/examples/extensions/subagent/agents.ts",
+            "startLine": 128,
+            "endLine": 147
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions/subagent/index.ts",
+          "packages/coding-agent/examples/extensions/subagent/agents.ts"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [
+          "packages/coding-agent/examples/extensions/subagent/index.ts",
+          "packages/coding-agent/examples/extensions/subagent/agents.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/coding-agent/examples/extensions/subagent/agents.ts",
+            "line": 128
+          },
+          {
+            "path": "packages/coding-agent/examples/extensions/subagent/index.ts",
+            "line": 489
+          }
+        ],
+        "totalMatches": 3,
+        "oracleCandidates": [
+          "packages/coding-agent/examples/extensions/subagent/index.ts",
+          "packages/coding-agent/examples/extensions/subagent/agents.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/coding-agent/examples/extensions/subagent/index.ts": 2,
+          "packages/coding-agent/examples/extensions/subagent/agents.ts": 1
+        },
+        "oracleLineCounts": {
+          "packages/coding-agent/examples/extensions/subagent/index.ts": 2,
+          "packages/coding-agent/examples/extensions/subagent/agents.ts": 1
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "partial",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions/subagent/index.ts",
+            "packages/coding-agent/examples/extensions/subagent/agents.ts",
+            "packages/agent/src/index.ts",
+            "packages/ai/src/index.ts",
+            "packages/coding-agent/src/index.ts",
+            "packages/tui/src/index.ts",
+            "packages/telemetry/src/index.ts",
+            "packages/agent/src/agent.ts",
+            "packages/agent/src/agent-loop.ts",
+            "packages/agent/src/harness/agent-harness.ts",
+            "packages/agent/src/harness/compaction/branch-summarization.ts",
+            "packages/agent/src/harness/compaction/compaction.ts",
+            "packages/agent/src/harness/context.ts",
+            "packages/agent/src/harness/messages.ts",
+            "packages/agent/src/harness/prompt-templates.ts",
+            "packages/agent/src/harness/result.ts",
+            "packages/agent/src/harness/runtime/reducer.ts",
+            "packages/agent/src/harness/session/index.ts",
+            "packages/agent/src/harness/skills.ts",
+            "packages/agent/src/harness/system-prompt.ts",
+            "packages/agent/src/harness/telemetry.ts",
+            "packages/agent/src/harness/tools/index.ts",
+            "packages/agent/src/harness/types.ts",
+            "packages/agent/src/harness/utils/output-capture.ts",
+            "packages/agent/src/harness/utils/shell-output.ts",
+            "packages/agent/src/harness/utils/truncate.ts",
+            "packages/agent/src/proxy.ts",
+            "packages/agent/src/search/index.ts",
+            "packages/agent/src/stream-fn.ts",
+            "packages/agent/src/types.ts",
+            "packages/ai/src/api/anthropic-messages.ts",
+            "packages/ai/src/api/azure-openai-responses.ts",
+            "packages/ai/src/api/bedrock-converse-stream.ts",
+            "packages/ai/src/api/google-generative-ai.ts",
+            "packages/ai/src/api/google-shared.ts",
+            "packages/ai/src/api/google-vertex.ts",
+            "packages/ai/src/api/lazy.ts",
+            "packages/ai/src/api/mistral-conversations.ts",
+            "packages/ai/src/api/openai-codex-responses.ts",
+            "packages/ai/src/api/openai-completions.ts",
+            "packages/ai/src/api/openai-responses.ts",
+            "packages/ai/src/api/pi-messages.ts",
+            "packages/ai/src/auth/context.ts",
+            "packages/ai/src/auth/credential-store.ts",
+            "packages/ai/src/auth/helpers.ts",
+            "packages/ai/src/auth/types.ts",
+            "packages/ai/src/compat/extension-oauth-types.ts",
+            "packages/ai/src/images-models.ts",
+            "packages/ai/src/models.ts",
+            "packages/ai/src/models-store.ts",
+            "packages/ai/src/providers/faux.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget"
+          ]
+        },
+        "retainedSnippetBytes": 819,
+        "emittedBytes": 29294,
+        "processes": 3,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 357.754416,
+      "firstQueryCompletedUptimeMs": 929.157333,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 94.30916699999989,
+        "p95": 106.6747499999999
+      },
+      "workerPeakRssKiB": 447648,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 7324,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 933.114667,
+        "p95": 935.792083
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 357.23066700000004,
+        "p95": 364.7440409999999
+      },
+      "freshProcessTotalMs": [
+        964.8381249999984,
+        965.6492499999986,
+        967.9956669999992
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-negative-05",
+        "project": "pi",
+        "split": "holdout",
+        "task": "Determine whether PiCorpusBenchmarkAbsent_7e3c9a1d occurs in the example extensions.",
+        "params": {
+          "query": "PiCorpusBenchmarkAbsent_7e3c9a1d",
+          "literal": true,
+          "case_sensitive": true,
+          "path": "packages/coding-agent/examples/extensions",
+          "intent": "auto"
+        },
+        "targets": [],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [],
+        "returned": [],
+        "totalMatches": 0,
+        "oracleCandidates": [],
+        "matchedLineCounts": {},
+        "oracleLineCounts": {},
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 2,
+        "emittedBytes": 0,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": null,
+        "recallAt5": null,
+        "top1": null,
+        "mrr": null,
+        "correctFirstSpan": null,
+        "validMiss": true,
+        "falseMiss": null,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 4.84395799999993,
+      "firstQueryCompletedUptimeMs": 570.214667,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 4.050916999999913,
+        "p95": 4.4325000000000045
+      },
+      "workerPeakRssKiB": 200576,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 0,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 573.4099590000001,
+        "p95": 573.929084
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 4.965291999999977,
+        "p95": 4.98279100000002
+      },
+      "freshProcessTotalMs": [
+        590.0060839999969,
+        593.8334170000016,
+        593.5378330000021
+      ]
+    },
+    {
+      "scenario": {
+        "id": "ext-negative-05",
+        "project": "pi",
+        "split": "holdout",
+        "task": "Determine whether PiCorpusBenchmarkAbsent_7e3c9a1d occurs in the example extensions.",
+        "params": {
+          "query": "PiCorpusBenchmarkAbsent_7e3c9a1d",
+          "literal": true,
+          "case_sensitive": true,
+          "path": "packages/coding-agent/examples/extensions",
+          "intent": "auto"
+        },
+        "targets": [],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/coding-agent/examples/extensions"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "earendil-works/pi",
+        "revision": "b2602be77cb7b0de45dd616407fd210daa48aa75"
+      },
+      "observation": {
+        "candidates": [],
+        "returned": [],
+        "totalMatches": 0,
+        "oracleCandidates": [],
+        "matchedLineCounts": {},
+        "oracleLineCounts": {},
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/coding-agent/examples/extensions"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 0,
+        "emittedBytes": 307,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": null,
+        "recallAt5": null,
+        "top1": null,
+        "mrr": null,
+        "correctFirstSpan": null,
+        "validMiss": true,
+        "falseMiss": null,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 7.648792000000071,
+      "firstQueryCompletedUptimeMs": 573.224917,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 4.326125000000047,
+        "p95": 4.863833
+      },
+      "workerPeakRssKiB": 203008,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 77,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 579.609,
+        "p95": 580.8675
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 7.171875,
+        "p95": 7.2601660000000265
+      },
+      "freshProcessTotalMs": [
+        604.3232080000016,
+        605.17425,
+        598.6728750000002
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-scope-declaration",
+        "project": "rails",
+        "split": "development",
+        "task": "Locate Post's containing_the_letter_a named-scope declaration.",
+        "params": {
+          "query": "containing_the_letter_a",
+          "literal": true,
+          "path": "activerecord/test/models",
+          "context": "Post named scope declaration",
+          "intent": "definition"
+        },
+        "targets": [
+          {
+            "path": "activerecord/test/models/post.rb",
+            "startLine": 35,
+            "endLine": 35
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/test/models"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/test/models/post.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/test/models/post.rb",
+            "line": 35
+          }
+        ],
+        "totalMatches": 2,
+        "oracleCandidates": [
+          "activerecord/test/models/post.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/test/models/post.rb": 2
+        },
+        "oracleLineCounts": {
+          "activerecord/test/models/post.rb": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/test/models"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 306,
+        "emittedBytes": 236,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 6.866624999999942,
+      "firstQueryCompletedUptimeMs": 513.217542,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.233333000000016,
+        "p95": 5.874707999999941
+      },
+      "workerPeakRssKiB": 198896,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 59,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 518.081042,
+        "p95": 518.8586250000001
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 7.220667000000049,
+        "p95": 7.289209000000028
+      },
+      "freshProcessTotalMs": [
+        538.4446669999998,
+        535.6728330000005,
+        538.9412090000005
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-scope-declaration",
+        "project": "rails",
+        "split": "development",
+        "task": "Locate Post's containing_the_letter_a named-scope declaration.",
+        "params": {
+          "query": "containing_the_letter_a",
+          "literal": true,
+          "path": "activerecord/test/models",
+          "context": "Post named scope declaration",
+          "intent": "definition"
+        },
+        "targets": [
+          {
+            "path": "activerecord/test/models/post.rb",
+            "startLine": 35,
+            "endLine": 35
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/test/models"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/test/models/post.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/test/models/post.rb",
+            "line": 35
+          }
+        ],
+        "totalMatches": 2,
+        "oracleCandidates": [
+          "activerecord/test/models/post.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/test/models/post.rb": 2
+        },
+        "oracleLineCounts": {
+          "activerecord/test/models/post.rb": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/test/models"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 522,
+        "emittedBytes": 918,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 12.570250000000044,
+      "firstQueryCompletedUptimeMs": 520.232667,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.718458000000055,
+        "p95": 6.313875000000053
+      },
+      "workerPeakRssKiB": 210224,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 230,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 517.641666,
+        "p95": 518.4306250000001
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 12.57691699999998,
+        "p95": 12.823249999999973
+      },
+      "freshProcessTotalMs": [
+        544.4936660000021,
+        543.5725829999974,
+        542.4977499999986
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-scope-caller",
+        "project": "rails",
+        "split": "development",
+        "task": "Find the named-scoping tests that call containing_the_letter_a through Post, associations or STI.",
+        "params": {
+          "query": "containing_the_letter_a",
+          "literal": true,
+          "path": "activerecord/test/cases/scoping",
+          "context": "Post association and STI named scoping callers",
+          "intent": "references"
+        },
+        "targets": [
+          {
+            "path": "activerecord/test/cases/scoping/named_scoping_test.rb",
+            "startLine": 173,
+            "endLine": 177
+          },
+          {
+            "path": "activerecord/test/cases/scoping/named_scoping_test.rb",
+            "startLine": 181,
+            "endLine": 182
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/test/cases/scoping"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/test/cases/scoping/named_scoping_test.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/test/cases/scoping/named_scoping_test.rb",
+            "line": 173
+          }
+        ],
+        "totalMatches": 6,
+        "oracleCandidates": [
+          "activerecord/test/cases/scoping/named_scoping_test.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/test/cases/scoping/named_scoping_test.rb": 6
+        },
+        "oracleLineCounts": {
+          "activerecord/test/cases/scoping/named_scoping_test.rb": 6
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/test/cases/scoping"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 956,
+        "emittedBytes": 756,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 3.924209000000019,
+      "firstQueryCompletedUptimeMs": 517.200208,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.931082999999944,
+        "p95": 3.3350410000000466
+      },
+      "workerPeakRssKiB": 197440,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 189,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 516.617625,
+        "p95": 519.475917
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 3.7069999999999936,
+        "p95": 3.8418340000000626
+      },
+      "freshProcessTotalMs": [
+        536.3452079999988,
+        536.7918750000026,
+        539.2701250000027
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-scope-caller",
+        "project": "rails",
+        "split": "development",
+        "task": "Find the named-scoping tests that call containing_the_letter_a through Post, associations or STI.",
+        "params": {
+          "query": "containing_the_letter_a",
+          "literal": true,
+          "path": "activerecord/test/cases/scoping",
+          "context": "Post association and STI named scoping callers",
+          "intent": "references"
+        },
+        "targets": [
+          {
+            "path": "activerecord/test/cases/scoping/named_scoping_test.rb",
+            "startLine": 173,
+            "endLine": 177
+          },
+          {
+            "path": "activerecord/test/cases/scoping/named_scoping_test.rb",
+            "startLine": 181,
+            "endLine": 182
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/test/cases/scoping"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/test/cases/scoping/named_scoping_test.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/test/cases/scoping/named_scoping_test.rb",
+            "line": 181
+          }
+        ],
+        "totalMatches": 6,
+        "oracleCandidates": [
+          "activerecord/test/cases/scoping/named_scoping_test.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/test/cases/scoping/named_scoping_test.rb": 6
+        },
+        "oracleLineCounts": {
+          "activerecord/test/cases/scoping/named_scoping_test.rb": 6
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/test/cases/scoping"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 1609,
+        "emittedBytes": 1054,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 9.512917000000016,
+      "firstQueryCompletedUptimeMs": 524.76025,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 3.530708000000004,
+        "p95": 3.743041999999946
+      },
+      "workerPeakRssKiB": 204528,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 264,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 521.516083,
+        "p95": 526.5506250000001
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 9.799417000000062,
+        "p95": 10.13074999999992
+      },
+      "freshProcessTotalMs": [
+        546.6752919999999,
+        545.0206249999974,
+        550.7679579999967
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-tests-lookup",
+        "project": "rails",
+        "split": "development",
+        "task": "Find the test that applies delete_all to Post.most_commented with group-by and having conditions.",
+        "params": {
+          "query": "Post.most_commented",
+          "literal": true,
+          "path": "activerecord/test/cases/relation",
+          "context": "delete_all group by having",
+          "intent": "tests"
+        },
+        "targets": [
+          {
+            "path": "activerecord/test/cases/relation/delete_all_test.rb",
+            "startLine": 68,
+            "endLine": 81
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/test/cases/relation"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/test/cases/relation/delete_all_test.rb",
+          "activerecord/test/cases/relation/update_all_test.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/test/cases/relation/delete_all_test.rb",
+            "line": 71
+          },
+          {
+            "path": "activerecord/test/cases/relation/update_all_test.rb",
+            "line": 59
+          }
+        ],
+        "totalMatches": 4,
+        "oracleCandidates": [
+          "activerecord/test/cases/relation/delete_all_test.rb",
+          "activerecord/test/cases/relation/update_all_test.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/test/cases/relation/delete_all_test.rb": 2,
+          "activerecord/test/cases/relation/update_all_test.rb": 2
+        },
+        "oracleLineCounts": {
+          "activerecord/test/cases/relation/delete_all_test.rb": 2,
+          "activerecord/test/cases/relation/update_all_test.rb": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/test/cases/relation"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 632,
+        "emittedBytes": 496,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 3.6941249999999854,
+      "firstQueryCompletedUptimeMs": 509.02983300000005,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.9231250000000273,
+        "p95": 3.608292000000006
+      },
+      "workerPeakRssKiB": 205904,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 124,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 512.9682909999999,
+        "p95": 517.63425
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 3.926249999999982,
+        "p95": 3.9861669999999663
+      },
+      "freshProcessTotalMs": [
+        530.203499999996,
+        537.7596669999984,
+        532.6450839999961
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-tests-lookup",
+        "project": "rails",
+        "split": "development",
+        "task": "Find the test that applies delete_all to Post.most_commented with group-by and having conditions.",
+        "params": {
+          "query": "Post.most_commented",
+          "literal": true,
+          "path": "activerecord/test/cases/relation",
+          "context": "delete_all group by having",
+          "intent": "tests"
+        },
+        "targets": [
+          {
+            "path": "activerecord/test/cases/relation/delete_all_test.rb",
+            "startLine": 68,
+            "endLine": 81
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/test/cases/relation"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/test/cases/relation/delete_all_test.rb",
+          "activerecord/test/cases/relation/update_all_test.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/test/cases/relation/delete_all_test.rb",
+            "line": 71
+          },
+          {
+            "path": "activerecord/test/cases/relation/update_all_test.rb",
+            "line": 59
+          }
+        ],
+        "totalMatches": 4,
+        "oracleCandidates": [
+          "activerecord/test/cases/relation/delete_all_test.rb",
+          "activerecord/test/cases/relation/update_all_test.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/test/cases/relation/delete_all_test.rb": 2,
+          "activerecord/test/cases/relation/update_all_test.rb": 2
+        },
+        "oracleLineCounts": {
+          "activerecord/test/cases/relation/delete_all_test.rb": 2,
+          "activerecord/test/cases/relation/update_all_test.rb": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/test/cases/relation"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 1049,
+        "emittedBytes": 1310,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 10.029333000000065,
+      "firstQueryCompletedUptimeMs": 517.608209,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 3.836500000000001,
+        "p95": 5.603958000000034
+      },
+      "workerPeakRssKiB": 209344,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 328,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 517.6083339999999,
+        "p95": 518.251792
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 9.549667000000056,
+        "p95": 9.574416999999926
+      },
+      "freshProcessTotalMs": [
+        542.3775830000013,
+        540.3501250000045,
+        541.5589170000021
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-scoping-mixin",
+        "project": "rails",
+        "split": "holdout",
+        "task": "Follow ActiveRecord::Base's Scoping include to the concern entry that includes Default and Named.",
+        "params": {
+          "query": "Scoping",
+          "literal": true,
+          "path": "activerecord/lib/active_record/base.rb",
+          "context": "Scoping concern entry Default Named",
+          "intent": "definition",
+          "expand_related": true
+        },
+        "targets": [
+          {
+            "path": "activerecord/lib/active_record/scoping.rb",
+            "startLine": 5,
+            "endLine": 11
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/lib/active_record/base.rb",
+          "activerecord/lib/active_record/scoping.rb"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/lib/active_record/base.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/lib/active_record/base.rb",
+            "line": 304
+          }
+        ],
+        "totalMatches": 1,
+        "oracleCandidates": [
+          "activerecord/lib/active_record/base.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/lib/active_record/base.rb": 1
+        },
+        "oracleLineCounts": {
+          "activerecord/lib/active_record/base.rb": 1
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord/lib/active_record/base.rb"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 97,
+        "emittedBytes": 62,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 0,
+        "recallAt5": 0,
+        "top1": 0,
+        "mrr": 0,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": false
+      },
+      "firstQueryMs": 3.3906670000000076,
+      "firstQueryCompletedUptimeMs": 511.51262500000007,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.4772910000000365,
+        "p95": 2.955208000000084
+      },
+      "workerPeakRssKiB": 197488,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 16,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 507.60249999999996,
+        "p95": 508.13699999999994
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 3.128832999999986,
+        "p95": 3.2223330000000487
+      },
+      "freshProcessTotalMs": [
+        527.0836659999986,
+        528.1363750000019,
+        528.2503750000033
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-scoping-mixin",
+        "project": "rails",
+        "split": "holdout",
+        "task": "Follow ActiveRecord::Base's Scoping include to the concern entry that includes Default and Named.",
+        "params": {
+          "query": "Scoping",
+          "literal": true,
+          "path": "activerecord/lib/active_record/base.rb",
+          "context": "Scoping concern entry Default Named",
+          "intent": "definition",
+          "expand_related": true
+        },
+        "targets": [
+          {
+            "path": "activerecord/lib/active_record/scoping.rb",
+            "startLine": 5,
+            "endLine": 11
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord/lib/active_record/base.rb",
+          "activerecord/lib/active_record/scoping.rb"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [
+          "activerecord/lib/active_record/base.rb",
+          "activerecord/lib/active_record/scoping.rb"
+        ],
+        "returned": [
+          {
+            "path": "activerecord/lib/active_record/scoping.rb",
+            "line": 5
+          },
+          {
+            "path": "activerecord/lib/active_record/base.rb",
+            "line": 304
+          }
+        ],
+        "totalMatches": 3,
+        "oracleCandidates": [
+          "activerecord/lib/active_record/base.rb",
+          "activerecord/lib/active_record/scoping.rb"
+        ],
+        "matchedLineCounts": {
+          "activerecord/lib/active_record/base.rb": 1,
+          "activerecord/lib/active_record/scoping.rb": 2
+        },
+        "oracleLineCounts": {
+          "activerecord/lib/active_record/base.rb": 1,
+          "activerecord/lib/active_record/scoping.rb": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "partial",
+          "completedRoots": [
+            "activerecord/lib/active_record/base.rb",
+            "activerecord/lib/active_record/connection_handling.rb",
+            "activerecord/lib/active_record/querying.rb",
+            "activerecord/lib/active_record/translation.rb",
+            "activerecord/lib/active_record/dynamic_matchers.rb",
+            "activerecord/lib/active_record/delegated_type.rb",
+            "activerecord/lib/active_record/explain.rb",
+            "activerecord/lib/active_record/enum.rb",
+            "activerecord/lib/active_record/aggregations.rb",
+            "activerecord/lib/active_record/core.rb",
+            "activerecord/lib/active_record/persistence.rb",
+            "activerecord/lib/active_record/readonly_attributes.rb",
+            "activerecord/lib/active_record/model_schema.rb",
+            "activerecord/lib/active_record/inheritance.rb",
+            "activerecord/lib/active_record/scoping.rb",
+            "activerecord/lib/active_record/sanitization.rb",
+            "activerecord/lib/active_record/attribute_assignment.rb",
+            "activerecord/lib/active_record/integration.rb",
+            "activerecord/lib/active_record/validations.rb",
+            "activerecord/lib/active_record/counter_cache.rb",
+            "activerecord/lib/active_record/attributes.rb",
+            "activerecord/lib/active_record/locking/optimistic.rb",
+            "activerecord/lib/active_record/locking/pessimistic.rb",
+            "activerecord/lib/active_record/encryption/encryptable_record.rb",
+            "activerecord/lib/active_record/attribute_methods/before_type_cast.rb",
+            "activerecord/lib/active_record/attribute_methods/composite_primary_key.rb"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "unresolved",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "reported limitation",
+            "reported limitation",
+            "budget",
+            "budget"
+          ]
+        },
+        "retainedSnippetBytes": 600,
+        "emittedBytes": 8474,
+        "processes": 3,
+        "listings": 1
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 57.06991599999998,
+      "firstQueryCompletedUptimeMs": 563.917125,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 38.72025000000008,
+        "p95": 42.76762499999995
+      },
+      "workerPeakRssKiB": 238592,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 2119,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 556.73225,
+        "p95": 559.752834
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 52.681250000000034,
+        "p95": 53.40508300000005
+      },
+      "freshProcessTotalMs": [
+        582.7789170000033,
+        591.6995000000024,
+        583.0612500000061
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-negative-unique",
+        "project": "rails",
+        "split": "holdout",
+        "task": "Determine whether RailsBenchmarkSentinel__e970c80f__absent occurs in Active Record.",
+        "params": {
+          "query": "RailsBenchmarkSentinel__e970c80f__absent",
+          "literal": true,
+          "case_sensitive": true,
+          "path": "activerecord",
+          "intent": "auto"
+        },
+        "targets": [],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [],
+        "returned": [],
+        "totalMatches": 0,
+        "oracleCandidates": [],
+        "matchedLineCounts": {},
+        "oracleLineCounts": {},
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 2,
+        "emittedBytes": 0,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": null,
+        "recallAt5": null,
+        "top1": null,
+        "mrr": null,
+        "correctFirstSpan": null,
+        "validMiss": true,
+        "falseMiss": null,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 26.137291000000005,
+      "firstQueryCompletedUptimeMs": 520.7045,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 19.61341600000003,
+        "p95": 20.152958000000012
+      },
+      "workerPeakRssKiB": 204224,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 0,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 522.6061669999999,
+        "p95": 522.686958
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 25.519082999999966,
+        "p95": 26.448707999999954
+      },
+      "freshProcessTotalMs": [
+        542.497291000007,
+        542.5604170000006,
+        540.4485000000059
+      ]
+    },
+    {
+      "scenario": {
+        "id": "rails-nav-negative-unique",
+        "project": "rails",
+        "split": "holdout",
+        "task": "Determine whether RailsBenchmarkSentinel__e970c80f__absent occurs in Active Record.",
+        "params": {
+          "query": "RailsBenchmarkSentinel__e970c80f__absent",
+          "literal": true,
+          "case_sensitive": true,
+          "path": "activerecord",
+          "intent": "auto"
+        },
+        "targets": [],
+        "alternatives": [],
+        "requiredRoots": [
+          "activerecord"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "rails/rails",
+        "revision": "e970c80fd668f3f4ee08201bbbbcadfb2f29b1df"
+      },
+      "observation": {
+        "candidates": [],
+        "returned": [],
+        "totalMatches": 0,
+        "oracleCandidates": [],
+        "matchedLineCounts": {},
+        "oracleLineCounts": {},
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "activerecord"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 0,
+        "emittedBytes": 286,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": null,
+        "recallAt5": null,
+        "top1": null,
+        "mrr": null,
+        "correctFirstSpan": null,
+        "validMiss": true,
+        "falseMiss": null,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 28.83274999999992,
+      "firstQueryCompletedUptimeMs": 545.780666,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 20.313541999999984,
+        "p95": 20.76237500000002
+      },
+      "workerPeakRssKiB": 197136,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 72,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 526.199667,
+        "p95": 528.872958
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 28.026958999999977,
+        "p95": 28.662249999999972
+      },
+      "freshProcessTotalMs": [
+        569.6264589999992,
+        567.0915000000023,
+        566.0027499999997
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-definition",
+        "project": "zod",
+        "split": "development",
+        "task": "Locate the public classic ZodString constructor declaration, not the core implementation or a type assertion.",
+        "params": {
+          "query": "ZodString",
+          "literal": true,
+          "path": "packages/zod/src/v4",
+          "context": "classic public string constructor",
+          "intent": "definition"
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "startLine": 528,
+            "endLine": 528
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src/v4"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v4/classic/coerce.ts",
+          "packages/zod/src/v4/classic/from-json-schema.ts",
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/classic/tests/apply.test.ts",
+          "packages/zod/src/v4/classic/tests/assignability.test.ts",
+          "packages/zod/src/v4/classic/tests/brand.test.ts",
+          "packages/zod/src/v4/classic/tests/catch.test.ts",
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts",
+          "packages/zod/src/v4/classic/tests/default.test.ts",
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts",
+          "packages/zod/src/v4/classic/tests/generics.test.ts",
+          "packages/zod/src/v4/classic/tests/index.test.ts",
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts",
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts",
+          "packages/zod/src/v4/classic/tests/json.test.ts",
+          "packages/zod/src/v4/classic/tests/nullable.test.ts",
+          "packages/zod/src/v4/classic/tests/object.test.ts",
+          "packages/zod/src/v4/classic/tests/optional.test.ts",
+          "packages/zod/src/v4/classic/tests/partial.test.ts",
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts",
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts",
+          "packages/zod/src/v4/classic/tests/registries.test.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/core/checks.ts",
+          "packages/zod/src/v4/core/errors.ts",
+          "packages/zod/src/v4/core/json-schema-processors.ts",
+          "packages/zod/src/v4/core/schemas.ts",
+          "packages/zod/src/v4/locales/ar.ts",
+          "packages/zod/src/v4/locales/az.ts",
+          "packages/zod/src/v4/locales/be.ts",
+          "packages/zod/src/v4/locales/bg.ts",
+          "packages/zod/src/v4/locales/bn.ts",
+          "packages/zod/src/v4/locales/ca.ts",
+          "packages/zod/src/v4/locales/ckb.ts",
+          "packages/zod/src/v4/locales/cs.ts",
+          "packages/zod/src/v4/locales/da.ts",
+          "packages/zod/src/v4/locales/de.ts",
+          "packages/zod/src/v4/locales/el.ts",
+          "packages/zod/src/v4/locales/en.ts",
+          "packages/zod/src/v4/locales/eo.ts",
+          "packages/zod/src/v4/locales/es.ts",
+          "packages/zod/src/v4/locales/fa.ts",
+          "packages/zod/src/v4/locales/fi.ts",
+          "packages/zod/src/v4/locales/fr-CA.ts",
+          "packages/zod/src/v4/locales/fr.ts",
+          "packages/zod/src/v4/locales/gu.ts",
+          "packages/zod/src/v4/locales/he.ts",
+          "packages/zod/src/v4/locales/hi.ts",
+          "packages/zod/src/v4/locales/hr.ts",
+          "packages/zod/src/v4/locales/hu.ts",
+          "packages/zod/src/v4/locales/hy.ts",
+          "packages/zod/src/v4/locales/id.ts",
+          "packages/zod/src/v4/locales/is.ts",
+          "packages/zod/src/v4/locales/it.ts",
+          "packages/zod/src/v4/locales/ja.ts",
+          "packages/zod/src/v4/locales/ka.ts",
+          "packages/zod/src/v4/locales/km.ts",
+          "packages/zod/src/v4/locales/kn.ts",
+          "packages/zod/src/v4/locales/ko.ts",
+          "packages/zod/src/v4/locales/lt.ts",
+          "packages/zod/src/v4/locales/mk.ts",
+          "packages/zod/src/v4/locales/ms.ts",
+          "packages/zod/src/v4/locales/ne.ts",
+          "packages/zod/src/v4/locales/nl.ts",
+          "packages/zod/src/v4/locales/nn.ts",
+          "packages/zod/src/v4/locales/no.ts",
+          "packages/zod/src/v4/locales/ota.ts",
+          "packages/zod/src/v4/locales/pl.ts",
+          "packages/zod/src/v4/locales/ps.ts",
+          "packages/zod/src/v4/locales/pt-BR.ts",
+          "packages/zod/src/v4/locales/pt.ts",
+          "packages/zod/src/v4/locales/ro.ts",
+          "packages/zod/src/v4/locales/ru.ts",
+          "packages/zod/src/v4/locales/sk.ts",
+          "packages/zod/src/v4/locales/sl.ts",
+          "packages/zod/src/v4/locales/sv.ts",
+          "packages/zod/src/v4/locales/ta.ts",
+          "packages/zod/src/v4/locales/th.ts",
+          "packages/zod/src/v4/locales/tk.ts",
+          "packages/zod/src/v4/locales/tr.ts",
+          "packages/zod/src/v4/locales/uk.ts",
+          "packages/zod/src/v4/locales/ur.ts",
+          "packages/zod/src/v4/locales/uz.ts",
+          "packages/zod/src/v4/locales/vi.ts",
+          "packages/zod/src/v4/locales/yo.ts",
+          "packages/zod/src/v4/locales/zh-CN.ts",
+          "packages/zod/src/v4/locales/zh-TW.ts",
+          "packages/zod/src/v4/mini/coerce.ts",
+          "packages/zod/src/v4/mini/schemas.ts",
+          "packages/zod/src/v4/mini/tests/assignability.test.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/classic/coerce.ts",
+            "line": 4
+          },
+          {
+            "path": "packages/zod/src/v4/classic/from-json-schema.ts",
+            "line": 7
+          },
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "line": 359
+          },
+          {
+            "path": "packages/zod/src/v4/classic/tests/apply.test.ts",
+            "line": 75
+          },
+          {
+            "path": "packages/zod/src/v4/classic/tests/assignability.test.ts",
+            "line": 7
+          }
+        ],
+        "totalMatches": 485,
+        "oracleCandidates": [
+          "packages/zod/src/v4/classic/coerce.ts",
+          "packages/zod/src/v4/classic/from-json-schema.ts",
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/classic/tests/apply.test.ts",
+          "packages/zod/src/v4/classic/tests/assignability.test.ts",
+          "packages/zod/src/v4/classic/tests/brand.test.ts",
+          "packages/zod/src/v4/classic/tests/catch.test.ts",
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts",
+          "packages/zod/src/v4/classic/tests/default.test.ts",
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts",
+          "packages/zod/src/v4/classic/tests/generics.test.ts",
+          "packages/zod/src/v4/classic/tests/index.test.ts",
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts",
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts",
+          "packages/zod/src/v4/classic/tests/json.test.ts",
+          "packages/zod/src/v4/classic/tests/nullable.test.ts",
+          "packages/zod/src/v4/classic/tests/object.test.ts",
+          "packages/zod/src/v4/classic/tests/optional.test.ts",
+          "packages/zod/src/v4/classic/tests/partial.test.ts",
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts",
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts",
+          "packages/zod/src/v4/classic/tests/registries.test.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/core/checks.ts",
+          "packages/zod/src/v4/core/errors.ts",
+          "packages/zod/src/v4/core/json-schema-processors.ts",
+          "packages/zod/src/v4/core/schemas.ts",
+          "packages/zod/src/v4/locales/ar.ts",
+          "packages/zod/src/v4/locales/az.ts",
+          "packages/zod/src/v4/locales/be.ts",
+          "packages/zod/src/v4/locales/bg.ts",
+          "packages/zod/src/v4/locales/bn.ts",
+          "packages/zod/src/v4/locales/ca.ts",
+          "packages/zod/src/v4/locales/ckb.ts",
+          "packages/zod/src/v4/locales/cs.ts",
+          "packages/zod/src/v4/locales/da.ts",
+          "packages/zod/src/v4/locales/de.ts",
+          "packages/zod/src/v4/locales/el.ts",
+          "packages/zod/src/v4/locales/en.ts",
+          "packages/zod/src/v4/locales/eo.ts",
+          "packages/zod/src/v4/locales/es.ts",
+          "packages/zod/src/v4/locales/fa.ts",
+          "packages/zod/src/v4/locales/fi.ts",
+          "packages/zod/src/v4/locales/fr-CA.ts",
+          "packages/zod/src/v4/locales/fr.ts",
+          "packages/zod/src/v4/locales/gu.ts",
+          "packages/zod/src/v4/locales/he.ts",
+          "packages/zod/src/v4/locales/hi.ts",
+          "packages/zod/src/v4/locales/hr.ts",
+          "packages/zod/src/v4/locales/hu.ts",
+          "packages/zod/src/v4/locales/hy.ts",
+          "packages/zod/src/v4/locales/id.ts",
+          "packages/zod/src/v4/locales/is.ts",
+          "packages/zod/src/v4/locales/it.ts",
+          "packages/zod/src/v4/locales/ja.ts",
+          "packages/zod/src/v4/locales/ka.ts",
+          "packages/zod/src/v4/locales/km.ts",
+          "packages/zod/src/v4/locales/kn.ts",
+          "packages/zod/src/v4/locales/ko.ts",
+          "packages/zod/src/v4/locales/lt.ts",
+          "packages/zod/src/v4/locales/mk.ts",
+          "packages/zod/src/v4/locales/ms.ts",
+          "packages/zod/src/v4/locales/ne.ts",
+          "packages/zod/src/v4/locales/nl.ts",
+          "packages/zod/src/v4/locales/nn.ts",
+          "packages/zod/src/v4/locales/no.ts",
+          "packages/zod/src/v4/locales/ota.ts",
+          "packages/zod/src/v4/locales/pl.ts",
+          "packages/zod/src/v4/locales/ps.ts",
+          "packages/zod/src/v4/locales/pt-BR.ts",
+          "packages/zod/src/v4/locales/pt.ts",
+          "packages/zod/src/v4/locales/ro.ts",
+          "packages/zod/src/v4/locales/ru.ts",
+          "packages/zod/src/v4/locales/sk.ts",
+          "packages/zod/src/v4/locales/sl.ts",
+          "packages/zod/src/v4/locales/sv.ts",
+          "packages/zod/src/v4/locales/ta.ts",
+          "packages/zod/src/v4/locales/th.ts",
+          "packages/zod/src/v4/locales/tk.ts",
+          "packages/zod/src/v4/locales/tr.ts",
+          "packages/zod/src/v4/locales/uk.ts",
+          "packages/zod/src/v4/locales/ur.ts",
+          "packages/zod/src/v4/locales/uz.ts",
+          "packages/zod/src/v4/locales/vi.ts",
+          "packages/zod/src/v4/locales/yo.ts",
+          "packages/zod/src/v4/locales/zh-CN.ts",
+          "packages/zod/src/v4/locales/zh-TW.ts",
+          "packages/zod/src/v4/mini/coerce.ts",
+          "packages/zod/src/v4/mini/schemas.ts",
+          "packages/zod/src/v4/mini/tests/assignability.test.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v4/classic/coerce.ts": 3,
+          "packages/zod/src/v4/classic/from-json-schema.ts": 2,
+          "packages/zod/src/v4/classic/schemas.ts": 103,
+          "packages/zod/src/v4/classic/tests/apply.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/assignability.test.ts": 5,
+          "packages/zod/src/v4/classic/tests/brand.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/catch.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/default.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/generics.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/index.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/json.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/nullable.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/object.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/optional.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/partial.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts": 10,
+          "packages/zod/src/v4/classic/tests/registries.test.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 15,
+          "packages/zod/src/v4/core/checks.ts": 3,
+          "packages/zod/src/v4/core/errors.ts": 4,
+          "packages/zod/src/v4/core/json-schema-processors.ts": 3,
+          "packages/zod/src/v4/core/schemas.ts": 100,
+          "packages/zod/src/v4/locales/ar.ts": 3,
+          "packages/zod/src/v4/locales/az.ts": 3,
+          "packages/zod/src/v4/locales/be.ts": 3,
+          "packages/zod/src/v4/locales/bg.ts": 3,
+          "packages/zod/src/v4/locales/bn.ts": 3,
+          "packages/zod/src/v4/locales/ca.ts": 3,
+          "packages/zod/src/v4/locales/ckb.ts": 3,
+          "packages/zod/src/v4/locales/cs.ts": 3,
+          "packages/zod/src/v4/locales/da.ts": 3,
+          "packages/zod/src/v4/locales/de.ts": 3,
+          "packages/zod/src/v4/locales/el.ts": 3,
+          "packages/zod/src/v4/locales/en.ts": 3,
+          "packages/zod/src/v4/locales/eo.ts": 3,
+          "packages/zod/src/v4/locales/es.ts": 3,
+          "packages/zod/src/v4/locales/fa.ts": 3,
+          "packages/zod/src/v4/locales/fi.ts": 3,
+          "packages/zod/src/v4/locales/fr-CA.ts": 3,
+          "packages/zod/src/v4/locales/fr.ts": 3,
+          "packages/zod/src/v4/locales/gu.ts": 3,
+          "packages/zod/src/v4/locales/he.ts": 3,
+          "packages/zod/src/v4/locales/hi.ts": 3,
+          "packages/zod/src/v4/locales/hr.ts": 3,
+          "packages/zod/src/v4/locales/hu.ts": 3,
+          "packages/zod/src/v4/locales/hy.ts": 3,
+          "packages/zod/src/v4/locales/id.ts": 3,
+          "packages/zod/src/v4/locales/is.ts": 3,
+          "packages/zod/src/v4/locales/it.ts": 3,
+          "packages/zod/src/v4/locales/ja.ts": 3,
+          "packages/zod/src/v4/locales/ka.ts": 3,
+          "packages/zod/src/v4/locales/km.ts": 3,
+          "packages/zod/src/v4/locales/kn.ts": 3,
+          "packages/zod/src/v4/locales/ko.ts": 3,
+          "packages/zod/src/v4/locales/lt.ts": 3,
+          "packages/zod/src/v4/locales/mk.ts": 3,
+          "packages/zod/src/v4/locales/ms.ts": 3,
+          "packages/zod/src/v4/locales/ne.ts": 3,
+          "packages/zod/src/v4/locales/nl.ts": 3,
+          "packages/zod/src/v4/locales/nn.ts": 3,
+          "packages/zod/src/v4/locales/no.ts": 3,
+          "packages/zod/src/v4/locales/ota.ts": 3,
+          "packages/zod/src/v4/locales/pl.ts": 3,
+          "packages/zod/src/v4/locales/ps.ts": 3,
+          "packages/zod/src/v4/locales/pt-BR.ts": 3,
+          "packages/zod/src/v4/locales/pt.ts": 3,
+          "packages/zod/src/v4/locales/ro.ts": 3,
+          "packages/zod/src/v4/locales/ru.ts": 3,
+          "packages/zod/src/v4/locales/sk.ts": 3,
+          "packages/zod/src/v4/locales/sl.ts": 3,
+          "packages/zod/src/v4/locales/sv.ts": 3,
+          "packages/zod/src/v4/locales/ta.ts": 3,
+          "packages/zod/src/v4/locales/th.ts": 3,
+          "packages/zod/src/v4/locales/tk.ts": 3,
+          "packages/zod/src/v4/locales/tr.ts": 3,
+          "packages/zod/src/v4/locales/uk.ts": 3,
+          "packages/zod/src/v4/locales/ur.ts": 3,
+          "packages/zod/src/v4/locales/uz.ts": 3,
+          "packages/zod/src/v4/locales/vi.ts": 3,
+          "packages/zod/src/v4/locales/yo.ts": 3,
+          "packages/zod/src/v4/locales/zh-CN.ts": 3,
+          "packages/zod/src/v4/locales/zh-TW.ts": 3,
+          "packages/zod/src/v4/mini/coerce.ts": 1,
+          "packages/zod/src/v4/mini/schemas.ts": 15,
+          "packages/zod/src/v4/mini/tests/assignability.test.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v4/classic/coerce.ts": 3,
+          "packages/zod/src/v4/classic/from-json-schema.ts": 2,
+          "packages/zod/src/v4/classic/schemas.ts": 103,
+          "packages/zod/src/v4/classic/tests/apply.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/assignability.test.ts": 5,
+          "packages/zod/src/v4/classic/tests/brand.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/catch.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/default.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/generics.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/index.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/json.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/nullable.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/object.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/optional.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/partial.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts": 10,
+          "packages/zod/src/v4/classic/tests/registries.test.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 15,
+          "packages/zod/src/v4/core/checks.ts": 3,
+          "packages/zod/src/v4/core/errors.ts": 4,
+          "packages/zod/src/v4/core/json-schema-processors.ts": 3,
+          "packages/zod/src/v4/core/schemas.ts": 100,
+          "packages/zod/src/v4/locales/ar.ts": 3,
+          "packages/zod/src/v4/locales/az.ts": 3,
+          "packages/zod/src/v4/locales/be.ts": 3,
+          "packages/zod/src/v4/locales/bg.ts": 3,
+          "packages/zod/src/v4/locales/bn.ts": 3,
+          "packages/zod/src/v4/locales/ca.ts": 3,
+          "packages/zod/src/v4/locales/ckb.ts": 3,
+          "packages/zod/src/v4/locales/cs.ts": 3,
+          "packages/zod/src/v4/locales/da.ts": 3,
+          "packages/zod/src/v4/locales/de.ts": 3,
+          "packages/zod/src/v4/locales/el.ts": 3,
+          "packages/zod/src/v4/locales/en.ts": 3,
+          "packages/zod/src/v4/locales/eo.ts": 3,
+          "packages/zod/src/v4/locales/es.ts": 3,
+          "packages/zod/src/v4/locales/fa.ts": 3,
+          "packages/zod/src/v4/locales/fi.ts": 3,
+          "packages/zod/src/v4/locales/fr-CA.ts": 3,
+          "packages/zod/src/v4/locales/fr.ts": 3,
+          "packages/zod/src/v4/locales/gu.ts": 3,
+          "packages/zod/src/v4/locales/he.ts": 3,
+          "packages/zod/src/v4/locales/hi.ts": 3,
+          "packages/zod/src/v4/locales/hr.ts": 3,
+          "packages/zod/src/v4/locales/hu.ts": 3,
+          "packages/zod/src/v4/locales/hy.ts": 3,
+          "packages/zod/src/v4/locales/id.ts": 3,
+          "packages/zod/src/v4/locales/is.ts": 3,
+          "packages/zod/src/v4/locales/it.ts": 3,
+          "packages/zod/src/v4/locales/ja.ts": 3,
+          "packages/zod/src/v4/locales/ka.ts": 3,
+          "packages/zod/src/v4/locales/km.ts": 3,
+          "packages/zod/src/v4/locales/kn.ts": 3,
+          "packages/zod/src/v4/locales/ko.ts": 3,
+          "packages/zod/src/v4/locales/lt.ts": 3,
+          "packages/zod/src/v4/locales/mk.ts": 3,
+          "packages/zod/src/v4/locales/ms.ts": 3,
+          "packages/zod/src/v4/locales/ne.ts": 3,
+          "packages/zod/src/v4/locales/nl.ts": 3,
+          "packages/zod/src/v4/locales/nn.ts": 3,
+          "packages/zod/src/v4/locales/no.ts": 3,
+          "packages/zod/src/v4/locales/ota.ts": 3,
+          "packages/zod/src/v4/locales/pl.ts": 3,
+          "packages/zod/src/v4/locales/ps.ts": 3,
+          "packages/zod/src/v4/locales/pt-BR.ts": 3,
+          "packages/zod/src/v4/locales/pt.ts": 3,
+          "packages/zod/src/v4/locales/ro.ts": 3,
+          "packages/zod/src/v4/locales/ru.ts": 3,
+          "packages/zod/src/v4/locales/sk.ts": 3,
+          "packages/zod/src/v4/locales/sl.ts": 3,
+          "packages/zod/src/v4/locales/sv.ts": 3,
+          "packages/zod/src/v4/locales/ta.ts": 3,
+          "packages/zod/src/v4/locales/th.ts": 3,
+          "packages/zod/src/v4/locales/tk.ts": 3,
+          "packages/zod/src/v4/locales/tr.ts": 3,
+          "packages/zod/src/v4/locales/uk.ts": 3,
+          "packages/zod/src/v4/locales/ur.ts": 3,
+          "packages/zod/src/v4/locales/uz.ts": 3,
+          "packages/zod/src/v4/locales/vi.ts": 3,
+          "packages/zod/src/v4/locales/yo.ts": 3,
+          "packages/zod/src/v4/locales/zh-CN.ts": 3,
+          "packages/zod/src/v4/locales/zh-TW.ts": 3,
+          "packages/zod/src/v4/mini/coerce.ts": 1,
+          "packages/zod/src/v4/mini/schemas.ts": 15,
+          "packages/zod/src/v4/mini/tests/assignability.test.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src/v4"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 64521,
+        "emittedBytes": 48202,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 0,
+        "mrr": 0.3333333333333333,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 10.275708000000009,
+      "firstQueryCompletedUptimeMs": 521.109,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 7.90945899999997,
+        "p95": 10.319250000000011
+      },
+      "workerPeakRssKiB": 226432,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 12051,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 522.1453339999999,
+        "p95": 526.483917
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 10.173708999999917,
+        "p95": 10.555624999999964
+      },
+      "freshProcessTotalMs": [
+        547.1496249999982,
+        541.2160409999997,
+        544.3344159999979
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-definition",
+        "project": "zod",
+        "split": "development",
+        "task": "Locate the public classic ZodString constructor declaration, not the core implementation or a type assertion.",
+        "params": {
+          "query": "ZodString",
+          "literal": true,
+          "path": "packages/zod/src/v4",
+          "context": "classic public string constructor",
+          "intent": "definition"
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "startLine": 528,
+            "endLine": 528
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src/v4"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v4/classic/coerce.ts",
+          "packages/zod/src/v4/classic/from-json-schema.ts",
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/classic/tests/apply.test.ts",
+          "packages/zod/src/v4/classic/tests/assignability.test.ts",
+          "packages/zod/src/v4/classic/tests/brand.test.ts",
+          "packages/zod/src/v4/classic/tests/catch.test.ts",
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts",
+          "packages/zod/src/v4/classic/tests/default.test.ts",
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts",
+          "packages/zod/src/v4/classic/tests/generics.test.ts",
+          "packages/zod/src/v4/classic/tests/index.test.ts",
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts",
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts",
+          "packages/zod/src/v4/classic/tests/json.test.ts",
+          "packages/zod/src/v4/classic/tests/nullable.test.ts",
+          "packages/zod/src/v4/classic/tests/object.test.ts",
+          "packages/zod/src/v4/classic/tests/optional.test.ts",
+          "packages/zod/src/v4/classic/tests/partial.test.ts",
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts",
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts",
+          "packages/zod/src/v4/classic/tests/registries.test.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/core/checks.ts",
+          "packages/zod/src/v4/core/errors.ts",
+          "packages/zod/src/v4/core/json-schema-processors.ts",
+          "packages/zod/src/v4/core/schemas.ts",
+          "packages/zod/src/v4/locales/ar.ts",
+          "packages/zod/src/v4/locales/az.ts",
+          "packages/zod/src/v4/locales/be.ts",
+          "packages/zod/src/v4/locales/bg.ts",
+          "packages/zod/src/v4/locales/bn.ts",
+          "packages/zod/src/v4/locales/ca.ts",
+          "packages/zod/src/v4/locales/ckb.ts",
+          "packages/zod/src/v4/locales/cs.ts",
+          "packages/zod/src/v4/locales/da.ts",
+          "packages/zod/src/v4/locales/de.ts",
+          "packages/zod/src/v4/locales/el.ts",
+          "packages/zod/src/v4/locales/en.ts",
+          "packages/zod/src/v4/locales/eo.ts",
+          "packages/zod/src/v4/locales/es.ts",
+          "packages/zod/src/v4/locales/fa.ts",
+          "packages/zod/src/v4/locales/fi.ts",
+          "packages/zod/src/v4/locales/fr-CA.ts",
+          "packages/zod/src/v4/locales/fr.ts",
+          "packages/zod/src/v4/locales/gu.ts",
+          "packages/zod/src/v4/locales/he.ts",
+          "packages/zod/src/v4/locales/hi.ts",
+          "packages/zod/src/v4/locales/hr.ts",
+          "packages/zod/src/v4/locales/hu.ts",
+          "packages/zod/src/v4/locales/hy.ts",
+          "packages/zod/src/v4/locales/id.ts",
+          "packages/zod/src/v4/locales/is.ts",
+          "packages/zod/src/v4/locales/it.ts",
+          "packages/zod/src/v4/locales/ja.ts",
+          "packages/zod/src/v4/locales/ka.ts",
+          "packages/zod/src/v4/locales/km.ts",
+          "packages/zod/src/v4/locales/kn.ts",
+          "packages/zod/src/v4/locales/ko.ts",
+          "packages/zod/src/v4/locales/lt.ts",
+          "packages/zod/src/v4/locales/mk.ts",
+          "packages/zod/src/v4/locales/ms.ts",
+          "packages/zod/src/v4/locales/ne.ts",
+          "packages/zod/src/v4/locales/nl.ts",
+          "packages/zod/src/v4/locales/nn.ts",
+          "packages/zod/src/v4/locales/no.ts",
+          "packages/zod/src/v4/locales/ota.ts",
+          "packages/zod/src/v4/locales/pl.ts",
+          "packages/zod/src/v4/locales/ps.ts",
+          "packages/zod/src/v4/locales/pt-BR.ts",
+          "packages/zod/src/v4/locales/pt.ts",
+          "packages/zod/src/v4/locales/ro.ts",
+          "packages/zod/src/v4/locales/ru.ts",
+          "packages/zod/src/v4/locales/sk.ts",
+          "packages/zod/src/v4/locales/sl.ts",
+          "packages/zod/src/v4/locales/sv.ts",
+          "packages/zod/src/v4/locales/ta.ts",
+          "packages/zod/src/v4/locales/th.ts",
+          "packages/zod/src/v4/locales/tk.ts",
+          "packages/zod/src/v4/locales/tr.ts",
+          "packages/zod/src/v4/locales/uk.ts",
+          "packages/zod/src/v4/locales/ur.ts",
+          "packages/zod/src/v4/locales/uz.ts",
+          "packages/zod/src/v4/locales/vi.ts",
+          "packages/zod/src/v4/locales/yo.ts",
+          "packages/zod/src/v4/locales/zh-CN.ts",
+          "packages/zod/src/v4/locales/zh-TW.ts",
+          "packages/zod/src/v4/mini/coerce.ts",
+          "packages/zod/src/v4/mini/schemas.ts",
+          "packages/zod/src/v4/mini/tests/assignability.test.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "line": 387
+          },
+          {
+            "path": "packages/zod/src/v4/core/schemas.ts",
+            "line": 400
+          },
+          {
+            "path": "packages/zod/src/v4/core/errors.ts",
+            "line": 170
+          },
+          {
+            "path": "packages/zod/src/v4/core/api.ts",
+            "line": 61
+          },
+          {
+            "path": "packages/zod/src/v4/core/checks.ts",
+            "line": 689
+          }
+        ],
+        "totalMatches": 485,
+        "oracleCandidates": [
+          "packages/zod/src/v4/classic/coerce.ts",
+          "packages/zod/src/v4/classic/from-json-schema.ts",
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/classic/tests/apply.test.ts",
+          "packages/zod/src/v4/classic/tests/assignability.test.ts",
+          "packages/zod/src/v4/classic/tests/brand.test.ts",
+          "packages/zod/src/v4/classic/tests/catch.test.ts",
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts",
+          "packages/zod/src/v4/classic/tests/default.test.ts",
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts",
+          "packages/zod/src/v4/classic/tests/generics.test.ts",
+          "packages/zod/src/v4/classic/tests/index.test.ts",
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts",
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts",
+          "packages/zod/src/v4/classic/tests/json.test.ts",
+          "packages/zod/src/v4/classic/tests/nullable.test.ts",
+          "packages/zod/src/v4/classic/tests/object.test.ts",
+          "packages/zod/src/v4/classic/tests/optional.test.ts",
+          "packages/zod/src/v4/classic/tests/partial.test.ts",
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts",
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts",
+          "packages/zod/src/v4/classic/tests/registries.test.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/core/checks.ts",
+          "packages/zod/src/v4/core/errors.ts",
+          "packages/zod/src/v4/core/json-schema-processors.ts",
+          "packages/zod/src/v4/core/schemas.ts",
+          "packages/zod/src/v4/locales/ar.ts",
+          "packages/zod/src/v4/locales/az.ts",
+          "packages/zod/src/v4/locales/be.ts",
+          "packages/zod/src/v4/locales/bg.ts",
+          "packages/zod/src/v4/locales/bn.ts",
+          "packages/zod/src/v4/locales/ca.ts",
+          "packages/zod/src/v4/locales/ckb.ts",
+          "packages/zod/src/v4/locales/cs.ts",
+          "packages/zod/src/v4/locales/da.ts",
+          "packages/zod/src/v4/locales/de.ts",
+          "packages/zod/src/v4/locales/el.ts",
+          "packages/zod/src/v4/locales/en.ts",
+          "packages/zod/src/v4/locales/eo.ts",
+          "packages/zod/src/v4/locales/es.ts",
+          "packages/zod/src/v4/locales/fa.ts",
+          "packages/zod/src/v4/locales/fi.ts",
+          "packages/zod/src/v4/locales/fr-CA.ts",
+          "packages/zod/src/v4/locales/fr.ts",
+          "packages/zod/src/v4/locales/gu.ts",
+          "packages/zod/src/v4/locales/he.ts",
+          "packages/zod/src/v4/locales/hi.ts",
+          "packages/zod/src/v4/locales/hr.ts",
+          "packages/zod/src/v4/locales/hu.ts",
+          "packages/zod/src/v4/locales/hy.ts",
+          "packages/zod/src/v4/locales/id.ts",
+          "packages/zod/src/v4/locales/is.ts",
+          "packages/zod/src/v4/locales/it.ts",
+          "packages/zod/src/v4/locales/ja.ts",
+          "packages/zod/src/v4/locales/ka.ts",
+          "packages/zod/src/v4/locales/km.ts",
+          "packages/zod/src/v4/locales/kn.ts",
+          "packages/zod/src/v4/locales/ko.ts",
+          "packages/zod/src/v4/locales/lt.ts",
+          "packages/zod/src/v4/locales/mk.ts",
+          "packages/zod/src/v4/locales/ms.ts",
+          "packages/zod/src/v4/locales/ne.ts",
+          "packages/zod/src/v4/locales/nl.ts",
+          "packages/zod/src/v4/locales/nn.ts",
+          "packages/zod/src/v4/locales/no.ts",
+          "packages/zod/src/v4/locales/ota.ts",
+          "packages/zod/src/v4/locales/pl.ts",
+          "packages/zod/src/v4/locales/ps.ts",
+          "packages/zod/src/v4/locales/pt-BR.ts",
+          "packages/zod/src/v4/locales/pt.ts",
+          "packages/zod/src/v4/locales/ro.ts",
+          "packages/zod/src/v4/locales/ru.ts",
+          "packages/zod/src/v4/locales/sk.ts",
+          "packages/zod/src/v4/locales/sl.ts",
+          "packages/zod/src/v4/locales/sv.ts",
+          "packages/zod/src/v4/locales/ta.ts",
+          "packages/zod/src/v4/locales/th.ts",
+          "packages/zod/src/v4/locales/tk.ts",
+          "packages/zod/src/v4/locales/tr.ts",
+          "packages/zod/src/v4/locales/uk.ts",
+          "packages/zod/src/v4/locales/ur.ts",
+          "packages/zod/src/v4/locales/uz.ts",
+          "packages/zod/src/v4/locales/vi.ts",
+          "packages/zod/src/v4/locales/yo.ts",
+          "packages/zod/src/v4/locales/zh-CN.ts",
+          "packages/zod/src/v4/locales/zh-TW.ts",
+          "packages/zod/src/v4/mini/coerce.ts",
+          "packages/zod/src/v4/mini/schemas.ts",
+          "packages/zod/src/v4/mini/tests/assignability.test.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v4/classic/coerce.ts": 3,
+          "packages/zod/src/v4/classic/from-json-schema.ts": 2,
+          "packages/zod/src/v4/classic/schemas.ts": 103,
+          "packages/zod/src/v4/classic/tests/apply.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/assignability.test.ts": 5,
+          "packages/zod/src/v4/classic/tests/brand.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/catch.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/default.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/generics.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/index.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/json.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/nullable.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/object.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/optional.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/partial.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts": 10,
+          "packages/zod/src/v4/classic/tests/registries.test.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 15,
+          "packages/zod/src/v4/core/checks.ts": 3,
+          "packages/zod/src/v4/core/errors.ts": 4,
+          "packages/zod/src/v4/core/json-schema-processors.ts": 3,
+          "packages/zod/src/v4/core/schemas.ts": 100,
+          "packages/zod/src/v4/locales/ar.ts": 3,
+          "packages/zod/src/v4/locales/az.ts": 3,
+          "packages/zod/src/v4/locales/be.ts": 3,
+          "packages/zod/src/v4/locales/bg.ts": 3,
+          "packages/zod/src/v4/locales/bn.ts": 3,
+          "packages/zod/src/v4/locales/ca.ts": 3,
+          "packages/zod/src/v4/locales/ckb.ts": 3,
+          "packages/zod/src/v4/locales/cs.ts": 3,
+          "packages/zod/src/v4/locales/da.ts": 3,
+          "packages/zod/src/v4/locales/de.ts": 3,
+          "packages/zod/src/v4/locales/el.ts": 3,
+          "packages/zod/src/v4/locales/en.ts": 3,
+          "packages/zod/src/v4/locales/eo.ts": 3,
+          "packages/zod/src/v4/locales/es.ts": 3,
+          "packages/zod/src/v4/locales/fa.ts": 3,
+          "packages/zod/src/v4/locales/fi.ts": 3,
+          "packages/zod/src/v4/locales/fr-CA.ts": 3,
+          "packages/zod/src/v4/locales/fr.ts": 3,
+          "packages/zod/src/v4/locales/gu.ts": 3,
+          "packages/zod/src/v4/locales/he.ts": 3,
+          "packages/zod/src/v4/locales/hi.ts": 3,
+          "packages/zod/src/v4/locales/hr.ts": 3,
+          "packages/zod/src/v4/locales/hu.ts": 3,
+          "packages/zod/src/v4/locales/hy.ts": 3,
+          "packages/zod/src/v4/locales/id.ts": 3,
+          "packages/zod/src/v4/locales/is.ts": 3,
+          "packages/zod/src/v4/locales/it.ts": 3,
+          "packages/zod/src/v4/locales/ja.ts": 3,
+          "packages/zod/src/v4/locales/ka.ts": 3,
+          "packages/zod/src/v4/locales/km.ts": 3,
+          "packages/zod/src/v4/locales/kn.ts": 3,
+          "packages/zod/src/v4/locales/ko.ts": 3,
+          "packages/zod/src/v4/locales/lt.ts": 3,
+          "packages/zod/src/v4/locales/mk.ts": 3,
+          "packages/zod/src/v4/locales/ms.ts": 3,
+          "packages/zod/src/v4/locales/ne.ts": 3,
+          "packages/zod/src/v4/locales/nl.ts": 3,
+          "packages/zod/src/v4/locales/nn.ts": 3,
+          "packages/zod/src/v4/locales/no.ts": 3,
+          "packages/zod/src/v4/locales/ota.ts": 3,
+          "packages/zod/src/v4/locales/pl.ts": 3,
+          "packages/zod/src/v4/locales/ps.ts": 3,
+          "packages/zod/src/v4/locales/pt-BR.ts": 3,
+          "packages/zod/src/v4/locales/pt.ts": 3,
+          "packages/zod/src/v4/locales/ro.ts": 3,
+          "packages/zod/src/v4/locales/ru.ts": 3,
+          "packages/zod/src/v4/locales/sk.ts": 3,
+          "packages/zod/src/v4/locales/sl.ts": 3,
+          "packages/zod/src/v4/locales/sv.ts": 3,
+          "packages/zod/src/v4/locales/ta.ts": 3,
+          "packages/zod/src/v4/locales/th.ts": 3,
+          "packages/zod/src/v4/locales/tk.ts": 3,
+          "packages/zod/src/v4/locales/tr.ts": 3,
+          "packages/zod/src/v4/locales/uk.ts": 3,
+          "packages/zod/src/v4/locales/ur.ts": 3,
+          "packages/zod/src/v4/locales/uz.ts": 3,
+          "packages/zod/src/v4/locales/vi.ts": 3,
+          "packages/zod/src/v4/locales/yo.ts": 3,
+          "packages/zod/src/v4/locales/zh-CN.ts": 3,
+          "packages/zod/src/v4/locales/zh-TW.ts": 3,
+          "packages/zod/src/v4/mini/coerce.ts": 1,
+          "packages/zod/src/v4/mini/schemas.ts": 15,
+          "packages/zod/src/v4/mini/tests/assignability.test.ts": 2
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v4/classic/coerce.ts": 3,
+          "packages/zod/src/v4/classic/from-json-schema.ts": 2,
+          "packages/zod/src/v4/classic/schemas.ts": 103,
+          "packages/zod/src/v4/classic/tests/apply.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/assignability.test.ts": 5,
+          "packages/zod/src/v4/classic/tests/brand.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/catch.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/deep-partial.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/default.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/detached-methods.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/generics.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/index.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/instance-footprint.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/issue-schema.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/json.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/nullable.test.ts": 1,
+          "packages/zod/src/v4/classic/tests/object.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/optional.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/partial.test.ts": 7,
+          "packages/zod/src/v4/classic/tests/preprocess-types.test.ts": 2,
+          "packages/zod/src/v4/classic/tests/recursive-types.test.ts": 10,
+          "packages/zod/src/v4/classic/tests/registries.test.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 15,
+          "packages/zod/src/v4/core/checks.ts": 3,
+          "packages/zod/src/v4/core/errors.ts": 4,
+          "packages/zod/src/v4/core/json-schema-processors.ts": 3,
+          "packages/zod/src/v4/core/schemas.ts": 100,
+          "packages/zod/src/v4/locales/ar.ts": 3,
+          "packages/zod/src/v4/locales/az.ts": 3,
+          "packages/zod/src/v4/locales/be.ts": 3,
+          "packages/zod/src/v4/locales/bg.ts": 3,
+          "packages/zod/src/v4/locales/bn.ts": 3,
+          "packages/zod/src/v4/locales/ca.ts": 3,
+          "packages/zod/src/v4/locales/ckb.ts": 3,
+          "packages/zod/src/v4/locales/cs.ts": 3,
+          "packages/zod/src/v4/locales/da.ts": 3,
+          "packages/zod/src/v4/locales/de.ts": 3,
+          "packages/zod/src/v4/locales/el.ts": 3,
+          "packages/zod/src/v4/locales/en.ts": 3,
+          "packages/zod/src/v4/locales/eo.ts": 3,
+          "packages/zod/src/v4/locales/es.ts": 3,
+          "packages/zod/src/v4/locales/fa.ts": 3,
+          "packages/zod/src/v4/locales/fi.ts": 3,
+          "packages/zod/src/v4/locales/fr-CA.ts": 3,
+          "packages/zod/src/v4/locales/fr.ts": 3,
+          "packages/zod/src/v4/locales/gu.ts": 3,
+          "packages/zod/src/v4/locales/he.ts": 3,
+          "packages/zod/src/v4/locales/hi.ts": 3,
+          "packages/zod/src/v4/locales/hr.ts": 3,
+          "packages/zod/src/v4/locales/hu.ts": 3,
+          "packages/zod/src/v4/locales/hy.ts": 3,
+          "packages/zod/src/v4/locales/id.ts": 3,
+          "packages/zod/src/v4/locales/is.ts": 3,
+          "packages/zod/src/v4/locales/it.ts": 3,
+          "packages/zod/src/v4/locales/ja.ts": 3,
+          "packages/zod/src/v4/locales/ka.ts": 3,
+          "packages/zod/src/v4/locales/km.ts": 3,
+          "packages/zod/src/v4/locales/kn.ts": 3,
+          "packages/zod/src/v4/locales/ko.ts": 3,
+          "packages/zod/src/v4/locales/lt.ts": 3,
+          "packages/zod/src/v4/locales/mk.ts": 3,
+          "packages/zod/src/v4/locales/ms.ts": 3,
+          "packages/zod/src/v4/locales/ne.ts": 3,
+          "packages/zod/src/v4/locales/nl.ts": 3,
+          "packages/zod/src/v4/locales/nn.ts": 3,
+          "packages/zod/src/v4/locales/no.ts": 3,
+          "packages/zod/src/v4/locales/ota.ts": 3,
+          "packages/zod/src/v4/locales/pl.ts": 3,
+          "packages/zod/src/v4/locales/ps.ts": 3,
+          "packages/zod/src/v4/locales/pt-BR.ts": 3,
+          "packages/zod/src/v4/locales/pt.ts": 3,
+          "packages/zod/src/v4/locales/ro.ts": 3,
+          "packages/zod/src/v4/locales/ru.ts": 3,
+          "packages/zod/src/v4/locales/sk.ts": 3,
+          "packages/zod/src/v4/locales/sl.ts": 3,
+          "packages/zod/src/v4/locales/sv.ts": 3,
+          "packages/zod/src/v4/locales/ta.ts": 3,
+          "packages/zod/src/v4/locales/th.ts": 3,
+          "packages/zod/src/v4/locales/tk.ts": 3,
+          "packages/zod/src/v4/locales/tr.ts": 3,
+          "packages/zod/src/v4/locales/uk.ts": 3,
+          "packages/zod/src/v4/locales/ur.ts": 3,
+          "packages/zod/src/v4/locales/uz.ts": 3,
+          "packages/zod/src/v4/locales/vi.ts": 3,
+          "packages/zod/src/v4/locales/yo.ts": 3,
+          "packages/zod/src/v4/locales/zh-CN.ts": 3,
+          "packages/zod/src/v4/locales/zh-TW.ts": 3,
+          "packages/zod/src/v4/mini/coerce.ts": 1,
+          "packages/zod/src/v4/mini/schemas.ts": 15,
+          "packages/zod/src/v4/mini/tests/assignability.test.ts": 2
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src/v4"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 72922,
+        "emittedBytes": 4889,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 32.50512500000002,
+      "firstQueryCompletedUptimeMs": 543.595583,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 19.908957999999984,
+        "p95": 22.506875000000036
+      },
+      "workerPeakRssKiB": 231104,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 1223,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 542.972542,
+        "p95": 543.206875
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 31.502624999999966,
+        "p95": 32.46404199999995
+      },
+      "freshProcessTotalMs": [
+        574.4040840000016,
+        574.289208000002,
+        574.2806249999994
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-references",
+        "project": "zod",
+        "split": "development",
+        "task": "Find the classic string builder's call to the core _string helper.",
+        "params": {
+          "query": "\\b_string\\b",
+          "path": "packages/zod/src/v4",
+          "context": "classic public string builder caller",
+          "intent": "references"
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "startLine": 619,
+            "endLine": 619
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src/v4"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/mini/schemas.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "line": 619
+          },
+          {
+            "path": "packages/zod/src/v4/core/api.ts",
+            "line": 63
+          },
+          {
+            "path": "packages/zod/src/v4/mini/schemas.ts",
+            "line": 125
+          }
+        ],
+        "totalMatches": 5,
+        "oracleCandidates": [
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/mini/schemas.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v4/classic/schemas.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 3,
+          "packages/zod/src/v4/mini/schemas.ts": 1
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v4/classic/schemas.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 3,
+          "packages/zod/src/v4/mini/schemas.ts": 1
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src/v4"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 643,
+        "emittedBytes": 474,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 6.532916999999998,
+      "firstQueryCompletedUptimeMs": 521.593209,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 5.900541999999973,
+        "p95": 6.478041999999959
+      },
+      "workerPeakRssKiB": 193168,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 119,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 519.3657499999999,
+        "p95": 521.013792
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 7.001709000000005,
+        "p95": 7.1218750000000455
+      },
+      "freshProcessTotalMs": [
+        540.2751669999998,
+        539.4755420000001,
+        540.9796659999993
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-references",
+        "project": "zod",
+        "split": "development",
+        "task": "Find the classic string builder's call to the core _string helper.",
+        "params": {
+          "query": "\\b_string\\b",
+          "path": "packages/zod/src/v4",
+          "context": "classic public string builder caller",
+          "intent": "references"
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "startLine": 619,
+            "endLine": 619
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src/v4"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/mini/schemas.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/core/api.ts",
+            "line": 1802
+          },
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "line": 619
+          },
+          {
+            "path": "packages/zod/src/v4/mini/schemas.ts",
+            "line": 125
+          }
+        ],
+        "totalMatches": 5,
+        "oracleCandidates": [
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/core/api.ts",
+          "packages/zod/src/v4/mini/schemas.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v4/classic/schemas.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 3,
+          "packages/zod/src/v4/mini/schemas.ts": 1
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v4/classic/schemas.ts": 1,
+          "packages/zod/src/v4/core/api.ts": 3,
+          "packages/zod/src/v4/mini/schemas.ts": 1
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src/v4"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 1106,
+        "emittedBytes": 1495,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 0,
+        "mrr": 0.5,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 11.594916000000012,
+      "firstQueryCompletedUptimeMs": 526.380791,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 6.773958999999991,
+        "p95": 7.872458999999935
+      },
+      "workerPeakRssKiB": 209696,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 374,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 524.4235,
+        "p95": 524.617958
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 11.671917000000008,
+        "p95": 11.840750000000071
+      },
+      "freshProcessTotalMs": [
+        550.9089999999997,
+        549.3559590000004,
+        551.0194580000025
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-tests",
+        "project": "zod",
+        "split": "development",
+        "task": "Find the v4 classic includesFromIndex2 fixture and its position-based string-includes checks.",
+        "params": {
+          "query": "includesFromIndex2",
+          "literal": true,
+          "path": "packages/zod/src",
+          "context": "v4 classic includes position checks",
+          "intent": "tests"
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/tests/string.test.ts",
+            "startLine": 30,
+            "endLine": 36
+          }
+        ],
+        "alternatives": [
+          {
+            "path": "packages/zod/src/v4/classic/tests/string.test.ts",
+            "startLine": 11,
+            "endLine": 11
+          }
+        ],
+        "requiredRoots": [
+          "packages/zod/src"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v3/tests/string.test.ts",
+          "packages/zod/src/v4/classic/tests/string.test.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v3/tests/string.test.ts",
+            "line": 12
+          },
+          {
+            "path": "packages/zod/src/v4/classic/tests/string.test.ts",
+            "line": 11
+          }
+        ],
+        "totalMatches": 6,
+        "oracleCandidates": [
+          "packages/zod/src/v3/tests/string.test.ts",
+          "packages/zod/src/v4/classic/tests/string.test.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v3/tests/string.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/string.test.ts": 3
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v3/tests/string.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/string.test.ts": 3
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 877,
+        "emittedBytes": 665,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 0,
+        "mrr": 0.5,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 7.571915999999987,
+      "firstQueryCompletedUptimeMs": 527.443792,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 6.543708000000038,
+        "p95": 7.34116599999993
+      },
+      "workerPeakRssKiB": 197632,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 167,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 529.383375,
+        "p95": 539.0064169999999
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 7.548250000000053,
+        "p95": 7.626083000000108
+      },
+      "freshProcessTotalMs": [
+        549.5311660000007,
+        546.8275829999984,
+        559.8212500000009
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-tests",
+        "project": "zod",
+        "split": "development",
+        "task": "Find the v4 classic includesFromIndex2 fixture and its position-based string-includes checks.",
+        "params": {
+          "query": "includesFromIndex2",
+          "literal": true,
+          "path": "packages/zod/src",
+          "context": "v4 classic includes position checks",
+          "intent": "tests"
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/tests/string.test.ts",
+            "startLine": 30,
+            "endLine": 36
+          }
+        ],
+        "alternatives": [
+          {
+            "path": "packages/zod/src/v4/classic/tests/string.test.ts",
+            "startLine": 11,
+            "endLine": 11
+          }
+        ],
+        "requiredRoots": [
+          "packages/zod/src"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v3/tests/string.test.ts",
+          "packages/zod/src/v4/classic/tests/string.test.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/classic/tests/string.test.ts",
+            "line": 11
+          },
+          {
+            "path": "packages/zod/src/v3/tests/string.test.ts",
+            "line": 12
+          }
+        ],
+        "totalMatches": 6,
+        "oracleCandidates": [
+          "packages/zod/src/v3/tests/string.test.ts",
+          "packages/zod/src/v4/classic/tests/string.test.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v3/tests/string.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/string.test.ts": 3
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v3/tests/string.test.ts": 3,
+          "packages/zod/src/v4/classic/tests/string.test.ts": 3
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 1496,
+        "emittedBytes": 1480,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 12.363958000000025,
+      "firstQueryCompletedUptimeMs": 529.748125,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 7.480041000000028,
+        "p95": 8.617417000000046
+      },
+      "workerPeakRssKiB": 208752,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 370,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 535.387375,
+        "p95": 537.6848749999999
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 12.502042000000074,
+        "p95": 12.54708299999993
+      },
+      "freshProcessTotalMs": [
+        565.4824579999986,
+        563.3580000000002,
+        561.7585829999953
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-reexport",
+        "project": "zod",
+        "split": "holdout",
+        "task": "Follow the classic ZodISODateTime re-export to its constructor declaration.",
+        "params": {
+          "query": "ZodISODateTime",
+          "literal": true,
+          "path": "packages/zod/src/v4/classic/external.ts",
+          "context": "classic ISO datetime constructor",
+          "intent": "definition",
+          "expand_related": true
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "startLine": 643,
+            "endLine": 643
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src/v4/classic/external.ts",
+          "packages/zod/src/v4/classic/iso.ts",
+          "packages/zod/src/v4/classic/schemas.ts"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v4/classic/external.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/classic/external.ts",
+            "line": 44
+          }
+        ],
+        "totalMatches": 1,
+        "oracleCandidates": [
+          "packages/zod/src/v4/classic/external.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v4/classic/external.ts": 1
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v4/classic/external.ts": 1
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src/v4/classic/external.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 162,
+        "emittedBytes": 125,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 0,
+        "recallAt5": 0,
+        "top1": 0,
+        "mrr": 0,
+        "correctFirstSpan": false,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": false
+      },
+      "firstQueryMs": 3.080959000000007,
+      "firstQueryCompletedUptimeMs": 513.215459,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 2.450541000000044,
+        "p95": 2.926582999999937
+      },
+      "workerPeakRssKiB": 195584,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 32,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 516.467459,
+        "p95": 520.919625
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 3.2816250000000764,
+        "p95": 3.625415999999973
+      },
+      "freshProcessTotalMs": [
+        541.4904169999936,
+        536.9737500000047,
+        534.4643329999963
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-reexport",
+        "project": "zod",
+        "split": "holdout",
+        "task": "Follow the classic ZodISODateTime re-export to its constructor declaration.",
+        "params": {
+          "query": "ZodISODateTime",
+          "literal": true,
+          "path": "packages/zod/src/v4/classic/external.ts",
+          "context": "classic ISO datetime constructor",
+          "intent": "definition",
+          "expand_related": true
+        },
+        "targets": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "startLine": 643,
+            "endLine": 643
+          }
+        ],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src/v4/classic/external.ts",
+          "packages/zod/src/v4/classic/iso.ts",
+          "packages/zod/src/v4/classic/schemas.ts"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [
+          "packages/zod/src/v4/classic/external.ts",
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/classic/iso.ts",
+          "packages/zod/src/v4/core/schemas.ts",
+          "packages/zod/src/v4/core/api.ts"
+        ],
+        "returned": [
+          {
+            "path": "packages/zod/src/v4/classic/schemas.ts",
+            "line": 643
+          },
+          {
+            "path": "packages/zod/src/v4/core/schemas.ts",
+            "line": 773
+          },
+          {
+            "path": "packages/zod/src/v4/core/api.ts",
+            "line": 526
+          },
+          {
+            "path": "packages/zod/src/v4/classic/iso.ts",
+            "line": 6
+          },
+          {
+            "path": "packages/zod/src/v4/classic/external.ts",
+            "line": 44
+          }
+        ],
+        "totalMatches": 25,
+        "oracleCandidates": [
+          "packages/zod/src/v4/classic/external.ts",
+          "packages/zod/src/v4/classic/schemas.ts",
+          "packages/zod/src/v4/classic/iso.ts",
+          "packages/zod/src/v4/core/schemas.ts",
+          "packages/zod/src/v4/core/api.ts"
+        ],
+        "matchedLineCounts": {
+          "packages/zod/src/v4/classic/external.ts": 1,
+          "packages/zod/src/v4/classic/schemas.ts": 7,
+          "packages/zod/src/v4/classic/iso.ts": 4,
+          "packages/zod/src/v4/core/schemas.ts": 9,
+          "packages/zod/src/v4/core/api.ts": 4
+        },
+        "oracleLineCounts": {
+          "packages/zod/src/v4/classic/external.ts": 1,
+          "packages/zod/src/v4/classic/schemas.ts": 7,
+          "packages/zod/src/v4/classic/iso.ts": 4,
+          "packages/zod/src/v4/core/schemas.ts": 9,
+          "packages/zod/src/v4/core/api.ts": 4
+        },
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "partial",
+          "completedRoots": [
+            "packages/zod/src/v4/classic/external.ts",
+            "packages/zod/src/v4/core/index.ts",
+            "packages/zod/src/v4/classic/schemas.ts",
+            "packages/zod/src/v4/classic/checks.ts",
+            "packages/zod/src/v4/classic/errors.ts",
+            "packages/zod/src/v4/classic/parse.ts",
+            "packages/zod/src/v4/classic/compat.ts",
+            "packages/zod/src/v4/locales/index.ts",
+            "packages/zod/src/v4/classic/iso.ts",
+            "packages/zod/src/v4/classic/coerce.ts",
+            "packages/zod/src/v4/core/util.ts",
+            "packages/zod/src/v4/core/json-schema-processors.ts",
+            "packages/zod/src/v4/classic/from-json-schema.ts",
+            "packages/zod/src/v4/classic/deep-partial.ts",
+            "packages/zod/src/v4/classic/in-out.ts",
+            "packages/zod/src/v4/core/core.ts",
+            "packages/zod/src/v4/core/parse.ts",
+            "packages/zod/src/v4/core/errors.ts",
+            "packages/zod/src/v4/core/schemas.ts",
+            "packages/zod/src/v4/core/memoizer.ts",
+            "packages/zod/src/v4/core/checks.ts",
+            "packages/zod/src/v4/core/versions.ts",
+            "packages/zod/src/v4/core/regexes.ts",
+            "packages/zod/src/v4/core/registries.ts",
+            "packages/zod/src/v4/core/doc.ts",
+            "packages/zod/src/v4/core/compile.ts",
+            "packages/zod/src/v4/core/api.ts",
+            "packages/zod/src/v4/core/to-json-schema.ts",
+            "packages/zod/src/v4/core/json-schema.ts",
+            "packages/zod/src/v4/core/json-schema-generator.ts",
+            "packages/zod/src/v4/core/standard-schema.ts",
+            "packages/zod/src/v4/locales/en.ts",
+            "packages/zod/src/v4/locales/ar.ts",
+            "packages/zod/src/v4/locales/az.ts",
+            "packages/zod/src/v4/locales/be.ts",
+            "packages/zod/src/v4/locales/bg.ts",
+            "packages/zod/src/v4/locales/bn.ts",
+            "packages/zod/src/v4/locales/ca.ts",
+            "packages/zod/src/v4/locales/ckb.ts",
+            "packages/zod/src/v4/locales/cs.ts",
+            "packages/zod/src/v4/locales/da.ts",
+            "packages/zod/src/v4/locales/de.ts",
+            "packages/zod/src/v4/locales/el.ts",
+            "packages/zod/src/v4/locales/eo.ts",
+            "packages/zod/src/v4/locales/es.ts",
+            "packages/zod/src/v4/locales/fa.ts",
+            "packages/zod/src/v4/locales/fi.ts",
+            "packages/zod/src/v4/locales/fr.ts",
+            "packages/zod/src/v4/locales/fr-CA.ts",
+            "packages/zod/src/v4/locales/gu.ts",
+            "packages/zod/src/v4/locales/he.ts"
+          ],
+          "unvisitedRoots": [],
+          "reasons": [
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget",
+            "budget"
+          ]
+        },
+        "retainedSnippetBytes": 6117,
+        "emittedBytes": 26543,
+        "processes": 3,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": 1,
+        "recallAt5": 1,
+        "top1": 1,
+        "mrr": 1,
+        "correctFirstSpan": true,
+        "validMiss": null,
+        "falseMiss": false,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 341.33183299999996,
+      "firstQueryCompletedUptimeMs": 851.6398750000001,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 77.28754200000003,
+        "p95": 91.592084
+      },
+      "workerPeakRssKiB": 425696,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 6636,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 856.589792,
+        "p95": 856.885875
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 340.75529099999994,
+        "p95": 342.506167
+      },
+      "freshProcessTotalMs": [
+        889.1601669999945,
+        882.7024170000077,
+        889.4307499999995
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-negative",
+        "project": "zod",
+        "split": "holdout",
+        "task": "Determine whether zodBenchmarkAbsent_804e0f522747345d6b37581888899be420baa3e occurs in Zod source.",
+        "params": {
+          "query": "zodBenchmarkAbsent_804e0f522747345d6b37581888899be420baa3e",
+          "literal": true,
+          "case_sensitive": true,
+          "path": "packages/zod/src",
+          "intent": "auto"
+        },
+        "targets": [],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src"
+        ]
+      },
+      "mode": "raw-rg",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [],
+        "returned": [],
+        "totalMatches": 0,
+        "oracleCandidates": [],
+        "matchedLineCounts": {},
+        "oracleLineCounts": {},
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 2,
+        "emittedBytes": 0,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": null,
+        "recallAt5": null,
+        "top1": null,
+        "mrr": null,
+        "correctFirstSpan": null,
+        "validMiss": true,
+        "falseMiss": null,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 7.276291999999955,
+      "firstQueryCompletedUptimeMs": 517.009209,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 6.57445800000005,
+        "p95": 7.129458
+      },
+      "workerPeakRssKiB": 221648,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 0,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 515.357667,
+        "p95": 516.35175
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 7.225375000000042,
+        "p95": 7.455833000000041
+      },
+      "freshProcessTotalMs": [
+        535.7982079999929,
+        533.346915999995,
+        536.2675829999935
+      ]
+    },
+    {
+      "scenario": {
+        "id": "zod-negative",
+        "project": "zod",
+        "split": "holdout",
+        "task": "Determine whether zodBenchmarkAbsent_804e0f522747345d6b37581888899be420baa3e occurs in Zod source.",
+        "params": {
+          "query": "zodBenchmarkAbsent_804e0f522747345d6b37581888899be420baa3e",
+          "literal": true,
+          "case_sensitive": true,
+          "path": "packages/zod/src",
+          "intent": "auto"
+        },
+        "targets": [],
+        "alternatives": [],
+        "requiredRoots": [
+          "packages/zod/src"
+        ]
+      },
+      "mode": "full",
+      "source": {
+        "repository": "colinhacks/zod",
+        "revision": "804e0f522747345d6b37581888899be420baa3e9"
+      },
+      "observation": {
+        "candidates": [],
+        "returned": [],
+        "totalMatches": 0,
+        "oracleCandidates": [],
+        "matchedLineCounts": {},
+        "oracleLineCounts": {},
+        "outsideCorpusCandidates": 0,
+        "coverage": {
+          "status": "complete",
+          "completedRoots": [
+            "packages/zod/src"
+          ],
+          "unvisitedRoots": [],
+          "reasons": []
+        },
+        "retainedSnippetBytes": 0,
+        "emittedBytes": 308,
+        "processes": 1,
+        "listings": 0
+      },
+      "metrics": {
+        "candidateRecall": null,
+        "recallAt5": null,
+        "top1": null,
+        "mrr": null,
+        "correctFirstSpan": null,
+        "validMiss": true,
+        "falseMiss": null,
+        "completenessError": false,
+        "requiredCoverage": true
+      },
+      "firstQueryMs": 9.605875000000026,
+      "firstQueryCompletedUptimeMs": 515.4295,
+      "queryExecutions": 16,
+      "warmLatencyMs": {
+        "samples": 15,
+        "median": 6.636582999999973,
+        "p95": 7.399916000000076
+      },
+      "workerPeakRssKiB": 194240,
+      "emittedTokens": null,
+      "emittedTokensEstimate": 77,
+      "tokenization": "unavailable; byte/4 estimate is not an exact token count",
+      "freshProcessLatencyMs": {
+        "samples": 3,
+        "median": 514.8572919999999,
+        "p95": 515.598917
+      },
+      "firstQueryLatencyMs": {
+        "samples": 3,
+        "median": 9.534666999999956,
+        "p95": 9.595709
+      },
+      "freshProcessTotalMs": [
+        542.2560419999936,
+        542.0187500000029,
+        539.7136670000036
+      ]
+    }
+  ]
+}

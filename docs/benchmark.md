@@ -1,5 +1,7 @@
 # Search benchmark
 
+This guide covers the synthetic regression baseline. The separate [public navigation evaluation](evaluation.md) documents the pinned Pi, Rails and Zod corpus, five feature ablations, resource measurements and bounded model probe.
+
 Run from the repository root with the existing development dependencies and `rg` on PATH:
 
 ```bash
@@ -39,4 +41,4 @@ An isolated `RIPGREP_CONFIG_PATH` enables `--sort=path` for reproducible arrival
 
 The labels identify required relevant targets, not interchangeable alternatives. Recall@5 counts distinct relevant file paths returned in the first five results; reciprocal rank uses the first relevant file. A separate check requires the top snippet to match the labeled line. File and line count checks compare full reported retrieval counts with the oracle. They do not measure relevance recall inside an undisclosed candidate pool.
 
-This small synthetic dataset is a regression baseline, not a representative accuracy estimate. It has no held-out real-project cases yet. Cold-cache latency, retained/peak memory, tokenizer-specific tokens, model task success and agent effort are explicitly unavailable in this report. A 15-sample p95 is noisy. Keep the original baseline artifact unchanged when recording subsequent revisions to new report files.
+This small synthetic dataset is a regression baseline, not a representative accuracy estimate. Its cases are separate from the public corpus and do not contribute to that corpus's accuracy denominator. Cold-cache latency, retained/peak memory, tokenizer-specific tokens, model task success and agent effort are explicitly unavailable in this report. A 15-sample p95 is noisy. Keep the original baseline artifact unchanged when recording subsequent revisions to new report files.
