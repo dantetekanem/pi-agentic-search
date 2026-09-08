@@ -6,7 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { percentile } from "../benchmark-cases.ts";
 import { SOURCE_PINS, summarize, validateCase, type EvaluationCase, type SourcePin } from "./core.ts";
-import type { measure, Mode } from "./worker.ts";
+import type { measure } from "./worker.ts";
+import { assertComparisons, MODE_NOTES, parseModes, type ComparisonRow, type Mode } from "./variants.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 export function measureFresh(root: string, pin: SourcePin, scenario: EvaluationCase, mode: Mode, samples: number, phase: "cold" | "warm") {
@@ -46,7 +47,7 @@ async function main() {
   const options = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const key = args[index]!;
-    if (!["--cache", "--samples", "--cold-samples", "--case", "--output"].includes(key) || !args[index + 1] || options.has(key)) throw new Error("Invalid evaluation arguments");
+    if (!["--cache", "--samples", "--cold-samples", "--case", "--output", "--modes", "--baseline"].includes(key) || !args[index + 1] || options.has(key)) throw new Error("Invalid evaluation arguments");
     options.set(key, args[index + 1]!);
   }
   const cache = options.get("--cache");
@@ -57,7 +58,11 @@ async function main() {
   const catalog = await loadCases(join(repository, "test/corpus"));
   const cases = catalog.filter((item) => !options.has("--case") || item.id === options.get("--case"));
   if (!cases.length) throw new Error("Unknown corpus case");
-  const modes: Mode[] = ["raw-rg", "full"];
+  const modes = parseModes(options.get("--modes"));
+  const datasetHash = createHash("sha256").update(JSON.stringify({ sources: SOURCE_PINS, cases: catalog })).digest("hex");
+  const baseline = options.has("--baseline")
+    ? JSON.parse(await readFile(resolve(options.get("--baseline")!), "utf8")) as { datasetHash: string; sourceRevision: string; results: ComparisonRow[] } : undefined;
+  if (baseline && (baseline.datasetHash !== datasetHash || !modes.includes("full"))) throw new Error("Baseline requires unchanged labels and a full control mode");
   const results: Array<Omit<Awaited<ReturnType<typeof measure>>, "workerPid"> & {
     freshProcessLatencyMs: { samples: number; median: number; p95: number };
     firstQueryLatencyMs: { samples: number; median: number; p95: number }; freshProcessTotalMs: number[];
@@ -75,16 +80,25 @@ async function main() {
       freshProcessTotalMs: cold.map((row) => row.totalProcessMs) });
     console.error(`${scenario.id}/${mode}: measured ${samples} warm and ${coldSamples} fresh-process queries`);
   }
+  let comparisonFailure: string | undefined;
+  if (modes.includes("full")) {
+    try { assertComparisons(results, baseline?.results ?? results); }
+    catch (error) { comparisonFailure = error instanceof Error ? error.message : "Comparison failed"; }
+  }
+  const configuration = { samples, coldSamples, modes: Object.fromEntries(modes.map((mode) => [mode, MODE_NOTES[mode]])) };
   const report = {
-    schemaVersion: 1, createdAt: new Date().toISOString(), sourceRevision: git("rev-parse", "HEAD"),
+    schemaVersion: 1,
+    configuration, configurationHash: createHash("sha256").update(JSON.stringify(configuration)).digest("hex"),
+    comparisons: modes.includes("full") ? { passed: !comparisonFailure, baselineRevision: baseline?.sourceRevision ?? null, failure: comparisonFailure ?? null } : null,
+    createdAt: new Date().toISOString(), sourceRevision: git("rev-parse", "HEAD"),
     runtimeDirty: Boolean(git("status", "--porcelain", "--", "index.ts", "src")),
     runtimeHash: await hashFiles(git("ls-files", "index.ts", "src").split("\n").filter(Boolean)),
     runnerHash: await hashFiles((await readdir(dirname(fileURLToPath(import.meta.url)))).filter((path) => path.endsWith(".ts")).map((path) => `test/evaluation/${path}`)),
-    datasetHash: createHash("sha256").update(JSON.stringify({ sources: SOURCE_PINS, cases: catalog })).digest("hex"),
+    datasetHash,
     environment: { node: process.version, os: platform(), arch: arch(), rg: execFileSync("rg", ["--version"], { encoding: "utf8" }).split("\n")[0] },
     methodology: {
       corpus: "Manually labeled revision-pinned public navigation cases, not a representative accuracy estimate. Holdout labels are not used for tuning.",
-      warm: "One warmup, then timed queries including observation capture; excludes source validation and independent native oracle.",
+      warm: "One warmup, then timed queries including observation capture; excludes source validation and independent native oracle. Quality is assessed on the last warm query; repeated timing samples do not enlarge the labeled case count.",
       firstQuery: "First query in each fresh worker, including observation capture but excluding loader, harness validation and oracle. Filesystem caches are not flushed.",
       freshProcess: "Node process uptime through its first query, including loader/SDK and harness validation. Exactly one query; excludes oracle and result serialization. Filesystem caches are not flushed.",
       freshProcessTotal: "Parent-observed process lifetime, including validation, oracle and JSON transfer; not single-query latency.",
@@ -100,5 +114,6 @@ async function main() {
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
   console.error(`Evaluation report written to ${output}`);
+  if (comparisonFailure) { console.error(comparisonFailure); process.exitCode = 1; }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

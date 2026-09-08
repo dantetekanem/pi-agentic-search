@@ -6,8 +6,10 @@ import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { assessQuality, PinnedSource, summarize, validateCase, type EvaluationCase, type Observation, type SourcePin } from "./evaluation/core.ts";
-import { measure } from "./evaluation/worker.ts";
+import { measure, type Mode } from "./evaluation/worker.ts";
 import { loadCases, measureFresh } from "./evaluation/run.ts";
+import { assertComparisons, parseModes } from "./evaluation/variants.ts";
+import { runSearch } from "../src/extension.ts";
 
 const scenario: EvaluationCase = {
   id: "example", project: "fixture", split: "development", task: "Locate needle's definition.",
@@ -70,6 +72,29 @@ test("metrics stay separated by intent and development/holdout split", () => {
   ]);
   assert.equal(report.development?.definition?.top1, 1);
   assert.equal(report.holdout?.definition?.top1, 0);
+});
+
+test("variant selection preserves defaults and rejects unknown, repeated or empty modes", () => {
+  assert.deepEqual(parseModes(), ["raw-rg", "full"]);
+  assert.deepEqual(parseModes("full,no-guidance"), ["full", "no-guidance"]);
+  for (const input of ["unknown", "full,full", ""]) assert.throws(() => parseModes(input), /Invalid evaluation modes/);
+});
+
+test("comparison gates preserve defaults, labels, candidate pools and guidance rankings", () => {
+  const base = { scenario, mode: "full" as const, observation: observation(), metrics: assessQuality(scenario, observation()) };
+  assert.doesNotThrow(() => assertComparisons([base, { ...base, mode: "no-context" }], [base]));
+  assert.throws(() => assertComparisons([{ ...base, metrics: { ...base.metrics, top1: 0 } }], [base]), /default metrics/);
+  assert.throws(() => assertComparisons([{ ...base, scenario: { ...scenario, task: "Changed label" } }], [base]), /labels/);
+  const different = observation({ candidates: [] });
+  assert.throws(() => assertComparisons([base, { ...base, mode: "no-context", observation: different }], [base]), /candidate pool/);
+  assert.throws(() => assertComparisons([base, { ...base, mode: "no-guidance", observation: observation({ returned: [] }) }], [base]), /guidance ranking/);
+  assert.throws(() => assertComparisons([base, { ...base, mode: "no-graph", observation: different }], [base]), /candidate pool/);
+  const graphCase = { ...scenario, params: { ...scenario.params, path: "anchor.ts", expand_related: true } };
+  const graphBase = { ...base, scenario: graphCase };
+  const anchorOnly = observation({ candidates: [], returned: [], totalMatches: 0, matchedLineCounts: {}, oracleLineCounts: {}, oracleCandidates: [],
+    coverage: { status: "complete", completedRoots: ["anchor.ts"], unvisitedRoots: [], reasons: [] } });
+  assert.doesNotThrow(() => assertComparisons([graphBase, { ...graphBase, mode: "no-graph", observation: anchorOnly, metrics: assessQuality(graphCase, anchorOnly) }], [graphBase]));
+  assert.throws(() => assertComparisons([], [base]), /missing full/);
 });
 
 test("corpus validation rejects unsupported intents and unsafe source paths", () => {
@@ -180,4 +205,42 @@ test("a malformed native oracle cannot manufacture a completed miss", () => repo
     const item = { ...scenario, targets: [{ path: "target.ts", startLine: 1, endLine: 1 }] };
     await assert.rejects(measure(root, pin, item, "raw-rg", 1), /native.*JSON/i);
   } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
+}));
+
+const ablations: Array<{ mode: Mode; files: Record<string, string>; params: EvaluationCase["params"]; target: string; other: string; line?: number }> = [
+  { mode: "no-path-priors", files: { "src/z.ts": "needle();\n", "a.test.ts": "needle();\n" }, params: { query: "needle", intent: "auto" }, target: "src/z.ts", other: "a.test.ts" },
+  { mode: "no-context", files: { "a.ts": "// retail\nneedle();\n", "z.ts": "// wholesale\nneedle();\n" }, params: { query: "needle", context: "wholesale", intent: "definition" }, target: "z.ts", other: "a.ts", line: 2 },
+  { mode: "no-definition-scoring", files: { "src/a.ts": "needle();\n", "src/z.ts": "export function needle() {}\n" }, params: { query: "needle", intent: "definition" }, target: "src/z.ts", other: "src/a.ts" },
+  { mode: "no-graph", files: { "main.ts": "import { needle } from './impl.ts';\nneedle();\n", "impl.ts": "export function needle() {}\n" }, params: { query: "needle", literal: true, path: "main.ts", intent: "definition", expand_related: true }, target: "impl.ts", other: "main.ts" },
+];
+for (const example of ablations) test(`${example.mode} removes only the named contribution`, () => repository(example.files, async (root, pin) => {
+  const line = example.line ?? 1;
+  const item = { ...scenario, params: example.params, targets: [{ path: example.target, startLine: line, endLine: line }], requiredRoots: Object.keys(example.files) };
+  const full = await measure(root, pin, item, "full", 1);
+  const disabled = await measure(root, pin, item, example.mode, 1);
+  assert.equal(full.observation.returned[0]?.path, example.target);
+  assert.equal(disabled.observation.returned[0]?.path, example.other);
+  if (example.mode === "no-graph") {
+    assert.equal(disabled.metrics.requiredCoverage, false);
+    assert.deepEqual(disabled.observation.candidates, ["main.ts"]);
+  } else {
+    assert.deepEqual([...disabled.observation.candidates].sort(), [...full.observation.candidates].sort());
+    assert.deepEqual(disabled.observation.matchedLineCounts, full.observation.matchedLineCounts);
+  }
+}));
+
+test("guidance ablation preserves retrieval and ranking while reducing emitted instructions", () => repository({ "target.ts": "export function needle() {}\n" }, async (root, pin) => {
+  const item = { ...scenario, targets: [{ path: "target.ts", startLine: 1, endLine: 1 }] };
+  const full = await measure(root, pin, item, "full", 1);
+  const disabled = await measure(root, pin, item, "no-guidance", 1);
+  assert.deepEqual(disabled.metrics, full.metrics);
+  assert.deepEqual(disabled.observation.returned, full.observation.returned);
+  assert.deepEqual(disabled.observation.matchedLineCounts, full.observation.matchedLineCounts);
+  assert.ok(disabled.observation.emittedBytes < full.observation.emittedBytes);
+  const signal = AbortSignal.abort("evaluation cancellation");
+  const interrupted = await runSearch(item.params, root, signal);
+  const unguided = await runSearch(item.params, root, signal, { guidance: false });
+  assert.equal(unguided.details.coverage.status, "partial");
+  assert.deepEqual(unguided.details.files, interrupted.details.files);
+  assert.ok(Buffer.byteLength(unguided.content[0]!.text) < Buffer.byteLength(interrupted.content[0]!.text));
 }));

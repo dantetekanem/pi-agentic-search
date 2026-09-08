@@ -76,17 +76,17 @@ export function words(value: string): string[] {
     .replace(/(\p{Lu}+)(\p{Lu}\p{Ll})/gu, "$1 $2").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 }
 
-export function snippetPriority(match: CodeMatch, intent: SearchIntent = "auto", context: string[] = []): number {
+export function snippetPriority(match: CodeMatch, intent: SearchIntent = "auto", context: string[] = [], declarationEvidence = true): number {
   const kind = match.kind ?? (match.isDefinition ? "definition" : "reference");
-  const priorities: Record<MatchKind, number> = { definition: 4, reference: 3, import: 2, string: 1, comment: 0 };
+  const priorities: Record<MatchKind, number> = { definition: declarationEvidence ? 4 : 3, reference: 3, import: 2, string: 1, comment: 0 };
   const tier = intent === "references" && kind === "reference" ? 5 : priorities[kind];
   if (context.length === 0) return tier * 10;
   const tokens = new Set(words(`${match.line} ${match.contextBlock ?? ""}`));
   return tier * 10 + Math.min(9, context.filter((token) => tokens.has(token)).length);
 }
 
-export function selectSnippets(matches: CodeMatch[], limit: number, intent: SearchIntent = "auto", context: string[] = []): CodeMatch[] {
-  const sorted = [...matches].sort((a, b) => snippetPriority(b, intent, context) - snippetPriority(a, intent, context) || a.lineNumber - b.lineNumber);
+export function selectSnippets(matches: CodeMatch[], limit: number, intent: SearchIntent = "auto", context: string[] = [], declarationEvidence = true): CodeMatch[] {
+  const sorted = [...matches].sort((a, b) => snippetPriority(b, intent, context, declarationEvidence) - snippetPriority(a, intent, context, declarationEvidence) || a.lineNumber - b.lineNumber);
   const selected: CodeMatch[] = [];
   for (const match of sorted) {
     if (selected.length >= limit) break;

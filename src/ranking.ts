@@ -74,17 +74,22 @@ export async function enrichContext(
   };
 }
 
+export interface RankingFeatures {
+  pathPriors?: boolean;
+  declarationEvidence?: boolean;
+}
 export interface RankingOptions {
   intent?: SearchIntent;
   anchorPath?: string;
   related?: RelatedExpansionDetails;
+  features?: RankingFeatures;
 }
 
-function compareFiles(a: RankedFileResult, b: RankedFileResult, intent: SearchIntent): number {
+function compareFiles(a: RankedFileResult, b: RankedFileResult, intent: SearchIntent, declarationEvidence: boolean): number {
   const tier = (file: RankedFileResult) => {
     const evidence = file.evidence;
     if (evidence?.tier === "path") return 0;
-    if (intent === "definition") return evidence?.definitionCount ? 3 : 1;
+    if (intent === "definition" && declarationEvidence) return evidence?.definitionCount ? 3 : 1;
     if (intent === "references") return evidence?.referenceCount ? 3 : 1;
     return 1;
   };
@@ -104,6 +109,8 @@ export function rankFileGroups(
   const paths = new Map(pathMatches.map((match) => [match.path, match]));
   const allPaths = new Set([...grouped.keys(), ...paths.keys(), ...(summaries?.keys() ?? [])]);
   const intent = options.intent ?? "auto";
+  const declarationEvidence = options.features?.declarationEvidence !== false;
+  const pathPriors = options.features?.pathPriors !== false;
   const queryWords = new Set(words(query));
   const contextWords = contextTokens(context);
   const ranked: RankedFileResult[] = [];
@@ -118,7 +125,7 @@ export function rankFileGroups(
     let score = paths.get(path)?.score ?? 0;
     reasons.push(...(paths.get(path)?.reasons ?? []));
     if (count) reasons.push("content match");
-    if (definitionCount) {
+    if (definitionCount && declarationEvidence) {
       score += 35 + Math.min(30, definitionCount * 5);
       reasons.push(`${definitionCount} definition match${definitionCount === 1 ? "" : "es"}`);
     }
@@ -132,16 +139,16 @@ export function rankFileGroups(
     if (snippetHits.length) { score += Math.min(135, snippetHits.length * 45); reasons.unshift(`context tokens matched snippets: ${snippetHits.join(", ")}`); }
     if (pathHits.length) { score += Math.min(75, pathHits.length * 25); reasons.unshift(`context tokens matched path: ${pathHits.join(", ")}`); }
     if (snippetHits.length && pathHits.length) score += 15;
-    if (SOURCE_EXTENSIONS.has(extname(normalized))) { score += 15; reasons.push("source file"); }
-    if (/(^|\/)(src|app|lib|packages|pkg|cmd|internal|core)\//.test(normalized)) { score += 8; reasons.push("implementation path"); }
-    if (pathDepth(path) <= 3) { score += 5; reasons.push("shallow path"); }
+    if (pathPriors && SOURCE_EXTENSIONS.has(extname(normalized))) { score += 15; reasons.push("source file"); }
+    if (pathPriors && /(^|\/)(src|app|lib|packages|pkg|cmd|internal|core)\//.test(normalized)) { score += 8; reasons.push("implementation path"); }
+    if (pathPriors && pathDepth(path) <= 3) { score += 5; reasons.push("shallow path"); }
     if (words(normalizeRepoRelativePath(path).split("/").pop() ?? "").some((word) => queryWords.has(word))) { score += 12; reasons.push("filename matches query words"); }
-    if (TEST_PATH.test(normalized)) {
+    if (pathPriors && TEST_PATH.test(normalized)) {
       score += intent === "tests" ? 150 : TEST_PATH.test(options.anchorPath ?? "") ? 0 : -30;
       reasons.push(intent === "tests" ? "requested test evidence" : "test/support path");
     }
-    if (LOW_VALUE_PATH.test(normalized) && !LOW_VALUE_PATH.test(options.anchorPath ?? "")) { score -= 60; reasons.push("low-value path"); }
-    if (GENERATED_PATH.test(normalized) && !GENERATED_PATH.test(options.anchorPath ?? "")) { score -= 25; reasons.push("generated/bundled path"); }
+    if (pathPriors && LOW_VALUE_PATH.test(normalized) && !LOW_VALUE_PATH.test(options.anchorPath ?? "")) { score -= 60; reasons.push("low-value path"); }
+    if (pathPriors && GENERATED_PATH.test(normalized) && !GENERATED_PATH.test(options.anchorPath ?? "")) { score -= 25; reasons.push("generated/bundled path"); }
     if (path === options.anchorPath && (intent === "file" || intent === "auto")) {
       score += 200;
       reasons.unshift("primary target");
@@ -159,11 +166,11 @@ export function rankFileGroups(
         basis: definitionCount ? JS_TS_EXTENSIONS.has(extname(path)) || extname(path) === ".rb" ? "declaration-span" : "line-pattern" : count ? "text" : "path",
         competingCandidates: 0,
       },
-      matches: selectSnippets(fileMatches, maxMatchesPerFile, intent, contextWords),
+      matches: selectSnippets(fileMatches, maxMatchesPerFile, intent, contextWords, declarationEvidence),
     });
   }
   const tierCounts = new Map<string, number>();
   for (const file of ranked) if (file.evidence) tierCounts.set(file.evidence.tier, (tierCounts.get(file.evidence.tier) ?? 0) + 1);
   for (const file of ranked) if (file.evidence) file.evidence.competingCandidates = (tierCounts.get(file.evidence.tier) ?? 1) - 1;
-  return ranked.sort((a, b) => compareFiles(a, b, intent));
+  return ranked.sort((a, b) => compareFiles(a, b, intent, declarationEvidence));
 }

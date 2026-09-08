@@ -6,13 +6,14 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension from "../../index.ts";
+import { runSearch } from "../../src/extension.ts";
 import { DEFAULT_EXCLUDES, PACKAGE_SEARCH_EXCLUDES } from "../../src/classifications.ts";
 import { SearchRequest } from "../../src/retrieval.ts";
 import type { SearchDetails } from "../../src/types.ts";
 import { percentile } from "../benchmark-cases.ts";
 import { assessQuality, PinnedSource, validateCase, type EvaluationCase, type Observation, type SourcePin } from "./core.ts";
-
-export type Mode = "full" | "raw-rg";
+import { MODES, type Mode } from "./variants.ts";
+export type { Mode } from "./variants.ts";
 interface NativeMatch { path: string; lineNumber: number; line: string }
 function counts(matches: NativeMatch[]): Record<string, number> {
   const lines = new Map<string, Set<number>>();
@@ -64,7 +65,7 @@ const reasonCode = (reason: string) => /budget|limit/i.test(reason) ? "budget" :
 export async function measure(root: string, pin: SourcePin, input: EvaluationCase, mode: Mode, samples: number, phase: "cold" | "warm" = "warm") {
   const scenario = validateCase(input);
   if (!Number.isInteger(samples) || samples < 1 || samples > 100) throw new Error("Samples must be 1..100");
-  if (mode !== "full" && mode !== "raw-rg") throw new Error("Unsupported evaluation mode");
+  if (!MODES.includes(mode)) throw new Error("Unsupported evaluation mode");
   if ((phase !== "cold" && phase !== "warm") || (phase === "cold" && samples !== 1)) throw new Error("Cold workers execute exactly one query");
   const source = await PinnedSource.open(root, pin);
   source.validate(scenario);
@@ -115,7 +116,15 @@ export async function measure(root: string, pin: SourcePin, input: EvaluationCas
           retainedSnippetBytes: Buffer.byteLength(JSON.stringify(native.matches)), emittedBytes: Buffer.byteLength(visible.content), processes: 1, listings: 0,
         };
       }
-      const result = await search.execute("evaluation", scenario.params, undefined, undefined, { cwd: source.root } as ExtensionContext);
+      const params = { ...scenario.params,
+        ...(mode === "no-context" ? { context: undefined } : {}),
+        ...(mode === "no-graph" ? { expand_related: false } : {}),
+      };
+      const result = mode === "full" || mode === "no-context" || mode === "no-graph"
+        ? await search.execute("evaluation", params, undefined, undefined, { cwd: source.root } as ExtensionContext)
+        : await runSearch(params, source.root, undefined, {
+          pathPriors: mode !== "no-path-priors", declarationEvidence: mode !== "no-definition-scoring", guidance: mode !== "no-guidance",
+        });
       const details = result.details as SearchDetails;
       detailsForOracle = details;
       if (details.fullOutputPath) await rm(dirname(details.fullOutputPath), { recursive: true, force: true });
