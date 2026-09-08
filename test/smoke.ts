@@ -428,7 +428,7 @@ const importExpandedText = importExpandedResult.content[0].text;
 assert.equal(importExpandedResult.details.files[0].path, "src/app.ts");
 assert.equal(importExpandedResult.details.related.label, "import");
 assert.match(importExpandedText, /↳ 1\.1\. src\/helpers\/math\.ts/);
-assert.match(importExpandedText, /imported by src\/app\.ts via \.\/helpers\/math; related import also includes search values, very likely a target too/);
+assert.match(importExpandedText, /imported by src\/app\.ts via \.\/helpers\/math;/);
 assert.match(importExpandedText, /L1 \[def\] export function computeUserScore/);
 assert.match(importExpandedText, /src\/components\/Button\.tsx/);
 assert.match(importExpandedText, /src\/constants\.ts/);

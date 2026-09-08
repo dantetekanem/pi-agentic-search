@@ -10,6 +10,7 @@ import { expandRelatedFiles } from "./related.ts";
 import { formatSearchResults, formatTopMatch, renderCall, renderResult } from "./render.ts";
 import { CONTEXT_LIMITS, contextTokens, enrichContext, pathDepth, rankFileGroups, scorePathQueryMatch } from "./ranking.ts";
 import { SearchRequest, runRg } from "./retrieval.ts";
+import { ProjectFiles } from "./inventory.ts";
 import { clampInt, displaySearchRoot, normalizeRepoRelativePath, stripAtPrefix, uniqueValues } from "./shared.ts";
 import type { PathMatch, SearchCoverageDetails, SearchDetails } from "./types.ts";
 export { parseRipgrepJsonLines } from "./matches.ts";
@@ -41,38 +42,22 @@ function rgArgs(query: string, roots: string[], literal: boolean, caseSensitive?
   return [...args, "-e", query, "--", ...roots];
 }
 
-async function listPathMatches(cwd: string, query: string, request: SearchRequest): Promise<PathMatch[]> {
-  let inventory = request.inventories.get(cwd);
-  if (!inventory) {
-    inventory = (async () => {
-      const paths: string[] = [];
-      const args = ["--files", "--null", "--hidden", "--color=never"];
-      for (const glob of DEFAULT_EXCLUDES) args.push("--glob", glob);
-      args.push("--", ".");
-      const run = await runRg(args, cwd, ["."], request, (path) => {
-        if (paths.length >= request.limits.candidates) return "path inventory candidate budget";
-        paths.push(normalizeRepoRelativePath(path));
-      }, "\0");
-      run.kind = "inventory";
-      if (run.status !== "complete") request.inventoryReasons.push(run.reason ?? run.error ?? "incomplete path inventory");
-      return paths;
-    })();
-    request.inventories.set(cwd, inventory);
-  }
-  return (await inventory).flatMap((path) => {
+async function listPathMatches(files: ProjectFiles, query: string): Promise<PathMatch[]> {
+  return (await files.list(".")).flatMap((absolute) => {
+    const path = files.display(absolute);
     const match = scorePathQueryMatch(path, query);
     return match ? [{ path, ...match }] : [];
   });
 }
 
-async function resolveSearchScope(cwd: string, path: string | undefined, request: SearchRequest): Promise<{ roots: string[]; pathMatches: PathMatch[] }> {
+async function resolveSearchScope(cwd: string, path: string | undefined, files: ProjectFiles): Promise<{ roots: string[]; pathMatches: PathMatch[] }> {
   const hint = path?.trim();
   if (!hint) return { roots: ["."], pathMatches: [] };
   const resolved = candidatePath(cwd, hint);
-  if (await stat(resolved).catch(() => undefined)) {
+  if (await files.fileStat(resolved) || files.request.signal.aborted) {
     return { roots: [isAbsolute(stripAtPrefix(hint)) ? resolved : displaySearchRoot(cwd, resolved)], pathMatches: [] };
   }
-  const pathMatches = await listPathMatches(cwd, hint, request);
+  const pathMatches = await listPathMatches(files, hint);
   pathMatches.sort((a, b) => b.score - a.score || pathDepth(a.path) - pathDepth(b.path) || a.path.localeCompare(b.path));
   return { roots: pathMatches.length ? pathMatches.map((match) => match.path) : ["."], pathMatches };
 }
@@ -110,8 +95,9 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
   const maxMatches = clampInt(params.max_matches_per_file, 10, 1, 10);
   const context = params.context?.trim() || undefined;
   const intent = params.intent ?? "auto";
-  const scope = await resolveSearchScope(cwd, params.path, request);
-  const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal) : undefined;
+  const files = new ProjectFiles(cwd, request);
+  const scope = await resolveSearchScope(cwd, params.path, files);
+  const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal, files) : undefined;
   const searchRoots = uniqueValues([...scope.roots, ...(related?.roots ?? [])]);
   let literal = params.literal ?? false;
   let literalFallback = false;
@@ -150,7 +136,7 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     const root = candidatePath(cwd, pkg.path);
     await search(root, ["."], [pkg.path], (path) => displaySearchRoot(cwd, resolve(root, path)), true);
   }
-  const pathMatches = !params.path && request.files.size === 0 ? await listPathMatches(cwd, params.query, request) : scope.pathMatches;
+  const pathMatches = !params.path && request.files.size === 0 ? await listPathMatches(files, params.query) : scope.pathMatches;
   const contentRuns = request.runs.filter((run) => !run.kind || run.kind === "content");
   const omittedPackages = packages.filter((pkg) => !selectedPackages.includes(pkg));
   const reasons = uniqueValues([
@@ -163,7 +149,8 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
   const coverage: SearchCoverageDetails = {
     status: reasons.length === 0 ? "complete" : failedWithoutCoverage ? "failed" : "partial",
     roots: searchRoots, ownerRoot: owner, packageRoots: selectedPackages.map((pkg) => pkg.path), omittedPackageRoots: omittedPackages.length,
-    omittedRelatedCandidates: omittedPackages.length + (related?.unresolved.length ?? 0) + (related?.skipped?.length ?? 0),
+    omittedRelatedCandidates: omittedPackages.length + (related?.unresolved.length ?? 0) +
+      (related?.traversal ? related.traversal.omittedEdges + related.traversal.omittedFileCandidates : related?.skipped?.length ?? 0),
     packagePolicy: { excludes: PACKAGE_SEARCH_EXCLUDES, respectsIgnoreFiles: false }, completedRoots,
     unvisitedRoots: uniqueValues([...request.runs.filter((run) => run.kind !== "validation" && run.status !== "complete").flatMap((run) => run.roots), ...omittedPackages.map((pkg) => pkg.path)]),
     reasons, runs: request.runs, excludes: DEFAULT_EXCLUDES, respectsIgnoreFiles: true,
