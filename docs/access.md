@@ -17,3 +17,5 @@ When a result exceeds Pi's output limits, the extension may write the complete r
 ## Network access
 
 The extension makes no direct network requests. Package installation, Pi host behavior, and the `rg` executable are outside this extension's direct network behavior.
+
+The separate opt-in development model probe makes authenticated inference requests with verified public-source content and an explicitly approved spending limit. It is not shipped in the runtime package. Normal tests use mocked transport rather than live inference. See the repository's [evaluation guide](https://github.com/dantetekanem/pi-agentic-search/blob/a529aa7d590e1900e39f6c16c48ec12588322cd5/docs/evaluation.md) for isolation, budgeting and reproduction details.

@@ -1,5 +1,8 @@
-# Dependencies
-node_modules/
+# Dependencies, including local worktree symlinks
+node_modules
+
+# Local planning state
+goal.md
 
 # Build and coverage output
 dist/
@@ -13,7 +16,6 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*
 
 # Environment and local configuration
 .env
