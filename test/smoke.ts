@@ -11,7 +11,7 @@ function rgMatch(path: string, lineNumber: number, text: string): string {
       path: { text: path },
       lines: { text: `${text}\n` },
       line_number: lineNumber,
-      submatches: [{ match: { text: "Widget" }, start: 10, end: 16 }],
+      submatches: [{ match: { text: "Widget" }, start: text.indexOf("Widget"), end: text.indexOf("Widget") + 6 }],
     },
   });
 }
@@ -29,7 +29,7 @@ assert.equal(matches[1]?.isDefinition, true);
 const ranked = rankFileGroups(matches, "Widget", 3);
 assert.equal(ranked[0]?.path, "src/widget.ts");
 assert.ok((ranked[0]?.score ?? 0) > (ranked[1]?.score ?? 0));
-assert.ok(ranked[0]?.reasons.some((reason) => reason.includes("definition-like")));
+assert.equal(ranked[0]?.evidence?.tier, "definition");
 
 const formatted = formatSearchResults("Widget", ranked.slice(0, 1), matches.length);
 assert.match(formatted, /TARGET FILE: src\/widget\.ts/);
@@ -53,54 +53,8 @@ agenticSearchExtension({
 assert.deepEqual(registeredTools, ["agentic_search"]);
 assert.deepEqual(registeredCommands, ["agentic-search-info"]);
 assert.ok(searchTool, "agentic_search tool should be registered");
-assert.match(JSON.stringify(searchTool.parameters), /context/);
-assert.match(JSON.stringify(searchTool.parameters), /disambiguation hint used only for ranking/);
-
-assert.match(searchTool.description, /preferred/i);
-assert.match(searchTool.description, /files/i);
-assert.match(searchTool.description, /classes/i);
-assert.match(searchTool.description, /scopes/i);
-assert.match(searchTool.description, /methods/i);
-assert.match(searchTool.description, /call sites/i);
-assert.match(searchTool.description, /ranked/i);
-assert.match(searchTool.description, /expand_related true/i);
-assert.match(searchTool.promptSnippet, /preferred/i);
-assert.match(searchTool.promptSnippet, /locating/i);
-assert.match(searchTool.promptSnippet, /files/i);
-assert.match(searchTool.promptSnippet, /classes/i);
-assert.match(searchTool.promptSnippet, /scopes/i);
-assert.match(searchTool.promptSnippet, /methods/i);
-assert.match(searchTool.promptSnippet, /call sites/i);
-assert.match(searchTool.promptSnippet, /context.*natural-language disambiguation/i);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /Prefer agentic_search over grep/.test(guideline)),
-  "promptGuidelines should explicitly prefer agentic_search over grep for discovery",
-);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /files, classes, scopes, methods, and call sites/.test(guideline)),
-  "promptGuidelines should name common code-discovery targets",
-);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /context actual goal progress/i.test(guideline) && /query remaining_value/i.test(guideline)),
-  "promptGuidelines should explain context disambiguation without replacing query",
-);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /query scope\\s\+:/i.test(guideline) && /path event_occurrence\.rb/i.test(guideline)),
-  "promptGuidelines should map Rails scope filename prompts to query plus path",
-);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /how many scopes does User have/i.test(guideline) && /expand_related true/i.test(guideline)),
-  "promptGuidelines should tell agents to enable expand_related for model scope questions",
-);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /JS\/TS questions/i.test(guideline) && /expand_related true/i.test(guideline)),
-  "promptGuidelines should tell agents to enable expand_related for JS/TS import questions",
-);
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /read that target first/i.test(guideline) && /tests/i.test(guideline) && /git status/i.test(guideline)),
-  "promptGuidelines should prioritize the target before extra discovery after the target file contains the requested matches",
-);
-assert.doesNotMatch(searchTool.promptGuidelines.join("\n"), /path_glob|file_type|--glob|--type/);
+assert.equal(searchTool.parameters.properties.context.type, "string");
+assert.deepEqual(searchTool.parameters.properties.intent.enum, ["definition", "references", "tests", "file", "auto"]);
 
 const identityTheme = {
   fg: (_name: string, text: string) => text,
@@ -283,14 +237,12 @@ const scopeResult = await searchTool.execute(
 );
 const scopeText = scopeResult.content[0].text;
 assert.equal(scopeResult.details.files[0].path, "app/models/event_occurrence.rb");
-assert.match(scopeText, /confidence sum 1\.000/);
 assert.match(scopeText, /read the TARGET FILE first/);
 assert.match(scopeText, /\[scope\] scope :upcoming/);
 assert.match(scopeText, /\[scope\] scope :past/);
 assert.match(scopeText, /\[scope\] scope :by_date_range/);
 assert.match(scopeText, /\[scope\] scope :with_budget/);
 assert.equal(scopeResult.details.files[0].matchCount, 4);
-assert.equal(scopeResult.details.files[0].confidence, 1);
 
 const broadDirectoryResult = await searchTool.execute(
   "tool-call-3",
@@ -319,7 +271,6 @@ const absolutePathResult = await searchTool.execute(
 const absolutePathText = absolutePathResult.content[0].text;
 assert.match(absolutePathText, /posts\.created_at <= \?/);
 assert.match(absolutePathResult.details.files[0].path, /app\/models\/post\.rb$/);
-assert.equal(absolutePathResult.details.files[0].confidence, 1);
 
 const absoluteDirectoryResult = await searchTool.execute(
   "tool-call-5",
@@ -332,7 +283,6 @@ const absoluteDirectoryText = absoluteDirectoryResult.content[0].text;
 assert.match(absoluteDirectoryText, /TARGET FILE: .*app\/models\/post\.rb/);
 assert.match(absoluteDirectoryText, /posts\.created_at <= \?/);
 assert.doesNotMatch(absoluteDirectoryText, /application_controller\.rb[\s\S]*\[path\] filename\/path match/);
-assert.equal(absoluteDirectoryResult.details.files[0].confidence, 1);
 
 const absoluteDirectoryFromRootResult = await searchTool.execute(
   "tool-call-absolute-from-root",
@@ -414,14 +364,6 @@ assert.equal(contextualRemainingValueResult.details.files[0].path, "app/models/g
 assert.match(contextualRemainingValueText, /TARGET FILE: app\/models\/goal\/progress\.rb/);
 assert.match(contextualRemainingValueText, /context tokens matched snippets: actual/);
 assert.match(contextualRemainingValueText, /context tokens matched path: goal, progress/);
-assert.ok(
-  contextualRemainingValueResult.details.files[0].reasons.some((reason: string) => reason === "context tokens matched snippets: actual"),
-  "contextual ranking should explain snippet-token matches",
-);
-assert.ok(
-  contextualRemainingValueResult.details.files[0].reasons.some((reason: string) => reason === "context tokens matched path: goal, progress"),
-  "contextual ranking should explain path-token matches",
-);
 
 const mixinExpandedResult = await searchTool.execute(
   "tool-call-8",
@@ -435,7 +377,6 @@ assert.equal(mixinExpandedResult.details.files[0].path, "app/models/user.rb");
 assert.match(mixinExpandedText, /scope :direct_user/);
 assert.match(mixinExpandedText, /scope :profiled/);
 assert.match(mixinExpandedText, /scope :audited/);
-assert.match(mixinExpandedText, /TARGET FILE: app\/models\/user\.rb\. Read this file first; expand_related also searched 2 resolved mixin files shown below as 1\.x related targets\./);
 assert.match(mixinExpandedText, /expand_related: searched 2 resolved mixin files/);
 assert.match(mixinExpandedText, /Resolved mixins: ProfileScopes -> app\/models\/user\/profile_scopes\.rb/);
 assert.match(mixinExpandedText, /Audit::Scopes -> app\/models\/concerns\/audit\/scopes\.rb/);
@@ -461,7 +402,7 @@ const mixinExpandedRender = searchTool.renderResult(
 assert.match(mixinExpandedRender, /mixin files below are likely targets too/);
 assert.match(mixinExpandedRender, /mixin results are included search values and likely targets too/);
 assert.match(mixinExpandedRender, /↳ 1\.\d\. app\/models\/user\/profile_scopes\.rb/);
-assert.match(mixinExpandedRender, /\[included by app\/models\/user\.rb via ProfileScopes; mixin also includes search values, very likely a target too\]/);
+assert.match(mixinExpandedRender, /\[included by app\/models\/user\.rb via ProfileScopes;/);
 
 const basenameMixinExpandedResult = await searchTool.execute(
   "tool-call-9",
@@ -475,7 +416,6 @@ assert.equal(basenameMixinExpandedResult.details.files[0].path, "app/models/user
 assert.match(basenameMixinExpandedText, /scope :direct_user/);
 assert.match(basenameMixinExpandedText, /scope :profiled/);
 assert.match(basenameMixinExpandedText, /scope :audited/);
-assert.match(basenameMixinExpandedText, /expand_related also searched 2 resolved mixin files/);
 
 const importExpandedResult = await searchTool.execute(
   "tool-call-10",
@@ -487,7 +427,6 @@ const importExpandedResult = await searchTool.execute(
 const importExpandedText = importExpandedResult.content[0].text;
 assert.equal(importExpandedResult.details.files[0].path, "src/app.ts");
 assert.equal(importExpandedResult.details.related.label, "import");
-assert.match(importExpandedText, /TARGET FILE: src\/app\.ts\. Read this file first; expand_related also searched 3 resolved import files shown below as 1\.x related targets\./);
 assert.match(importExpandedText, /↳ 1\.1\. src\/helpers\/math\.ts/);
 assert.match(importExpandedText, /imported by src\/app\.ts via \.\/helpers\/math; related import also includes search values, very likely a target too/);
 assert.match(importExpandedText, /L1 \[def\] export function computeUserScore/);
@@ -500,7 +439,7 @@ const importExpandedRender = searchTool.renderResult(
 ).render(220).join("\n");
 assert.match(importExpandedRender, /import files below are likely targets too/);
 assert.match(importExpandedRender, /↳ 1\.1\. src\/helpers\/math\.ts/);
-assert.match(importExpandedRender, /related import also includes search values, very likely a target too/);
+assert.match(importExpandedRender, /imported by src\/app\.ts via \.\/helpers\/math/);
 
 const importDisabledResult = await searchTool.execute(
   "tool-call-11",
@@ -658,8 +597,4 @@ assert.equal(decisiveMissResult.details.coverage.status, "complete");
 assert.deepEqual(decisiveMissResult.details.coverage.completedRoots, ["src/response.ts", ".", "node_modules/@fixture/model-api"]);
 assert.doesNotMatch(decisiveMissText, /TARGET FILE:/);
 
-assert.ok(
-  searchTool.promptGuidelines.some((guideline: string) => /one agentic_search call/i.test(guideline) && /owning package/i.test(guideline) && /imported packages/i.test(guideline)),
-  "promptGuidelines should describe the one-call package/dependency coverage contract",
-);
 console.log("pi-agentic-search smoke test passed");

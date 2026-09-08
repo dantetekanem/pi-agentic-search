@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { decodeRipgrepEvent } from "./matches.ts";
 import { normalizeRepoRelativePath } from "./shared.ts";
-import type { CodeMatch, FileSummary, SearchRun } from "./types.ts";
+import type { CodeMatch, FileSummary, SearchRun, SearchIntent } from "./types.ts";
+import { snippetPriority } from "./evidence.ts";
 
 export const RETRIEVAL_LIMITS = {
   candidates: 10_000, snippetsPerFile: 16, snippetBytes: 1024,
@@ -22,7 +23,8 @@ export class SearchRequest {
   private readonly timer: ReturnType<typeof setTimeout>;
   private readonly onAbort = () => this.controller.abort(this.parentSignal?.reason);
 
-  constructor(private readonly parentSignal?: AbortSignal, timeoutMs = 30_000, limits = RETRIEVAL_LIMITS) {
+  constructor(private readonly parentSignal?: AbortSignal, timeoutMs = 30_000, limits = RETRIEVAL_LIMITS,
+    private readonly ranking: { intent?: SearchIntent; context?: string[] } = {}) {
     this.limits = limits;
     if (parentSignal?.aborted) this.onAbort();
     else parentSignal?.addEventListener("abort", this.onAbort, { once: true });
@@ -59,19 +61,25 @@ export class SearchRequest {
         this.exhaustedReason = `candidate budget (${this.limits.candidates} files)`;
         return this.exhaustedReason;
       }
-      file = { path: match.path, matchCount: 0, definitionCount: 0, matches: [], complete: false };
+      file = { path: match.path, matchCount: 0, definitionCount: 0, referenceCount: 0, matches: [], complete: false };
       this.files.set(match.path, file);
     }
     file.matchCount++;
     if (match.isDefinition) file.definitionCount++;
+    if (match.kind === "reference") file.referenceCount++;
     if (Buffer.byteLength(match.line) > this.limits.snippetBytes || match.submatches.length > 32) this.truncatedMatches++;
     match.line = Buffer.from(match.line).subarray(0, this.limits.snippetBytes).toString("utf8");
     match.submatches = match.submatches.slice(0, 32).map((span) => ({ ...span, text: Buffer.from(span.text).subarray(0, this.limits.snippetBytes).toString("utf8") }));
     const size = Buffer.byteLength(JSON.stringify(match));
     let replacement = -1;
     if (file.matches.length >= this.limits.snippetsPerFile) {
-      if (match.isDefinition) replacement = file.matches.findIndex((candidate) => !candidate.isDefinition);
-      if (replacement < 0) return;
+      const priority = (candidate: CodeMatch) => snippetPriority(candidate, this.ranking.intent, this.ranking.context);
+      replacement = file.matches.reduce((worst, candidate, index) => {
+        const previous = file!.matches[worst]!;
+        return priority(candidate) < priority(previous) || (priority(candidate) === priority(previous) && candidate.lineNumber > previous.lineNumber) ? index : worst;
+      }, 0);
+      const previous = file.matches[replacement]!;
+      if (priority(match) < priority(previous) || (priority(match) === priority(previous) && match.lineNumber >= previous.lineNumber)) return;
     }
     const released = replacement < 0 ? 0 : Buffer.byteLength(JSON.stringify(file.matches[replacement]));
     if (this.retainedBytes - released + size > this.limits.retainedBytes) return;
