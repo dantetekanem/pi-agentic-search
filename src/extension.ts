@@ -97,7 +97,7 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
   const intent = params.intent ?? "auto";
   const files = new ProjectFiles(cwd, request);
   const scope = await resolveSearchScope(cwd, params.path, files);
-  const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal, files) : undefined;
+  const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal, files, intent) : undefined;
   const searchRoots = uniqueValues([...scope.roots, ...(related?.roots ?? [])]);
   let literal = params.literal ?? false;
   let literalFallback = false;

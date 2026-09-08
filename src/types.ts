@@ -8,6 +8,12 @@ export interface RelatedResolvedReference {
   note: string;
   kind?: "file" | "package";
   entryPath?: string;
+  declarationPath?: string;
+  implementationPath?: string;
+  compilerVersion?: string;
+  projectCompilerVersion?: string;
+  configPath?: string;
+  resolutionMode?: "import" | "require";
   provenance?: string;
 }
 export interface RelatedPackageRoot {
@@ -27,7 +33,7 @@ export interface RelatedExpansionDetails {
   skipped?: string[];
   traversal?: {
     visitedFiles: number; examinedEdges: number; omittedEdges: number; omittedFileCandidates: number;
-    sourceReads: number; bytesRead: number; inventories: number; omittedDiagnostics: number;
+    sourceReads: number; bytesRead: number; inventories: number; compilerPasses: number; omittedDiagnostics: number;
     limits: Record<string, number>;
   };
 }

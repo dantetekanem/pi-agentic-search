@@ -1,9 +1,9 @@
 import { createRequire, isBuiltin } from "node:module";
-import { basename, dirname, extname, join, resolve } from "node:path";
-import { JS_TS_EXTENSIONS } from "../classifications.ts";
+import { basename, dirname, join, resolve } from "node:path";
+import { isDeclarationFile, ProjectCompiler } from "./compiler.ts";
 import { ProjectFiles } from "../inventory.ts";
 import { uniqueValues } from "../shared.ts";
-import type { RelatedResolvedReference, RelationshipReference } from "../types.ts";
+import type { RelatedResolvedReference, RelationshipReference, SearchIntent } from "../types.ts";
 
 function packageName(specifier: string): string | undefined {
   if (!specifier || /^[.#]/.test(specifier) || isBuiltin(specifier) || /^[a-z][a-z0-9+.-]*:/i.test(specifier)) return;
@@ -12,7 +12,10 @@ function packageName(specifier: string): string | undefined {
 }
 
 export class JavascriptResolver {
-  constructor(private readonly files: ProjectFiles) {}
+  private readonly compiler: ProjectCompiler;
+  constructor(private readonly files: ProjectFiles, private readonly options: { intent?: SearchIntent } = {}) {
+    this.compiler = new ProjectCompiler(files);
+  }
 
   references(source: string): RelationshipReference[] {
     const specifiers: string[] = [];
@@ -90,23 +93,46 @@ export class JavascriptResolver {
     }
     return [];
   }
-  async resolve(from: string, reference: RelationshipReference): Promise<RelatedResolvedReference[]> {
-    if (!reference.name.startsWith(".")) return this.resolvePackage(from, reference.name);
-    const base = resolve(dirname(from), reference.name);
-    const candidates = uniqueValues([
-      ...(extname(base) ? [base] : []),
-      ...[...JS_TS_EXTENSIONS].map((extension) => `${base}${extension}`),
-      ...[...JS_TS_EXTENSIONS].map((extension) => join(base, `index${extension}`)),
-    ]);
-    for (const candidate of candidates) {
-      if (!this.files.alive()) break;
-      if (!(await this.files.fileStat(candidate))?.isFile()) continue;
-      return [{
-        from: this.files.display(from), name: reference.name, path: this.files.display(await this.files.canonical(candidate)),
-        kind: "file", provenance: "relative-path-fallback", relationship: reference.relationship,
-        note: "relative import target",
-      }];
+  private async projectPackage(from: string, name: string): Promise<string | undefined> {
+    let current = dirname(from);
+    while (this.files.alive()) {
+      const installed = join(current, "node_modules", name);
+      if ((await this.files.fileStat(installed))?.isDirectory()) return installed;
+      if ((await this.files.json(join(current, "package.json")))?.name === name) return current;
+      if (dirname(current) === current) break;
+      current = dirname(current);
     }
-    return [];
+    return;
+  }
+  async resolve(from: string, reference: RelationshipReference): Promise<RelatedResolvedReference[]> {
+    if (isBuiltin(reference.name) || !this.files.alive()) return [];
+    const resolution = await this.compiler.resolve(from, reference.name);
+    if (!resolution || !this.files.alive()) return [];
+    const { api, implementation } = resolution;
+    const selected = this.options.intent === "definition" ? api ?? implementation : implementation ?? api;
+    const name = packageName(reference.name);
+    if (!selected) {
+      if (!resolution.configPath && name && !await this.projectPackage(from, name)) return this.resolvePackage(from, reference.name);
+      return [];
+    }
+    const entry = await this.files.canonical(selected.resolvedFileName);
+    const root = selected.isExternalLibraryImport && name ? await this.findPackageRoot(entry, name) : undefined;
+    const provenance = resolution.configPath ? "typescript-project-config" : "typescript-default-bundler";
+    const target: RelatedResolvedReference = root && name
+      ? await this.packageTarget(from, name, root, entry, provenance)
+      : { from: this.files.display(from), name: reference.name, path: this.files.display(entry),
+        kind: "file", relationship: reference.relationship, provenance, note: "project module target" };
+    const compilerRoot = await this.projectPackage(from, "typescript");
+    const projectVersion = compilerRoot ? (await this.files.json(join(compilerRoot, "package.json")))?.version : undefined;
+    if (typeof projectVersion === "string" && projectVersion !== resolution.compilerVersion) {
+      this.files.skip(`project TypeScript ${projectVersion} differs from trusted resolver ${resolution.compilerVersion}`);
+    }
+    return [{ ...target, entryPath: this.files.display(entry),
+      declarationPath: api && isDeclarationFile(api.resolvedFileName) ? this.files.display(await this.files.canonical(api.resolvedFileName)) : undefined,
+      implementationPath: implementation ? this.files.display(await this.files.canonical(implementation.resolvedFileName)) : undefined,
+      compilerVersion: resolution.compilerVersion, projectCompilerVersion: typeof projectVersion === "string" ? projectVersion : undefined,
+      configPath: resolution.configPath ? this.files.display(resolution.configPath) : undefined, resolutionMode: resolution.mode,
+      note: `${reference.name}: ${resolution.mode} target via ${provenance} (${isDeclarationFile(entry) ? "declaration" : "implementation"})`,
+    }];
   }
 }
