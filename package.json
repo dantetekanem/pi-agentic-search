@@ -1,6 +1,6 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Pi extension for agent-oriented ranked code search",
   "license": "MIT",
   "type": "module",
@@ -21,6 +21,7 @@
   ],
   "files": [
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "SECURITY.md",
     "docs/access.md",
