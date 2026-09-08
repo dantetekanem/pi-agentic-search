@@ -38,7 +38,7 @@ export class ProjectFiles {
     this.skip(reason);
   }
   alive(): boolean {
-    if (!this.request.signal.aborted) return true;
+    if (this.request.checkpoint()) return true;
     this.skip(`resolution cancelled: ${String(this.request.signal.reason ?? "abort")}`);
     return false;
   }

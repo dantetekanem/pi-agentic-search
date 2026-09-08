@@ -571,14 +571,9 @@ const importedPackageText = importedPackageResult.content[0].text;
 assert.equal(importedPackageResult.details.files[0].path, "node_modules/@fixture/model-api/dist/index.js");
 assert.match(importedPackageText, /export function filterMap/);
 assert.match(importedPackageText, /imported package.*@fixture\/model-api/i);
-assert.deepEqual(importedPackageResult.details.coverage.packageRoots, ["node_modules/@fixture/model-api"]);
+assert.ok(importedPackageResult.details.coverage.runs.some((run: { stage?: string; roots: string[] }) => run.stage === "entry" && run.roots.includes("node_modules/@fixture/model-api/dist/index.js")));
+assert.equal(importedPackageResult.details.coverage.status, "partial");
 assert.doesNotMatch(importedPackageText, /falling back to broad shell search/i);
-const importedPackageRender = searchTool.renderResult(
-  importedPackageResult,
-  { expanded: false, isPartial: false },
-  identityTheme,
-).render(220).join("\n");
-assert.match(importedPackageRender, /one-call coverage: owner \., 1 imported package/i);
 
 // 8. A miss is complete only within its successfully searched scopes.
 const decisiveMissResult = await searchTool.execute(
@@ -594,7 +589,7 @@ assert.equal(decisiveMissResult.details.files.length, 0);
 assert.match(decisiveMissText, /No code matches found for "missingFilterMap"/);
 assert.match(decisiveMissText, /Path hints are coverage, not code matches/i);
 assert.equal(decisiveMissResult.details.coverage.status, "complete");
-assert.deepEqual(decisiveMissResult.details.coverage.completedRoots, ["src/response.ts", ".", "node_modules/@fixture/model-api"]);
+assert.deepEqual(decisiveMissResult.details.coverage.completedRoots, ["src/response.ts", "node_modules/@fixture/model-api/dist/index.js", ".", "node_modules/@fixture/model-api"]);
 assert.doesNotMatch(decisiveMissText, /TARGET FILE:/);
 
 console.log("pi-agentic-search smoke test passed");

@@ -18,14 +18,15 @@ export class SearchRequest {
   readonly signal = this.controller.signal;
   readonly limits: typeof RETRIEVAL_LIMITS;
   retainedBytes = 0;
-  truncatedMatches = 0;
   exhaustedReason?: string;
+  private readonly deadline: number;
   private readonly timer: ReturnType<typeof setTimeout>;
   private readonly onAbort = () => this.controller.abort(this.parentSignal?.reason);
 
   constructor(private readonly parentSignal?: AbortSignal, timeoutMs = 30_000, limits = RETRIEVAL_LIMITS,
     private readonly ranking: { intent?: SearchIntent; context?: string[] } = {}) {
     this.limits = limits;
+    this.deadline = performance.now() + timeoutMs;
     if (parentSignal?.aborted) this.onAbort();
     else parentSignal?.addEventListener("abort", this.onAbort, { once: true });
     this.timer = setTimeout(() => this.controller.abort(new Error("request deadline")), timeoutMs);
@@ -34,6 +35,31 @@ export class SearchRequest {
     clearTimeout(this.timer);
     this.parentSignal?.removeEventListener("abort", this.onAbort);
   }
+  checkpoint(): boolean {
+    if (!this.signal.aborted && performance.now() >= this.deadline) this.controller.abort(new Error("request deadline"));
+    return !this.signal.aborted;
+  }
+  private removeFile(path: string): FileSummary | undefined {
+    const previous = this.files.get(path);
+    if (previous) {
+      this.retainedBytes -= previous.matches.reduce((sum, match) => sum + Buffer.byteLength(JSON.stringify(match)), 0);
+      this.files.delete(path);
+    }
+    return previous;
+  }
+  async replaceFile(path: string, operation: () => Promise<SearchRun>): Promise<void> {
+    const previous = this.removeFile(path);
+    let complete = false;
+    try { complete = (await operation()).status === "complete"; }
+    finally {
+      if (!complete && previous) {
+        this.removeFile(path);
+        this.files.set(path, previous);
+        this.retainedBytes += previous.matches.reduce((sum, match) => sum + Buffer.byteLength(JSON.stringify(match)), 0);
+      }
+    }
+  }
+  get truncatedMatches(): number { return [...this.files.values()].reduce((sum, file) => sum + (file.truncatedMatches ?? 0), 0); }
   get matches(): CodeMatch[] { return [...this.files.values()].flatMap((file) => file.matches); }
   get totalMatches(): number { return [...this.files.values()].reduce((sum, file) => sum + file.matchCount, 0); }
 
@@ -42,10 +68,7 @@ export class SearchRequest {
     if (!event) return;
     if (event.type === "begin") {
       const previous = this.files.get(event.path);
-      if (previous && !previous.complete) {
-        this.retainedBytes -= previous.matches.reduce((sum, match) => sum + Buffer.byteLength(JSON.stringify(match)), 0);
-        this.files.delete(event.path);
-      }
+      if (previous && !previous.complete) this.removeFile(event.path);
       return;
     }
     if (event.type === "end") {
@@ -67,7 +90,7 @@ export class SearchRequest {
     file.matchCount++;
     if (match.isDefinition) file.definitionCount++;
     if (match.kind === "reference") file.referenceCount++;
-    if (Buffer.byteLength(match.line) > this.limits.snippetBytes || match.submatches.length > 32) this.truncatedMatches++;
+    if (Buffer.byteLength(match.line) > this.limits.snippetBytes || match.submatches.length > 32) file.truncatedMatches = (file.truncatedMatches ?? 0) + 1;
     match.line = Buffer.from(match.line).subarray(0, this.limits.snippetBytes).toString("utf8");
     match.submatches = match.submatches.slice(0, 32).map((span) => ({ ...span, text: Buffer.from(span.text).subarray(0, this.limits.snippetBytes).toString("utf8") }));
     const size = Buffer.byteLength(JSON.stringify(match));
@@ -94,7 +117,7 @@ export async function runRg(
   consume: (line: string) => string | undefined = (line) => request.consume(line),
   delimiter = "\n",
 ): Promise<SearchRun> {
-  if (request.signal.aborted || request.exhaustedReason) {
+  if (!request.checkpoint() || request.exhaustedReason) {
     const run: SearchRun = { roots, status: "partial", exitCode: null, signal: null, reason: request.exhaustedReason ?? String(request.signal.reason ?? "cancelled") };
     request.runs.push(run);
     return run;
@@ -118,6 +141,7 @@ export async function runRg(
       buffer += chunk;
       let end: number;
       while ((end = buffer.indexOf(delimiter)) >= 0) {
+        if (!request.checkpoint()) return;
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + delimiter.length);
         if (Buffer.byteLength(line) > request.limits.eventBytes) { terminate("rg event byte budget"); return; }
@@ -145,7 +169,9 @@ export async function runRg(
         error: error ?? (!succeeded && !reason ? `rg failed (exit ${exitCode}, signal ${signal}): ${stderr.trim()}` : undefined),
       });
     });
-  });
+  }).catch((failure): SearchRun => ({ roots, status: "failed", exitCode: null, signal: null,
+    error: failure instanceof Error ? failure.message : String(failure),
+  }));
   request.runs.push(run);
   return run;
 }

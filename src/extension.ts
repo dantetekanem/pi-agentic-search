@@ -1,6 +1,6 @@
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
@@ -9,16 +9,16 @@ import { DEFAULT_EXCLUDES, PACKAGE_SEARCH_EXCLUDES, JS_TS_EXTENSIONS } from "./c
 import { expandRelatedFiles } from "./related.ts";
 import { formatSearchResults, formatTopMatch, renderCall, renderResult } from "./render.ts";
 import { CONTEXT_LIMITS, contextTokens, enrichContext, pathDepth, rankFileGroups, scorePathQueryMatch } from "./ranking.ts";
-import { SearchRequest, runRg } from "./retrieval.ts";
+import { SearchRequest } from "./retrieval.ts";
+import { EXECUTION_LIMITS, SearchExecutor, inPool } from "./execution.ts";
 import { ProjectFiles } from "./inventory.ts";
-import { clampInt, displaySearchRoot, normalizeRepoRelativePath, stripAtPrefix, uniqueValues } from "./shared.ts";
+import { clampInt, displaySearchRoot, stripAtPrefix, uniqueValues } from "./shared.ts";
 import type { PathMatch, SearchCoverageDetails, SearchDetails } from "./types.ts";
 export { parseRipgrepJsonLines } from "./matches.ts";
 export { rankFileGroups } from "./ranking.ts";
 export { formatSearchResults } from "./render.ts";
 export type { CodeMatch, RankedFileResult, PathMatch } from "./types.ts";
 
-const MAX_PACKAGE_SEARCH_ROOTS = 20;
 const SearchParams = Type.Object({
   query: Type.String({ description: "Precise code syntax regex or literal string to search for. For Rails scopes use scope\\s+:." }),
   context: Type.Optional(Type.String({ description: "Optional natural-language disambiguation hint used only for ranking, not as the ripgrep query. Example: actual goal progress" })),
@@ -33,14 +33,6 @@ const SearchParams = Type.Object({
 type SearchInput = Static<typeof SearchParams>;
 
 function candidatePath(cwd: string, candidate: string): string { return resolve(cwd, stripAtPrefix(candidate)); }
-function rgArgs(query: string, roots: string[], literal: boolean, caseSensitive?: boolean, packageSearch = false): string[] {
-  const args = ["--json", "--line-number", "--color=never", "--hidden"];
-  if (packageSearch) args.push("--no-ignore");
-  for (const glob of packageSearch ? PACKAGE_SEARCH_EXCLUDES : DEFAULT_EXCLUDES) args.push("--glob", glob);
-  if (literal) args.push("--fixed-strings");
-  if (!caseSensitive) args.push("--smart-case");
-  return [...args, "-e", query, "--", ...roots];
-}
 
 async function listPathMatches(files: ProjectFiles, query: string): Promise<PathMatch[]> {
   return (await files.list(".")).flatMap((absolute) => {
@@ -62,18 +54,19 @@ async function resolveSearchScope(cwd: string, path: string | undefined, files: 
   return { roots: pathMatches.length ? pathMatches.map((match) => match.path) : ["."], pathMatches };
 }
 
-async function owningRoot(cwd: string, root: string): Promise<string | undefined> {
-  const resolved = candidatePath(cwd, root);
-  const stats = await stat(resolved).catch(() => undefined);
+async function owningRoot(files: ProjectFiles, root: string): Promise<string | undefined> {
+  const resolved = candidatePath(files.cwd, root);
+  const stats = await files.fileStat(resolved);
   if (!stats) return;
   let current = stats.isDirectory() ? resolved : dirname(resolved);
-  while (true) {
-    const [manifest, git] = await Promise.all([stat(join(current, "package.json")).catch(() => undefined), stat(join(current, ".git")).catch(() => undefined)]);
-    if (manifest?.isFile() || git) return isAbsolute(root) ? current : displaySearchRoot(cwd, current);
+  while (files.alive()) {
+    const [manifest, git] = await Promise.all([files.fileStat(join(current, "package.json")), files.fileStat(join(current, ".git"))]);
+    if (manifest?.isFile() || git) return files.display(current);
     const parent = dirname(current);
     if (parent === current) return;
     current = parent;
   }
+  return;
 }
 
 function coverageNotes(coverage: SearchCoverageDetails): string[] {
@@ -97,53 +90,33 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
   const intent = params.intent ?? "auto";
   const files = new ProjectFiles(cwd, request);
   const scope = await resolveSearchScope(cwd, params.path, files);
+  const executor = new SearchExecutor(files, params.query, params.literal, params.case_sensitive);
+  await executor.searchRoots(scope.roots, "target");
   const querySymbol = /^[$_\p{ID_Start}][$\p{ID_Continue}\u200c\u200d]*$/u.test(params.query) && (params.literal || !params.query.includes("$")) ? params.query : undefined;
   const related = params.expand_related ? await expandRelatedFiles(cwd, scope.roots, request.signal, files, intent, querySymbol) : undefined;
   const searchRoots = uniqueValues([...scope.roots, ...(related?.roots ?? [])]);
-  let literal = params.literal ?? false;
-  let literalFallback = false;
-  let regexError: string | undefined;
-  const search = async (localCwd: string, localRoots: string[], reportedRoots: string[], mapPath = normalizeRepoRelativePath, packageSearch = false) => {
-    const run = await runRg(rgArgs(params.query, localRoots, literal, params.case_sensitive, packageSearch), localCwd, reportedRoots, request, (line) => request.consume(line, mapPath));
-    if (!literal && run.exitCode === 2 && run.signal === null && /regex parse error:/i.test(run.error ?? "")) {
-      run.kind = "validation";
-      literal = true;
-      literalFallback = true;
-      regexError = run.error;
-      await runRg(rgArgs(params.query, localRoots, true, params.case_sensitive, packageSearch), localCwd, reportedRoots, request, (line) => request.consume(line, mapPath));
-    }
-  };
-  const searchRootsInBatches = async (roots: string[]) => {
-    const relative = roots.filter((root) => !isAbsolute(root));
-    for (let index = 0; index < relative.length; index += 32) {
-      const batch = relative.slice(index, index + 32);
-      await search(cwd, batch, batch);
-    }
-    for (const root of roots.filter(isAbsolute)) {
-      const stats = await stat(root).catch(() => undefined);
-      const localCwd = stats?.isDirectory() ? root : dirname(root);
-      await search(localCwd, [stats?.isDirectory() ? "." : basename(root)], [root], (path) => displaySearchRoot(cwd, resolve(localCwd, path)));
-    }
-  };
-  await searchRootsInBatches(searchRoots);
+  await executor.searchRoots((related?.roots ?? []).filter((root) => !scope.roots.includes(root)), "related");
+  await executor.searchAliases(related?.symbolSearches ?? []);
   const primaryRoot = scope.roots[0] ?? ".";
-  const hasDefinition = [...request.files.values()].some((file) => file.definitionCount > 0);
-  const needsExpansion = params.expand_related && (request.files.size === 0 || (JS_TS_EXTENSIONS.has(extname(primaryRoot)) && !hasDefinition));
-  const owner = needsExpansion ? await owningRoot(cwd, primaryRoot) : undefined;
-  if (owner && !searchRoots.includes(owner)) await searchRootsInBatches([owner]);
+  const needsExpansion = () => params.expand_related && (intent === "references" || intent === "tests" || request.files.size === 0 ||
+    (JS_TS_EXTENSIONS.has(extname(primaryRoot)) && ![...request.files.values()].some((file) => file.definitionCount > 0)));
   const packages = related?.packageRoots ?? [];
-  const selectedPackages = needsExpansion ? packages.slice(0, MAX_PACKAGE_SEARCH_ROOTS) : [];
-  for (const pkg of selectedPackages) {
-    const root = candidatePath(cwd, pkg.path);
-    await search(root, ["."], [pkg.path], (path) => displaySearchRoot(cwd, resolve(root, path)), true);
+  const candidates = packages.slice(0, EXECUTION_LIMITS.packages);
+  if (needsExpansion()) for (const pkg of candidates) {
+    if ((await files.fileStat(candidatePath(cwd, pkg.entryPath)))?.isFile()) await executor.searchRoot(pkg.entryPath, "entry");
   }
+  const owner = needsExpansion() ? await owningRoot(files, primaryRoot) : undefined;
+  if (owner && !searchRoots.includes(owner)) await executor.searchRoots([owner], "owner");
+  const selectedPackages = needsExpansion() ? candidates : [];
+  await inPool(selectedPackages, EXECUTION_LIMITS.packageConcurrency, async (pkg) => { await executor.searchRoot(pkg.path, "package"); });
+  const { literalFallback, regexError } = executor;
   const pathMatches = !params.path && request.files.size === 0 ? await listPathMatches(files, params.query) : scope.pathMatches;
   const contentRuns = request.runs.filter((run) => !run.kind || run.kind === "content");
   const omittedPackages = packages.filter((pkg) => !selectedPackages.includes(pkg));
   const reasons = uniqueValues([
     ...request.inventoryReasons, ...contentRuns.flatMap((run) => run.reason ?? run.error ?? []),
     ...(related?.unresolved.map((item) => `unresolved ${item.name} from ${item.from}`) ?? []),
-    ...(related?.symbolSearches?.filter((item) => item.symbol !== params.query).map((item) => `unsearched alias symbol ${item.symbol} in ${item.path}`) ?? []),
+    ...(!request.checkpoint() ? [String(request.signal.reason ?? "cancelled")] : []),
     ...omittedPackages.map((pkg) => `unsearched imported package ${pkg.path}`), ...(related?.skipped ?? []),
   ]);
   const completedRoots = uniqueValues(contentRuns.filter((run) => run.status === "complete").flatMap((run) => run.roots));
@@ -158,10 +131,11 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     reasons, runs: request.runs, excludes: DEFAULT_EXCLUDES, respectsIgnoreFiles: true,
     retainedMatches: request.matches.length, omittedMatches: request.totalMatches - request.matches.length,
     retainedBytes: request.retainedBytes, truncatedMatches: request.truncatedMatches, limits: request.limits,
+    executionLimits: { ...EXECUTION_LIMITS, replayBytes: request.limits.retainedBytes },
   };
   const options = { intent, anchorPath: params.path ? primaryRoot : undefined, related };
-  let ranked = rankFileGroups(request.matches, params.query, maxMatches, pathMatches, context, request.files, options);
-  if (context) {
+  let ranked = request.checkpoint() ? rankFileGroups(request.matches, params.query, maxMatches, pathMatches, context, request.files, options) : [];
+  if (context && request.checkpoint()) {
     const enriched = await enrichContext(request.matches, ranked, cwd, request.signal);
     coverage.contextRanking = {
       fileLimit: CONTEXT_LIMITS.files, readByteLimit: CONTEXT_LIMITS.readBytes, blockByteLimit: CONTEXT_LIMITS.blockBytes,
@@ -169,6 +143,10 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     };
     ranked = rankFileGroups(enriched.matches, params.query, maxMatches, pathMatches, context, request.files, options);
     for (const file of ranked) if (file.evidence) file.evidence.contextRead = enriched.enrichedPaths.has(file.path) ? "bounded" : "unavailable";
+  }
+  if (!request.checkpoint()) {
+    coverage.status = "partial";
+    coverage.reasons = uniqueValues([...coverage.reasons, String(request.signal.reason ?? "cancelled during result preparation")]);
   }
   const pathOnly = !request.files.size && !params.path && pathMatches.length > 0;
   ranked = (request.files.size ? ranked.filter((file) => request.files.has(file.path)) : pathOnly ? ranked : []).slice(0, maxFiles);
@@ -185,7 +163,12 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     files: ranked.map((file) => ({ path: file.path, score: file.score, matchCount: file.matchCount, reasons: file.reasons, evidence: file.evidence, topMatch: file.matches[0] ? formatTopMatch(file.matches[0]) : undefined })),
     coverage, related, literalFallback, regexError,
   };
-  let text = formatSearchResults(params.query, ranked, totalMatches, notes, undefined, related, coverage);
+  let text = request.checkpoint() ? formatSearchResults(params.query, ranked, totalMatches, notes, undefined, related, coverage) : "";
+  if (!request.checkpoint()) {
+    coverage.status = "partial";
+    coverage.reasons = uniqueValues([...coverage.reasons, String(request.signal.reason ?? "cancelled")]);
+    text = `Search interrupted: ${String(request.signal.reason ?? "cancelled").slice(0, 512)}. Retrieved ${details.totalFiles} files; see coverage details for completed work.`;
+  }
   if (literalFallback) text += "\n\n[agentic_search retried this as a literal string because ripgrep rejected the regex.]";
   const truncation = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
   if (truncation.truncated) {
