@@ -2,6 +2,7 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { camelToSnake, displaySearchRoot, normalizeRepoRelativePath, uniqueValues } from "./shared.ts";
+import { JS_TS_EXTENSIONS as JS_TS_EXTENSION_SET, SKIP_DIRS } from "./classifications.ts";
 
 export interface RelatedResolvedReference {
   from: string;
@@ -27,6 +28,7 @@ export interface RelatedExpansionDetails {
   packageRoots: RelatedPackageRoot[];
   resolved: RelatedResolvedReference[];
   unresolved: Array<{ from: string; name: string }>;
+  skipped?: string[];
 }
 
 export function relatedReferencesForPath(
@@ -51,11 +53,9 @@ const RUBY_MIXIN_IGNORE_NAMES = new Set([
   "ActiveSupport::Concern",
 ]);
 
-const JS_TS_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs"];
-const JS_TS_EXTENSION_SET = new Set(JS_TS_EXTENSIONS);
+const JS_TS_EXTENSIONS = [...JS_TS_EXTENSION_SET];
 const RUBY_EXTENSION = ".rb";
 
-const SKIP_DIRS = new Set([".git", "node_modules", "vendor", "dist", "build", "coverage", "tmp", "log", ".next", ".turbo", "target"]);
 const MAX_DIR_WALK_FILES = 200;
 
 function rootToResolvedPath(cwd: string, root: string): string {
@@ -130,20 +130,27 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function collectSourceFiles(cwd: string, root: string): Promise<string[]> {
+async function collectSourceFiles(cwd: string, root: string, skipped: string[], signal?: AbortSignal): Promise<string[]> {
   const resolved = rootToResolvedPath(cwd, root);
   const out: string[] = [];
 
   async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > 8 || out.length >= MAX_DIR_WALK_FILES) return;
+    if (depth > 8 || out.length >= MAX_DIR_WALK_FILES || signal?.aborted) {
+      skipped.push(`source traversal incomplete at ${displaySearchRoot(cwd, dir)} (depth/file/deadline budget)`);
+      return;
+    }
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
+      skipped.push(`unreadable directory ${displaySearchRoot(cwd, dir)}`);
       return;
     }
     for (const entry of entries) {
-      if (out.length >= MAX_DIR_WALK_FILES) return;
+      if (out.length >= MAX_DIR_WALK_FILES || signal?.aborted) {
+        skipped.push(`source traversal incomplete at ${displaySearchRoot(cwd, join(dir, entry.name))} (file/deadline budget)`);
+        return;
+      }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) await walk(full, depth + 1);
@@ -164,8 +171,10 @@ async function collectSourceFiles(cwd: string, root: string): Promise<string[]> 
   return out;
 }
 
-export async function expandRubyMixins(cwd: string, roots: string[]): Promise<RelatedExpansionDetails> {
+export async function expandRubyMixins(cwd: string, roots: string[], signal?: AbortSignal): Promise<RelatedExpansionDetails> {
+  const skipped: string[] = [];
   const details: RelatedExpansionDetails = {
+    skipped,
     enabled: true,
     label: "mixin",
     roots: [],
@@ -179,7 +188,7 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
     const resolved = rootToResolvedPath(cwd, root);
     const s = await stat(resolved).catch(() => undefined);
     if (s?.isDirectory()) {
-      for (const f of await collectSourceFiles(cwd, root)) {
+      for (const f of await collectSourceFiles(cwd, root, skipped, signal)) {
         if (extname(f).toLowerCase() === RUBY_EXTENSION) queue.push(displaySearchRoot(cwd, f));
       }
     } else if (extname(resolved).toLowerCase() === RUBY_EXTENSION) {
@@ -190,7 +199,7 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
   const visited = new Set<string>();
   const maxMixinFiles = 25;
 
-  while (queue.length > 0 && details.roots.length < maxMixinFiles) {
+  while (queue.length > 0 && details.roots.length < maxMixinFiles && !signal?.aborted) {
     const root = queue.shift()!;
     const resolvedRoot = rootToResolvedPath(cwd, root);
     if (visited.has(resolvedRoot)) continue;
@@ -198,12 +207,17 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
 
     let source: string;
     try {
-      source = await readFile(resolvedRoot, "utf8");
+      source = await readFile(resolvedRoot, { encoding: "utf8", signal });
     } catch {
+      skipped.push(`unreadable or cancelled source ${root}`);
       continue;
     }
 
     for (const reference of parseRubyMixinReferences(source)) {
+      if (details.roots.length >= maxMixinFiles || signal?.aborted) {
+        skipped.push(`unvisited mixin ${reference.name} from ${root} (mixin/deadline budget)`);
+        continue;
+      }
       const candidates = rubyMixinCandidatePaths(resolvedRoot, reference.name);
       const resolvedPath = await (async () => {
         for (const candidate of candidates) {
@@ -230,6 +244,7 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
     }
   }
 
+  skipped.push(...queue.map((root) => `unvisited mixin file ${root} (mixin/deadline budget)`));
   return details;
 }
 
@@ -384,8 +399,10 @@ function jsImportCandidatePaths(resolvedFrom: string, specifier: string): string
   return uniqueValues(candidates);
 }
 
-export async function expandJsTsImports(cwd: string, roots: string[]): Promise<RelatedExpansionDetails> {
+export async function expandJsTsImports(cwd: string, roots: string[], signal?: AbortSignal): Promise<RelatedExpansionDetails> {
+  const skipped: string[] = [];
   const details: RelatedExpansionDetails = {
+    skipped,
     enabled: true,
     label: "import",
     roots: [],
@@ -399,7 +416,7 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
     const resolved = rootToResolvedPath(cwd, root);
     const s = await stat(resolved).catch(() => undefined);
     if (s?.isDirectory()) {
-      for (const f of await collectSourceFiles(cwd, root)) {
+      for (const f of await collectSourceFiles(cwd, root, skipped, signal)) {
         if (JS_TS_EXTENSION_SET.has(extname(f).toLowerCase())) queue.push(displaySearchRoot(cwd, f));
       }
     } else if (JS_TS_EXTENSION_SET.has(extname(resolved).toLowerCase())) {
@@ -410,7 +427,7 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
   const visited = new Set<string>();
   const maxImportFiles = 50;
 
-  while (queue.length > 0 && details.roots.length < maxImportFiles) {
+  while (queue.length > 0 && details.roots.length + details.packageRoots.length < maxImportFiles && !signal?.aborted) {
     const root = queue.shift()!;
     const resolvedRoot = rootToResolvedPath(cwd, root);
     if (visited.has(resolvedRoot)) continue;
@@ -418,12 +435,17 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
 
     let source: string;
     try {
-      source = await readFile(resolvedRoot, "utf8");
+      source = await readFile(resolvedRoot, { encoding: "utf8", signal });
     } catch {
+      skipped.push(`unreadable or cancelled source ${root}`);
       continue;
     }
 
     for (const specifier of parseJsImportReferences(source)) {
+      if (details.roots.length + details.packageRoots.length >= maxImportFiles || signal?.aborted) {
+        skipped.push(`unvisited import ${specifier} from ${root} (import/deadline budget)`);
+        continue;
+      }
       if (!specifier.startsWith(".")) {
         const packageName = packageNameFromSpecifier(specifier);
         if (!packageName) continue;
@@ -478,12 +500,13 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
     }
   }
 
+  skipped.push(...queue.map((root) => `unvisited import file ${root} (import/deadline budget)`));
   return details;
 }
 
 function mergeRelatedExpansions(expansions: RelatedExpansionDetails[]): RelatedExpansionDetails | undefined {
   const active = expansions.filter(
-    (expansion) => expansion.roots.length > 0 || expansion.packageRoots.length > 0 || expansion.unresolved.length > 0,
+    (expansion) => expansion.roots.length > 0 || expansion.packageRoots.length > 0 || expansion.unresolved.length > 0 || (expansion.skipped?.length ?? 0) > 0,
   );
   if (active.length === 0) return undefined;
 
@@ -498,12 +521,13 @@ function mergeRelatedExpansions(expansions: RelatedExpansionDetails[]): RelatedE
     packageRoots,
     resolved: active.flatMap((expansion) => expansion.resolved),
     unresolved: active.flatMap((expansion) => expansion.unresolved),
+    skipped: uniqueValues(active.flatMap((expansion) => expansion.skipped ?? [])),
   };
 }
 
-export async function expandRelatedFiles(cwd: string, roots: string[]): Promise<RelatedExpansionDetails | undefined> {
+export async function expandRelatedFiles(cwd: string, roots: string[], signal?: AbortSignal): Promise<RelatedExpansionDetails | undefined> {
   return mergeRelatedExpansions([
-    await expandRubyMixins(cwd, roots),
-    await expandJsTsImports(cwd, roots),
+    await expandRubyMixins(cwd, roots, signal),
+    await expandJsTsImports(cwd, roots, signal),
   ]);
 }

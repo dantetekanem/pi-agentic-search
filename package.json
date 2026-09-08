@@ -34,6 +34,7 @@
   },
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
     "smoke": "tsx test/smoke.ts",
     "benchmark": "node --import tsx test/benchmark.ts",
     "test:benchmark": "node --import tsx test/benchmark-metrics.test.ts"

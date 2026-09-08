@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 
 export function normalizeRepoRelativePath(path: string): string {
   return path.split(sep).join("/").replace(/^\.\/+/, "");
@@ -20,13 +20,6 @@ export function displaySearchRoot(cwd: string, resolved: string): string {
   if (rel === "") return ".";
   if (!rel.startsWith("..") && !isAbsolute(rel)) return normalizeRepoRelativePath(rel);
   return normalizeRepoRelativePath(resolved);
-}
-
-export function ensureInsideCwd(cwd: string, candidate: string): string {
-  const resolved = isAbsolute(candidate) ? resolve(candidate) : resolve(cwd, candidate);
-  const rel = relative(cwd, resolved);
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
-  throw new Error(`Path escapes current repository: ${candidate}`);
 }
 
 export function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
