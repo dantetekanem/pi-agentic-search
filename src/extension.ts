@@ -13,6 +13,7 @@ import { SearchRequest } from "./retrieval.ts";
 import { EXECUTION_LIMITS, SearchExecutor, inPool } from "./execution.ts";
 import { ProjectFiles } from "./inventory.ts";
 import { clampInt, displaySearchRoot, stripAtPrefix, uniqueValues } from "./shared.ts";
+import { registerSparsityTools } from "./sparsity-extension.ts";
 import type { PathMatch, SearchCoverageDetails, SearchDetails } from "./types.ts";
 export { parseRipgrepJsonLines } from "./matches.ts";
 export { rankFileGroups } from "./ranking.ts";
@@ -191,6 +192,7 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
 }
 
 export default function agenticSearchExtension(pi: ExtensionAPI) {
+  registerSparsityTools(pi);
   pi.registerTool({
     name: "agentic_search", label: "Agentic Search",
     description: `Preferred ranked search for files, classes, scopes, methods, and call sites. Use intent for definition, references, tests, or file lookup; context disambiguates ranking. Set expand_related true for Ruby/Rails mixins or JS/TS imports, owning packages, and imported packages. Check coverage before treating a miss as decisive. Output is limited to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
@@ -211,6 +213,6 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
   });
   pi.registerCommand("agentic-search-info", {
     description: "Show pi-agentic-search status and tool names",
-    handler: async (_args, ctx) => { ctx.ui.notify("pi-agentic-search loaded: intent-aware ranking with explicit retrieval coverage.", "info"); },
+    handler: async (_args, ctx) => { ctx.ui.notify("pi-agentic-search loaded: agentic_search (intent-aware ranking with explicit retrieval coverage), sparsity_index (one call per diff) and sparsity_collect (one anchor).", "info"); },
   });
 }

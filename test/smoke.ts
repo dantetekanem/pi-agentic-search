@@ -50,8 +50,8 @@ agenticSearchExtension({
   },
 } as any);
 
-assert.deepEqual(registeredTools, ["agentic_search"]);
-assert.deepEqual(registeredCommands, ["agentic-search-info"]);
+assert.deepEqual(registeredTools, ["sparsity_index", "sparsity_collect", "agentic_search"]);
+assert.deepEqual(registeredCommands, ["agentic-search-stats", "agentic-search-info"]);
 assert.ok(searchTool, "agentic_search tool should be registered");
 assert.equal(searchTool.parameters.properties.context.type, "string");
 assert.deepEqual(searchTool.parameters.properties.intent.enum, ["definition", "references", "tests", "file", "auto"]);

@@ -1,7 +1,7 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.3.0",
-  "description": "Pi extension for agent-oriented ranked code search",
+  "version": "0.4.0",
+  "description": "Pi extension for agent-oriented ranked code search and one-call diff context packs",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/dantetekanem/pi-agentic-search#readme",
@@ -36,7 +36,7 @@
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "smoke": "tsx test/smoke.ts",
+    "smoke": "tsx test/smoke.ts && tsx test/sparsity.ts && tsx test/sparsity-index.ts && tsx test/ruby-adapter.ts && tsx test/ruby-index.ts && tsx test/ts-adapter.ts && tsx test/rank.ts",
     "benchmark": "node --import tsx test/benchmark.ts",
     "test:benchmark": "node --import tsx test/benchmark-metrics.test.ts"
   },
@@ -47,6 +47,7 @@
     "typebox": "*"
   },
   "dependencies": {
+    "@ruby/prism": "^1.9.0",
     "typescript": "^5.9.3"
   },
   "devDependencies": {
