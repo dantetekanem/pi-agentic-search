@@ -1,6 +1,8 @@
 import { Text } from "@earendil-works/pi-tui";
 import { relatedReferencesForPath, type RelatedExpansionDetails } from "./related.ts";
 
+const MAX_TIED_TARGETS = 3;
+
 interface RenderFileDetails {
   path: string;
   score: number;
@@ -34,6 +36,24 @@ interface RenderSearchDetails {
 interface ThemeLike {
   fg(name: string, text: string): string;
   bold(text: string): string;
+}
+
+export function renderSparsityCall(args: any, theme: ThemeLike): Text {
+  if (args.target === undefined) {
+    let index = theme.fg("toolTitle", theme.bold("sparsity_index "));
+    index += theme.fg("accent", Array.isArray(args.anchors) ? `${args.anchors.length} anchors` : String(args.diff ?? "worktree"));
+    if (args.cwd) index += theme.fg("dim", ` in ${String(args.cwd)}`);
+    if (args.max_depth !== undefined) index += theme.fg("dim", ` depth ${args.max_depth}`);
+    if (args.output_dir) index += theme.fg("dim", ` → ${String(args.output_dir)}`);
+    return new Text(index, 0, 0);
+  }
+  let text = theme.fg("toolTitle", theme.bold("sparsity_collect "));
+  text += theme.fg("accent", String(args.target ?? ""));
+  if (args.max_depth !== undefined) text += theme.fg("dim", ` depth ${args.max_depth}`);
+  if (args.vicinity_check !== undefined) text += theme.fg("dim", ` vicinity ${args.vicinity_check}`);
+  if (args.root) text += theme.fg("dim", ` root ${String(args.root)}`);
+  if (args.callers === false) text += theme.fg("dim", " callers false");
+  return new Text(text, 0, 0);
 }
 
 export function renderCall(args: any, theme: ThemeLike): Text {
@@ -82,21 +102,27 @@ export function renderResult(result: any, { expanded, isPartial }: { expanded: b
 
   const top = files[0];
   if (top?.path) {
-    text += `\n${theme.fg("accent", `top: ${top.path}`)}`;
-    if (top.topMatch) {
-      text += theme.fg("dim", ` L${top.topMatch.lineNumber} [${top.topMatch.marker}] ${top.topMatch.text}`);
+    const tied = files.filter((file) => file.score === top.score).slice(0, MAX_TIED_TARGETS);
+    if (tied.length > 1) {
+      text += `\n${theme.fg("accent", `tied top: ${tied.map((file) => file.path).join(", ")}`)}`;
+      text += theme.fg("muted", " → inspect tied files first");
+    } else {
+      text += `\n${theme.fg("accent", `top: ${top.path}`)}`;
+      if (top.topMatch) {
+        text += theme.fg("dim", ` L${top.topMatch.lineNumber} [${top.topMatch.marker}] ${top.topMatch.text}`);
+      }
+      const relatedCount = details?.related?.roots.length;
+      const relatedLabel = details?.related?.label ?? "related";
+      const packageCount = details?.coverage?.packageRoots.length ?? 0;
+      text += theme.fg(
+        "muted",
+        relatedCount !== undefined
+          ? (packageCount > 0
+            ? ` → read target first; related coverage includes ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} and ${packageCount} imported package${packageCount === 1 ? "" : "s"}`
+            : ` → read target first; ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} below are likely targets too`)
+          : " → read target first",
+      );
     }
-    const relatedCount = details?.related?.roots.length;
-    const relatedLabel = details?.related?.label ?? "related";
-    const packageCount = details?.coverage?.packageRoots.length ?? 0;
-    text += theme.fg(
-      "muted",
-      relatedCount !== undefined
-        ? (packageCount > 0
-          ? ` → read target first; related coverage includes ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} and ${packageCount} imported package${packageCount === 1 ? "" : "s"}`
-          : ` → read target first; ${relatedCount} ${relatedLabel} file${relatedCount === 1 ? "" : "s"} below are likely targets too`)
-        : " → read target first",
-    );
   }
 
   if (details?.related) {

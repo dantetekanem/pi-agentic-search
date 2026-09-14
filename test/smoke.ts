@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import agenticSearchExtension, { formatSearchResults, parseRipgrepJsonLines, rankFileGroups } from "../index.ts";
 
 function rgMatch(path: string, lineNumber: number, text: string): string {
@@ -50,8 +50,8 @@ agenticSearchExtension({
   },
 } as any);
 
-assert.deepEqual(registeredTools, ["agentic_search"]);
-assert.deepEqual(registeredCommands, ["agentic-search-info"]);
+assert.deepEqual(registeredTools, ["sparsity_index", "sparsity_collect", "agentic_search"]);
+assert.deepEqual(registeredCommands, ["agentic-search-info", "agentic-search-stats"]);
 assert.ok(searchTool, "agentic_search tool should be registered");
 assert.match(JSON.stringify(searchTool.parameters), /context/);
 assert.match(JSON.stringify(searchTool.parameters), /disambiguation hint used only for ranking/);
@@ -259,6 +259,27 @@ await writeFile(
   "export function filterMap(values, mapper) { return values.map(mapper).filter(Boolean); }\n",
 );
 
+const outsideRepo = await mkdtemp(join(tmpdir(), "pi-agentic-search-outside-"));
+await writeFile(join(outsideRepo, "private-module.ts"), "export function outsidePrivateValue() { return 1; }\n");
+await writeFile(join(outsideRepo, "secret.txt"), "OUTSIDE_SECRET\n");
+await symlink(join(outsideRepo, "secret.txt"), join(repo, "src/secret-link.txt"));
+await symlink(join(outsideRepo, "private-module.ts"), join(repo, "src/helpers/outside-link.ts"));
+const escapeSpecifier = relative(join(repo, "src"), join(outsideRepo, "private-module")).split(sep).join("/");
+await writeFile(
+  join(repo, "src/escape.ts"),
+  [
+    `import { outsidePrivateValue } from '${escapeSpecifier}';`,
+    "export const escapeReference = outsidePrivateValue;",
+  ].join("\n"),
+);
+await writeFile(
+  join(repo, "src/symlink-escape.ts"),
+  [
+    "import { outsidePrivateValue } from './helpers/outside-link';",
+    "export const symlinkEscapeReference = outsidePrivateValue;",
+  ].join("\n"),
+);
+
 const pathOnlyResult = await searchTool.execute(
   "tool-call-1",
   { query: "event_occurrence.rb", max_files: 3 },
@@ -312,7 +333,7 @@ const absolutePathResult = await searchTool.execute(
   { query: "created_at.*<=", path: join(repo, "app/models/post.rb"), max_files: 10 },
   undefined,
   undefined,
-  { cwd: process.cwd() },
+  { cwd: repo },
 );
 const absolutePathText = absolutePathResult.content[0].text;
 assert.match(absolutePathText, /posts\.created_at <= \?/);
@@ -324,7 +345,7 @@ const absoluteDirectoryResult = await searchTool.execute(
   { query: "created_at.*<=", path: join(repo, "app"), max_files: 10 },
   undefined,
   undefined,
-  { cwd: process.cwd() },
+  { cwd: repo },
 );
 const absoluteDirectoryText = absoluteDirectoryResult.content[0].text;
 assert.match(absoluteDirectoryText, /TARGET FILE: .*app\/models\/post\.rb/);
@@ -527,16 +548,48 @@ const mathContentPaths = mathContentResult.details.files.map((f: any) => f.path)
 assert.ok(mathContentPaths.includes("src/app.ts"), "content lane should find app.ts which calls computeUserScore");
 assert.ok(mathContentPaths.includes("src/helpers/math.ts"), "content lane should find math.ts which defines computeUserScore");
 
-// 2. Absolute path outside cwd is confined to that exact file (allowed deliberately,
-//    e.g. tmp fixtures) but cannot broaden into the repo.
-const outsideResult = await searchTool.execute(
-  "tool-call-new-2",
-  { query: "secret_token", path: join(repo, ".outside-secret.rb"), max_files: 5 },
+await assert.rejects(
+  () => searchTool.execute(
+    "tool-call-new-2a",
+    { query: "OUTSIDE_SECRET", path: join(outsideRepo, "secret.txt"), max_files: 5 },
+    undefined,
+    undefined,
+    { cwd: repo },
+  ),
+  /Path escapes current repository/,
+);
+await assert.rejects(
+  () => searchTool.execute(
+    "tool-call-new-2b",
+    { query: "OUTSIDE_SECRET", path: "src/secret-link.txt", max_files: 5 },
+    undefined,
+    undefined,
+    { cwd: repo },
+  ),
+  /Path escapes current repository/,
+);
+
+const escapingImportResult = await searchTool.execute(
+  "tool-call-new-2c",
+  { query: "outsidePrivateValue", path: "src/escape.ts", expand_related: true, max_files: 10 },
   undefined,
   undefined,
   { cwd: repo },
 );
-assert.match(outsideResult.content[0].text, /No code matches found/, "search outside the named file returns nothing");
+assert.equal(escapingImportResult.details.files[0].path, "src/escape.ts");
+assert.deepEqual(escapingImportResult.details.related.roots, []);
+assert.equal(escapingImportResult.details.related.unresolved[0].name, escapeSpecifier);
+
+const symlinkImportResult = await searchTool.execute(
+  "tool-call-new-2d",
+  { query: "outsidePrivateValue", path: "src/symlink-escape.ts", expand_related: true, max_files: 10 },
+  undefined,
+  undefined,
+  { cwd: repo },
+);
+assert.equal(symlinkImportResult.details.files[0].path, "src/symlink-escape.ts");
+assert.deepEqual(symlinkImportResult.details.related.roots, []);
+assert.equal(symlinkImportResult.details.related.unresolved[0].name, "./helpers/outside-link");
 
 // 3. Go receiver-method definition detection.
 {

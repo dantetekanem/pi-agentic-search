@@ -55,6 +55,52 @@ By default, `agentic_search` returns ranked files. After `agentic_search`, the u
 
 Built-in grep and shell search remain useful for narrow exact confirmation in a known file. They are not a follow-up discovery step after `agentic_search` reports its one-call coverage.
 
+### `sparsity_collect`
+
+Bounded call-context collection for one Ruby or JS/TS definition. Give it a `path:line` inside a method, scope, function or component and it returns:
+
+- the enclosing definition (start/end lines, symbol, kind, a sha256 fingerprint of its text, and a snippet of `vicinity_check` lines around the anchor line, bounded by the definition);
+- the calls inside it resolved to definitions up to `max_depth` hops, each edge marked `exact`, `static_candidate`, `ambiguous`, `unresolved` or `external`, with a note explaining why;
+- static callers of the anchor within the root (depth 1, capped);
+- cycles, the unexpanded frontier, and coverage (root, depth reached, node/edge counts, ripgrep calls, elapsed time, and what truncated the walk).
+
+Resolution is static, not runtime. Ruby is parsed with [Prism](https://github.com/ruby/prism) (`@ruby/prism`, WASM): exact definition ranges for methods, setters, endless and singleton defs, `class << self`, DSL declarations (`scope`, `attr_*`, `has_many`, `delegate`, `validates`, GraphQL `field`, ...), value constants and test blocks; every call site carries its receiver kind and, when known, the receiver type. Types come from an inference ladder and the edge says which rung answered: `typed` (Sorbet `sig`, inline RBS `#:`, YARD `@param`), `assigned` (`x = Foo.new`, `Foo.find`, `Foo.for_*`), `ivar` (set in `initialize`), `named` (variable name `legal_entity` → `LegalEntity`, a guess), `self`/`lexical` (owner and nesting), `constant`, `same_file`, `name_only` (a root-wide name match). Methods resolve through the receiver's ancestor chain (superclass and mixins) using a per-component index of every Ruby definition, built once per git tree hash (about 2 s for 3,000 files, 0.3 s from cache, gzipped) and overlaid with dirty and untracked files. Callers and tests come from the same index's inverse call map, which excludes strings, comments and imports by construction. A constant or receiver outside the component root is `external`, with the missing namespace named. If Prism fails to load, the regex engine below takes over.
+
+TypeScript and JavaScript use the `typescript` compiler API. Definitions come from the AST (functions, arrow and wrapped components, classes and methods, interfaces, types, enums, module-level constants, `describe`/`it` blocks, CommonJS `module.exports`). For each run, one program per nearest `tsconfig.json` is created with the changed files as roots (about 2 s and 1 GB for a 5,800-file import closure; at most four programs per run), and the type checker resolves every call, `new` and JSX tag to its declaration: `paths` aliases, workspace symlinks, barrels and re-exports, `require()` in JS. Declarations in `node_modules` are `external` with the package name; built `.d.ts` files inside the repository are `exact` with a note; TypeScript's own `lib` methods are dropped; closures over locals are `local`. Callers are ripgrep candidates confirmed by the AST, so imports, strings and comments never count.
+
+Without an index or program (very large roots, test-only roots, a failed program) Ruby methods resolve through `def name`, `def self.name`, and declarative definitions. Constants follow the Zeitwerk path convention first (`Billing::PlanSummaries::Builder` → `**/billing/plan_summaries/builder.rb`), then `class`/`module` declarations in the right namespace, then value constants inside the parent (`BillingPeriod::Monthly`). `Const.new(args).method` chains keep their receiver. JS/TS follows relative imports and barrel re-exports; non-relative imports are reported as `external` with the package name; local `const` values are reported as locals, not definitions.
+
+The search root defaults to the nearest component root above the target (`component.yml`, a gemspec, `package.json`, `Gemfile`, or `.git`), never above the working directory. Anything outside that root is reported as outside it, with the namespace that was missing. Pass `root` to widen on purpose.
+
+Parameters:
+
+- `target` — `path:line`, required.
+- `max_depth` — call hops to follow. Default 3, maximum 4.
+- `vicinity_check` — context lines around each anchor line. Default 20, maximum 60.
+- `max_nodes` — hard cap on definitions returned. Default 24, maximum 60.
+- `root` — search root override, inside the working directory.
+- `callers` — include static callers of the anchor. Default true.
+- `budget_ms` — total ripgrep time budget. Default 20000, maximum 60000.
+
+Typical cost on a large monorepo component: 10–40 ripgrep calls and under two seconds. Ruby destinations are static candidates: a matching `def` is not proof that dynamic dispatch reaches it.
+
+### `sparsity_index`
+
+One call for a whole diff. Give it a git range (`base..head`, `base...head`, a single commit) or `worktree` for uncommitted changes including untracked files, and it returns a ranked context pack:
+
+1. Manifest: revision, roots, every changed file classified as code, test, generated or other, the changed definitions (anchors) with caller and test counts, and a table of sections with line ranges in `pack.md`, token estimates, and whether each is inline or spilled.
+2. One section per changed definition: windows of `vicinity_check` lines around every changed line with a `+|` gutter mark on added or modified lines, the removed old lines of overlapping hunks with `-|` and their old line numbers, the calls inside it resolved as in `sparsity_collect` (call sites nearest the change first), production callers (flagged when the caller itself changed in this diff), and tests that reference the symbol by name.
+3. Definitions removed by the diff whose callers still exist on the new side.
+4. Direct callees with signature plus first lines, an end recap of unresolved edges, external packages, cycles, skipped anchors and the frontier, then depth-2 signatures.
+
+The pack goes to `pack.md` and `pack.json` in `output_dir`. Sections beyond `inline_budget_kb` are spilled whole; the inline text carries a stub with the line range to read. Anchors are ordered by band (production definitions, then tests, types and declarations) and, within a band, by boundary relevance: path structure (controllers, GraphQL, jobs, middleware, webhooks, API clients, entrypoints, migrations), domain words in identifiers (auth, secrets, tenant, money, destructive data), and failure-path words in the body (transaction, retry, rescue, async). Callers are ordered changed-in-this-diff first, then by the same relevance. The tags that fired appear in brackets in the manifest so the order can be checked. Ruby, TypeScript and JavaScript are covered; other files are listed, not expanded.
+
+Parameters: `cwd` (repository checkout; default the session's), `diff` (default `worktree`), `anchors` (path:line list instead of a diff), `max_depth` (default 2), `vicinity_check` (20), `max_nodes` (120 callee definitions; callers and tests have per-anchor caps), `max_anchors` (60), `root`, `budget_ms` (30000), `output_dir`, `inline_budget_kb` (40).
+
+Each run writes `metrics.json` next to the pack (timing, ripgrep calls, anchors, nodes, edges, resolution and label counts, unresolved rate per language, inline versus spilled tokens, index cache hits, program costs) and appends one line to `sparsity/metrics.jsonl` under the Pi agent directory. `/agentic-search-stats [N]` summarizes the last N runs.
+
+Measured on a 72-file Ruby and TypeScript PR in a large monorepo: 60 anchors, 337 definitions, 589 edges (181 resolved by the TypeScript checker), 44 unresolved, 11 s with warm caches.
+
 ## Examples
 
 ### Rails scope request with a named file
@@ -242,6 +288,8 @@ Run checks:
 npm run check
 npm run smoke
 ```
+
+`npm run smoke` runs the ranking smoke test, the `sparsity_collect` fixture test (a temporary Ruby and TS repository with a call cycle, an unresolved attribute, a barrel re-export and an external package), and the `sparsity_index` test (a temporary git repository with a modified method, an added method, a removed definition that still has callers, a changed test, a worktree edit and an untracked file).
 
 ## Notes
 

@@ -1,7 +1,14 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { camelToSnake, displaySearchRoot, normalizeRepoRelativePath, uniqueValues } from "./shared.ts";
+import {
+  camelToSnake,
+  displaySearchRoot,
+  ensureInsideCwd,
+  isRealPathInsideCwd,
+  normalizeRepoRelativePath,
+  uniqueValues,
+} from "./shared.ts";
 
 export interface RelatedResolvedReference {
   from: string;
@@ -59,7 +66,7 @@ const SKIP_DIRS = new Set([".git", "node_modules", "vendor", "dist", "build", "c
 const MAX_DIR_WALK_FILES = 200;
 
 function rootToResolvedPath(cwd: string, root: string): string {
-  return isAbsolute(root) ? resolve(root) : resolve(cwd, root);
+  return ensureInsideCwd(cwd, root);
 }
 
 function parseRubyMixinReferences(source: string): RubyMixinReference[] {
@@ -121,7 +128,8 @@ function rubyMixinCandidatePaths(resolvedFrom: string, name: string): string[] {
   return uniqueValues(candidates);
 }
 
-async function fileExists(path: string): Promise<boolean> {
+async function fileExistsInside(cwd: string, path: string): Promise<boolean> {
+  if (!(await isRealPathInsideCwd(cwd, path))) return false;
   try {
     const stats = await stat(path);
     return stats.isFile();
@@ -132,6 +140,7 @@ async function fileExists(path: string): Promise<boolean> {
 
 async function collectSourceFiles(cwd: string, root: string): Promise<string[]> {
   const resolved = rootToResolvedPath(cwd, root);
+  if (!(await isRealPathInsideCwd(cwd, resolved))) return [];
   const out: string[] = [];
 
   async function walk(dir: string, depth: number): Promise<void> {
@@ -177,6 +186,7 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
 
   for (const root of roots) {
     const resolved = rootToResolvedPath(cwd, root);
+    if (!(await isRealPathInsideCwd(cwd, resolved))) continue;
     const s = await stat(resolved).catch(() => undefined);
     if (s?.isDirectory()) {
       for (const f of await collectSourceFiles(cwd, root)) {
@@ -193,6 +203,7 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
   while (queue.length > 0 && details.roots.length < maxMixinFiles) {
     const root = queue.shift()!;
     const resolvedRoot = rootToResolvedPath(cwd, root);
+    if (!(await isRealPathInsideCwd(cwd, resolvedRoot))) continue;
     if (visited.has(resolvedRoot)) continue;
     visited.add(resolvedRoot);
 
@@ -207,7 +218,7 @@ export async function expandRubyMixins(cwd: string, roots: string[]): Promise<Re
       const candidates = rubyMixinCandidatePaths(resolvedRoot, reference.name);
       const resolvedPath = await (async () => {
         for (const candidate of candidates) {
-          if (await fileExists(candidate)) return candidate;
+          if (await fileExistsInside(cwd, candidate)) return candidate;
         }
         return undefined;
       })();
@@ -372,7 +383,7 @@ async function resolvePackageImport(
   };
 }
 
-function jsImportCandidatePaths(resolvedFrom: string, specifier: string): string[] {
+export function jsImportCandidatePaths(resolvedFrom: string, specifier: string): string[] {
   const base = resolve(dirname(resolvedFrom), specifier);
   const ext = extname(base).toLowerCase();
   const candidates: string[] = [];
@@ -397,6 +408,7 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
 
   for (const root of roots) {
     const resolved = rootToResolvedPath(cwd, root);
+    if (!(await isRealPathInsideCwd(cwd, resolved))) continue;
     const s = await stat(resolved).catch(() => undefined);
     if (s?.isDirectory()) {
       for (const f of await collectSourceFiles(cwd, root)) {
@@ -413,6 +425,7 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
   while (queue.length > 0 && details.roots.length < maxImportFiles) {
     const root = queue.shift()!;
     const resolvedRoot = rootToResolvedPath(cwd, root);
+    if (!(await isRealPathInsideCwd(cwd, resolvedRoot))) continue;
     if (visited.has(resolvedRoot)) continue;
     visited.add(resolvedRoot);
 
@@ -454,7 +467,7 @@ export async function expandJsTsImports(cwd: string, roots: string[]): Promise<R
       const candidates = jsImportCandidatePaths(resolvedRoot, specifier);
       const resolvedPath = await (async () => {
         for (const candidate of candidates) {
-          if (await fileExists(candidate)) return candidate;
+          if (await fileExistsInside(cwd, candidate)) return candidate;
         }
         return undefined;
       })();

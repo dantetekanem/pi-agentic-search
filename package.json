@@ -1,7 +1,7 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.2.1",
-  "description": "Pi extension for agent-oriented ranked code search",
+  "version": "0.3.0",
+  "description": "Pi extension for agent-oriented ranked code search and bounded call-context collection",
   "type": "module",
   "repository": {
     "type": "git",
@@ -21,7 +21,7 @@
   },
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
-    "smoke": "tsx test/smoke.ts"
+    "smoke": "tsx test/smoke.ts && tsx test/sparsity.ts && tsx test/sparsity-index.ts && tsx test/ruby-adapter.ts && tsx test/ruby-index.ts && tsx test/ts-adapter.ts && tsx test/rank.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -35,7 +35,10 @@
     "@earendil-works/pi-tui": "0.74.0",
     "@types/node": "^24.3.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3",
-    "typebox": "^1.1.24"
+    "typebox": "^1.1.38",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@ruby/prism": "^1.9.0"
   }
 }
