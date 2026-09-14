@@ -268,6 +268,28 @@ const explicit = await indexSparsity({ ...defaults, diff: "", anchors: ["app/mod
 assert.equal(explicit.anchors.length, 1);
 assert.equal(explicit.anchors[0]!.symbol, "Billing::Reader#applicable?");
 
+// A committed range indexed from a checkout that is not at the range head reads the changed files at the head
+const headSha = run(["rev-parse", "HEAD"]).trim();
+const baseSha = run(["rev-parse", "HEAD~1"]).trim();
+run(["checkout", "-q", baseSha]);
+try {
+  const detached = await indexSparsity({ ...defaults, diff: `${baseSha}..${headSha}`, outputDir: join(cwd, ".sparsity-detached"), indexCacheDir: join(cwd, ".sparsity-detached-cache") });
+  const applicable = detached.anchors.find((anchor) => anchor.symbol === "Billing::Reader#applicable?")!;
+  assert.ok(applicable, "the changed method is still an anchor");
+  const detachedPack = await readFile(join(cwd, ".sparsity-detached", "pack.md"), "utf8");
+  assert.match(detachedPack, /\+\|.*return false if @shop\.frozen\?/, "the snippet shows the range head's line, not the checkout's");
+  assert.ok(applicable.changedLines.length > 0, "changed lines line up with the head content");
+  assert.ok(detached.anchors.some((anchor) => anchor.symbol === "Billing::Reader#registration_due?"), "a method that only exists at the head is an anchor");
+  assert.match(detached.inline, /checkout HEAD \w{12} differs from range head \w{12}: the \d+ changed files were read at/);
+  assert.match(detached.inline.split("\n")[3]!, /^revision: changed files, anchors, snippets and line numbers are from the range head/, "the revision line sits directly under the header");
+  assert.equal(detached.checkoutHead, baseSha);
+  assert.equal(result.checkoutHead, result.head, "a range ending at the checkout carries no revision line");
+  assert.ok(!result.inline.includes("\nrevision:"));
+  assert.ok(!detached.inline.includes("toUpperCase") || detached.inline.includes("team.id.toUpperCase()"), "TypeScript anchors come from the head content too");
+} finally {
+  run(["checkout", "-q", "main"]);
+}
+
 // Registration
 const registered: string[] = [];
 let tool: any;

@@ -103,6 +103,7 @@ export interface IndexResult {
   label: string;
   head: string;
   base?: string;
+  checkoutHead: string;
   dirty: boolean;
   roots: string[];
   files: ChangedFile[];
@@ -346,11 +347,25 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
     }
   }
 
+  const indexNotes: string[] = [];
+  const headContent = new Map<string, string>();
+  const headContentAbsolute = new Map<string, string>();
+  const checkoutHead = options.anchors?.length || dirty ? head : (await git(["rev-parse", "HEAD"], cwd, signal).catch(() => head)).trim();
+  if (checkoutHead !== head) {
+    const readable = files.filter((file) => file.status !== "deleted" && file.language && (file.kind === "code" || file.kind === "test"));
+    await pool(readable, SEARCH_CONCURRENCY, async (file) => {
+      const content = await git(["show", `${head}:${file.path}`], cwd, signal).catch(() => undefined);
+      if (content === undefined) return;
+      headContent.set(file.path, content);
+      headContentAbsolute.set(resolve(cwd, file.path), content);
+    });
+    indexNotes.push(`checkout HEAD ${checkoutHead.slice(0, 12)} differs from range head ${head.slice(0, 12)}: the ${headContent.size} changed files were read at ${head.slice(0, 12)}, so anchors, snippets and line numbers are the range head's; callers, tests and unchanged files reflect the checkout.`);
+  }
+
   const rubyReady = files.some((file) => file.language === "ruby") ? await rubyAdapter.ready() : false;
   const rubyIndexes = new Map<string, RubyIndex>();
-  const indexNotes: string[] = [];
   const tsFiles = files.filter((file) => file.language === "javascript" && file.status !== "deleted" && (file.kind === "code" || file.kind === "test")).map((file) => resolve(cwd, file.path));
-  const tsPrograms = tsFiles.length ? new TsPrograms(cwd) : undefined;
+  const tsPrograms = tsFiles.length ? new TsPrograms(cwd, headContentAbsolute) : undefined;
   tsPrograms?.prepare(tsFiles, signal);
   indexNotes.push(...(tsPrograms?.describe() ?? []));
   const collectors = new Map<string, Collector>();
@@ -366,7 +381,7 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
         indexNotes.push(`Ruby index for ${rootDisplay} skipped: only test files changed under it; name-based ripgrep resolution used instead.`);
       }
       if (rubyReady && options.indexCacheDir && languageFor(path) === "ruby" && productionRubyChange) {
-        rubyIndex = await buildRubyIndex({ cwd, root: rootDisplay, cacheDir: options.indexCacheDir, signal, log: (message) => indexNotes.push(message) });
+        rubyIndex = await buildRubyIndex({ cwd, root: rootDisplay, cacheDir: options.indexCacheDir, signal, overlay: headContent, log: (message) => indexNotes.push(message) });
         rubyIndexes.set(rootDisplay, rubyIndex);
         const described = describeRubyIndex(rubyIndex);
         if (described) indexNotes.push(described);
@@ -379,6 +394,7 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
         rubyIndex: rubyIndex && !rubyIndex.skipped ? rubyIndex : undefined,
         tsPrograms,
       });
+      for (const [path, content] of headContent) collector.preload(path, content);
       collectors.set(rootDisplay, collector);
     }
     return { collector, rootDisplay };
@@ -592,6 +608,7 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
     label,
     head,
     base,
+    checkoutHead,
     dirty,
     roots: [...collectors.keys()],
     files,
@@ -758,6 +775,7 @@ function manifestText(result: Omit<IndexResult, "sections" | "packPath" | "jsonP
   const out: string[] = [];
   const byKind = (kind: FileKind) => result.files.filter((file) => file.kind === kind).length;
   out.push(`SPARSITY INDEX ${result.label}${result.dirty ? " [dirty worktree]" : ""}`);
+  if (result.checkoutHead !== result.head) out.push(`revision: changed files, anchors, snippets and line numbers are from the range head ${result.head.slice(0, 12)}; the checkout is at ${result.checkoutHead.slice(0, 12)}, which callers, tests and unchanged files reflect. Do not re-read the changed files at the head; the pack already did.`);
   out.push(`roots: ${result.roots.join(", ") || "none"}  depth ${result.coverage.depthReached}/${result.coverage.maxDepth}  vicinity ±${result.coverage.vicinity}`);
   for (const note of result.coverage.notes.filter((item) => /^Ruby index for |^Prism parser unavailable|^TypeScript program for /.test(item))) out.push(`index: ${note}`);
   out.push(`files ${result.files.length} (code ${byKind("code")}, tests ${byKind("test")}, generated ${byKind("generated")}, other ${byKind("other")}); anchors ${result.anchors.length} expanded, ${result.skippedAnchors.length} skipped; nodes ${result.nodes.length}; edges ${result.edges.length}; unresolved ${result.coverage.unresolved}; dangling ${result.dangling.length}; rg calls ${result.coverage.rgCalls}; ${result.coverage.elapsedMs} ms; truncated: ${result.coverage.truncatedBy}`);

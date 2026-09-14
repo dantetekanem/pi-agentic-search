@@ -143,6 +143,7 @@ export interface RubyIndexOptions {
   maxFiles?: number;
   signal?: AbortSignal;
   log?: (message: string) => void;
+  overlay?: Map<string, string>;
 }
 
 const INDEX_VERSION = 1;
@@ -328,6 +329,14 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
   for (const path of [...dirty.modified, ...dirty.untracked]) {
     const source = await readFile(resolve(options.cwd, path), "utf8").catch(() => undefined);
     if (source === undefined) continue;
+    const entry = fileEntry(path, source);
+    if (entry) {
+      merged[path] = entry;
+      overlayFiles += 1;
+    }
+  }
+  for (const [path, source] of options.overlay ?? []) {
+    if (!(root === "." || path === root || path.startsWith(`${root}/`)) || !/\.(?:rb|rake)$/.test(path)) continue;
     const entry = fileEntry(path, source);
     if (entry) {
       merged[path] = entry;

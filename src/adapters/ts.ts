@@ -37,7 +37,19 @@ export class TsPrograms {
   private readonly handles = new Map<string, ProgramHandle>();
   readonly notes: string[] = [];
 
-  constructor(private readonly cwd: string) {}
+  constructor(private readonly cwd: string, private readonly overlay: Map<string, string> = new Map()) {}
+
+  private host(options: ts.CompilerOptions): ts.CompilerHost {
+    const host = ts.createCompilerHost(options, true);
+    if (!this.overlay.size) return host;
+    const overlay = this.overlay;
+    const lookup = (fileName: string): string | undefined => overlay.get(fileName) ?? overlay.get(realOf(fileName));
+    const readFile = host.readFile.bind(host);
+    const fileExists = host.fileExists.bind(host);
+    host.readFile = (fileName) => lookup(fileName) ?? readFile(fileName);
+    host.fileExists = (fileName) => lookup(fileName) !== undefined || fileExists(fileName);
+    return host;
+  }
 
   configFor(absolutePath: string): string | undefined {
     return ts.findConfigFile(dirname(absolutePath), ts.sys.fileExists, "tsconfig.json");
@@ -83,7 +95,7 @@ export class TsPrograms {
       }
     }
     try {
-      const program = ts.createProgram({ rootNames: roots, options, projectReferences, oldProgram: previous?.program });
+      const program = ts.createProgram({ rootNames: roots, options, projectReferences, oldProgram: previous?.program, host: this.host(options) });
       const byRealPath = new Map<string, ts.SourceFile>();
       for (const sourceFile of program.getSourceFiles()) byRealPath.set(realOf(sourceFile.fileName), sourceFile);
       const handle: ProgramHandle = {

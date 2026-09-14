@@ -949,6 +949,10 @@ export class Collector {
     return isAbsolute(path) ? path : resolve(this.options.cwd, path);
   }
 
+  preload(path: string, content: string): void {
+    this.files.set(this.absolutePath(path), content.split("\n"));
+  }
+
   async lines(path: string): Promise<string[] | undefined> {
     const absolute = this.absolutePath(path);
     const cached = this.files.get(absolute);
