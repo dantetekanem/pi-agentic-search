@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 (2026-09-15)
+
+### Changed
+
+- Rewrite the README around reducing agent searches and file reads, with usage examples and the current tools' limits.
+
 ## 0.5.0 (unreleased)
 
 ### Changed
