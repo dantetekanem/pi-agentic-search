@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { summarizeMetrics } from "./metrics.ts";
 import { clampInt } from "./shared.ts";
 import { collectSparsity, formatSparsity } from "./sparsity.ts";
-import { indexSparsity, packId } from "./sparsity-index.ts";
+import { packId, scanSparsity } from "./sparsity-scan.ts";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
@@ -20,12 +20,12 @@ const indexCacheDir = () => join(getAgentDir(), "sparsity", "index");
 
 export function renderSparsityCall(args: any, theme: ThemeLike): Text {
   if (args.target === undefined) {
-    let index = theme.fg("toolTitle", theme.bold("sparsity_index "));
-    index += theme.fg("accent", Array.isArray(args.anchors) ? `${args.anchors.length} anchors` : String(args.diff ?? "worktree"));
-    if (args.cwd) index += theme.fg("dim", ` in ${String(args.cwd)}`);
-    if (args.max_depth !== undefined) index += theme.fg("dim", ` depth ${args.max_depth}`);
-    if (args.output_dir) index += theme.fg("dim", ` → ${String(args.output_dir)}`);
-    return new Text(index, 0, 0);
+    let scan = theme.fg("toolTitle", theme.bold("sparsity_scan "));
+    scan += theme.fg("accent", Array.isArray(args.anchors) ? `${args.anchors.length} anchors` : String(args.diff ?? "worktree"));
+    if (args.cwd) scan += theme.fg("dim", ` in ${String(args.cwd)}`);
+    if (args.max_depth !== undefined) scan += theme.fg("dim", ` depth ${args.max_depth}`);
+    if (args.output_dir) scan += theme.fg("dim", ` → ${String(args.output_dir)}`);
+    return new Text(scan, 0, 0);
   }
   let text = theme.fg("toolTitle", theme.bold("sparsity_collect "));
   text += theme.fg("accent", String(args.target ?? ""));
@@ -64,18 +64,18 @@ const SparsityParams = Type.Object({
   max_nodes: Type.Optional(Type.Number({ description: "Hard cap on definitions returned. Default 24, max 60." })),
   root: Type.Optional(Type.String({ description: "Search root for resolution. Default: nearest component root above the target (component.yml, gemspec, package.json, Gemfile, .git), never above cwd." })),
   callers: Type.Optional(Type.Boolean({ description: "Also list static callers of the anchor within the root (depth 1, capped). Default true." })),
-  budget_ms: Type.Optional(Type.Number({ description: "Total ripgrep time budget in milliseconds. Default 20000, max 60000." })),
+  budget_ms: Type.Optional(Type.Number({ description: "Traversal time budget in milliseconds after initial parser/index/program setup. Coverage wall time includes setup. Default 20000, max 60000." })),
 });
 
-const IndexParams = Type.Object({
-  cwd: Type.Optional(Type.String({ description: "Repository checkout to index. Default: the session's working directory. Use when the session is not inside the reviewed repository." })),
+const ScanParams = Type.Object({
+  cwd: Type.Optional(Type.String({ description: "Repository checkout to scan. Default: the session's working directory. Use when the session is not inside the reviewed repository." })),
   diff: Type.Optional(Type.String({ description: "What changed: a git range like base..head or base...head, a single commit, or worktree (default) for uncommitted changes including untracked files." })),
   anchors: Type.Optional(Type.Array(Type.String(), { description: "Instead of a diff, index these path:line anchors." })),
   max_depth: Type.Optional(Type.Number({ description: "Call hops to follow from each changed definition. Default 2, max 4." })),
   vicinity_check: Type.Optional(Type.Number({ description: "Lines of context around changed lines inside each changed definition. Default 20, max 60." })),
   max_nodes: Type.Optional(Type.Number({ description: "Hard cap on callee definitions expanded across the whole pack; callers and tests have their own per-anchor caps. Default 120, max 300." })),
   max_anchors: Type.Optional(Type.Number({ description: "Hard cap on changed definitions expanded. Default 60, max 200. Production methods rank before tests and declarations." })),
-  root: Type.Optional(Type.String({ description: "Search root override for every file. Default: nearest component root per file (component.yml, gemspec, package.json, Gemfile, .git), never above cwd." })),
+  root: Type.Optional(Type.String({ description: "Narrow root override for every file. Omit it, or pass '.', to use the nearest component root per file (component.yml, gemspec, package.json, Gemfile, .git); a diff never collapses to the whole repository." })),
   budget_ms: Type.Optional(Type.Number({ description: "Total ripgrep/git time budget in milliseconds. Default 30000, max 120000." })),
   output_dir: Type.Optional(Type.String({ description: "Directory for pack.md and pack.json. Default: the Pi agent directory under sparsity/<id>. Give a review run's artifact directory to keep the pack with the run." })),
   inline_budget_kb: Type.Optional(Type.Number({ description: "How much of the pack to return inline before spilling sections to pack.md. Default 40 KB, max 48 KB." })),
@@ -83,15 +83,15 @@ const IndexParams = Type.Object({
 
 export function registerSparsityTools(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "sparsity_index",
-    label: "Sparsity Index",
-    description: "Index the code changes of a diff in one call. Finds every changed Ruby/JS/TS definition, expands what each one calls (to max_depth hops, resolved to definitions with exact/static_candidate/ambiguous/unresolved/external labels), lists static callers and tests for each, reports definitions removed by the diff that still have callers, and returns a ranked pack: manifest, changed definitions with their edges, direct callees, dangling symbols, recap of unresolved and untested paths, then depth-2 signatures. Changed files are read at the range head even when the checkout is elsewhere. Sections beyond the inline budget are written to pack.md with line ranges in the manifest. Run this once at the start of a review instead of exploring files by hand.",
-    promptSnippet: "At the start of a review, call sparsity_index once with the diff (base..head or worktree) and, for a review run, output_dir set to the run's artifact directory. Read the manifest, then the anchor sections; read spilled sections from pack.md by line range only when a zone needs them. Unresolved edges and the frontier are coverage gaps to disclose, not evidence of absence.",
+    name: "sparsity_scan",
+    label: "Sparsity Scan",
+    description: "Scan the code changes of a diff in one call. Finds every changed Ruby/JS/TS definition, expands what each one calls (to max_depth hops, resolved to definitions with exact/static_candidate/ambiguous/unresolved/external labels), lists static callers and tests for each, reports definitions removed by the diff that still have callers, and returns a ranked pack: manifest, changed definitions with their edges, direct callees, dangling symbols, recap of unresolved and untested paths, then depth-2 signatures. Changed files are read at the range head even when the checkout is elsewhere. Sections beyond the inline budget are written to pack.md with line ranges in the manifest. Run this once at the start of a review instead of exploring files by hand.",
+    promptSnippet: "At the start of a review, call sparsity_scan once with the diff (base..head or worktree) and, for a review run, output_dir set to the run's artifact directory. Read the manifest, then the anchor sections; read spilled sections from pack.md by line range only when a zone needs them. Unresolved edges and the frontier are coverage gaps to disclose, not evidence of absence.",
     promptGuidelines: [
-      "Use sparsity_index for the whole diff first; use sparsity_collect for one more anchor only when a reviewer needs deeper context on a specific definition.",
+      "Use sparsity_scan for the whole diff first; use sparsity_collect for one more anchor only when a reviewer needs deeper context on a specific definition.",
       "Anchors whose tests list is empty are untested by name; say so instead of assuming coverage.",
     ],
-    parameters: IndexParams,
+    parameters: ScanParams,
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const cwd = await repositoryCwd(params.cwd, ctx.cwd);
@@ -99,7 +99,7 @@ export function registerSparsityTools(pi: ExtensionAPI): void {
       const outputDir = typeof params.output_dir === "string" && params.output_dir.trim()
         ? params.output_dir.trim()
         : join(getAgentDir(), "sparsity", packId(cwd, diff, String(Date.now())));
-      const result = await indexSparsity({
+      const result = await scanSparsity({
         cwd,
         diff,
         anchors: Array.isArray(params.anchors) && params.anchors.length ? params.anchors.map(String) : undefined,
@@ -116,7 +116,7 @@ export function registerSparsityTools(pi: ExtensionAPI): void {
         signal,
       });
       const { inline, ...details } = result;
-      const text = await writeFullOutputIfTruncated(inline, "pi-sparsity-index-", details as unknown as { truncation?: TruncationResult; fullOutputPath?: string });
+      const text = await writeFullOutputIfTruncated(inline, "pi-sparsity-scan-", details as unknown as { truncation?: TruncationResult; fullOutputPath?: string });
       return { content: [{ type: "text", text }], details: { ...details, nodes: undefined, edges: undefined, sections: details.sections.map((section) => ({ ...section, body: undefined })) } };
     },
 

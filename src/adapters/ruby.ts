@@ -2,6 +2,7 @@ import type * as Prism from "@ruby/prism";
 import type {
   AdapterDefinition,
   CallSite,
+  CollectionKind,
   Definition,
   FileFacts,
   InferenceVia,
@@ -15,12 +16,19 @@ type ParseResult = { value: Prism.ProgramNode; comments: Array<{ location: Prism
 type ParseFn = (source: string, options?: Prism.Options) => ParseResult;
 type Node = Prism.Node;
 
+export interface LocalType {
+  type: string;
+  via: InferenceVia;
+  collection?: CollectionKind;
+  chain?: string[];
+}
+
 interface RubyFacts extends FileFacts {
   program: Prism.ProgramNode;
   lineStarts: Uint32Array;
   bytes: Buffer;
   defNodes: Map<number, Node>;
-  localTypes: Map<number, Map<string, { type: string; via: InferenceVia }>>;
+  localTypes: Map<number, Map<string, LocalType>>;
 }
 
 const DECLARATION_CALLS = new Set([
@@ -40,6 +48,29 @@ const DECLARATION_CALLS = new Set([
 const TEST_BLOCKS = new Set(["test", "it", "describe", "context", "scenario", "specify", "shared_examples", "feature"]);
 const MIXIN_CALLS = new Set(["include", "extend", "prepend"]);
 const CONSTRUCTOR_LIKE = new Set(["new", "find", "find_by", "find_by!", "find_or_create_by", "find_or_create_by!", "find_or_initialize_by", "create", "create!", "build", "first", "last", "take", "instance", "current", "for", "from", "load", "fetch", "lookup", "wrap", "parse", "cast", "must"]);
+
+export const RELATION_METHODS = new Set([
+  "where", "not", "rewhere", "order", "reorder", "limit", "offset", "joins", "left_joins", "left_outer_joins", "includes",
+  "preload", "eager_load", "references", "distinct", "group", "having", "all", "none", "unscoped", "unscope", "readonly",
+  "lock", "extending", "merge", "or", "and", "create_with", "strict_loading", "reselect", "excluding", "without", "in_order_of",
+]);
+const SCALAR_METHODS = new Set([
+  "count", "size", "length", "sum", "exists?", "any?", "all?", "none?", "empty?", "many?", "pluck", "pick", "ids", "maximum",
+  "minimum", "average", "calculate", "delete_all", "update_all", "destroy_all", "explain", "to_sql", "to_h", "to_json", "join",
+  "index_by", "group_by", "partition", "each_slice", "zip", "tally", "reduce", "inject", "each_with_object",
+]);
+const MAP_METHODS = new Set(["map", "collect", "flat_map", "collect_concat", "filter_map"]);
+const FILTER_METHODS = new Set(["select", "filter", "find_all", "reject", "sort", "sort_by", "uniq", "compact", "reverse", "shuffle", "take", "drop", "take_while", "drop_while", "to_a", "to_ary", "each", "each_with_index", "tap", "presence", "dup", "freeze", "lazy", "force", "entries", "load"]);
+const ELEMENT_METHODS = new Set(["first", "last", "find", "detect", "sample", "min_by", "max_by", "min", "max", "pop", "shift", "find_by", "find_by!", "sole", "take"]);
+const BLOCK_ITERATORS = new Set([
+  "each", "each_with_index", "each_with_object", "map", "collect", "flat_map", "collect_concat", "filter_map", "select", "filter",
+  "reject", "find", "detect", "find_all", "any?", "all?", "none?", "one?", "sort_by", "min_by", "max_by", "group_by", "partition",
+  "index_by", "sum", "count", "find_each", "each_entry", "take_while", "drop_while", "find_index", "tally_by", "uniq",
+]);
+const PASSTHROUGH_BLOCK = new Set(["connected_to", "transaction", "with_connection", "uncached", "with_lock", "then", "yield_self", "benchmark", "instrument", "silence", "with_options"]);
+const IDENTITY_METHODS = new Set(["tap", "itself", "dup", "clone", "freeze", "presence", "reload", "tap"]);
+const DYNAMIC_DISPATCH = new Set(["send", "public_send", "__send__", "try", "try!"]);
+const DYNAMIC_CONSTANT = new Set(["constantize", "safe_constantize", "const_get"]);
 
 function constructorLike(name: string): boolean {
   return CONSTRUCTOR_LIKE.has(name) || /^(for|from|with|of|build|create|find|new|make|load|fetch|lookup|parse|wrap|instance)(_|$)/.test(name);
@@ -103,7 +134,12 @@ function constantPathText(node: Node | null | undefined): string | undefined {
   return undefined;
 }
 
-function normalizeType(text: string | undefined): string | undefined {
+interface TypeInfo {
+  type: string;
+  collection?: CollectionKind;
+}
+
+function normalizeTypeInfo(text: string | undefined): TypeInfo | undefined {
   if (!text) return undefined;
   let value = text.trim();
   for (let i = 0; i < 4; i += 1) {
@@ -111,10 +147,25 @@ function normalizeType(text: string | undefined): string | undefined {
     if (!wrapped) break;
     value = wrapped[1]!.trim();
   }
-  const generic = value.match(/^(?:T::(?:Array|Set|Enumerable|Enumerator|Hash)|Array|Hash)\[(.*)\]$/s);
-  if (generic) return normalizeType(generic[1]!.split(",")[0]);
+  if (/^(?:T::Hash|Hash)[[<]/.test(value)) return { type: "Hash" };
+  const collection = value.match(/^(?:T::(?:Array|Set|Enumerable|Enumerator)|Array|Set|Enumerable)[[<](.*)[\]>]$/s);
+  if (collection) {
+    const element = normalizeTypeInfo(collection[1]!.split(",")[0]);
+    return element && !element.collection ? { type: element.type, collection: "array" } : undefined;
+  }
+  const relation = value.match(/^ActiveRecord::(?:Relation|AssociationRelation)[[<](.*)[\]>]$/s);
+  if (relation) {
+    const model = normalizeTypeInfo(relation[1]);
+    return model && !model.collection ? { type: model.type, collection: "relation" } : undefined;
+  }
+  const privateRelation = value.match(/^(::)?([A-Z]\w*(?:::[A-Z]\w*)*)::Private(?:Relation|AssociationRelation|CollectionProxy)$/);
+  if (privateRelation) return { type: privateRelation[2]!, collection: "relation" };
   const constant = value.match(/^(::)?([A-Z]\w*(?:::[A-Z]\w*)*)$/);
-  return constant ? constant[2] : undefined;
+  return constant ? { type: constant[2]! } : undefined;
+}
+
+function normalizeType(text: string | undefined): string | undefined {
+  return normalizeTypeInfo(text)?.type;
 }
 
 function camelize(name: string): string {
@@ -139,12 +190,127 @@ function firstBlockBody(call: Prism.CallNode): Node | null {
   return null;
 }
 
+function lastExpression(body: Node | null): Node | null {
+  if (!body) return null;
+  const kind = kindName(body);
+  if (kind === "StatementsNode") {
+    const statements = (body as Prism.StatementsNode).body;
+    return lastExpression(statements[statements.length - 1] ?? null);
+  }
+  if (kind === "BeginNode") return lastExpression((body as Prism.BeginNode).statements);
+  if (kind === "ParenthesesNode") return lastExpression((body as Prism.ParenthesesNode).body);
+  return body;
+}
+
+function blockParameterNames(call: Prism.CallNode): string[] {
+  const block = call.block;
+  if (!block || kindName(block) !== "BlockNode") return [];
+  const parameters = (block as Prism.BlockNode).parameters;
+  if (!parameters || kindName(parameters) !== "BlockParametersNode") return [];
+  const inner = (parameters as Prism.BlockParametersNode).parameters;
+  if (!inner) return [];
+  return inner.requireds.flatMap((node) => {
+    const name = (node as { name?: string | null }).name;
+    return typeof name === "string" ? [name] : [];
+  });
+}
+
+interface ChainInfo {
+  root: string;
+  steps: Array<{ name: string; args: boolean }>;
+}
+
+function chainOf(node: Node | null | undefined): ChainInfo | undefined {
+  const steps: ChainInfo["steps"] = [];
+  let current: Node | null | undefined = node;
+  while (current && kindName(current) === "CallNode") {
+    const call = current as Prism.CallNode;
+    steps.unshift({ name: call.name, args: Boolean(call.arguments_) || Boolean(call.block) });
+    current = call.receiver;
+  }
+  const root = constantPathText(current);
+  if (!root || root === "self" || root === "T" || root.startsWith("T::") || root.startsWith("::T::")) return undefined;
+  return { root: root.replace(/^::/, ""), steps };
+}
+
+function chainText(chain: ChainInfo): string {
+  return `${chain.root}${chain.steps.map((step) => `.${step.name}${step.args ? "(...)" : ""}`).join("")}`;
+}
+
+function collapsedReceiver(node: Node, bytes: Buffer): string {
+  const chain = chainOf(node);
+  if (chain) return chainText(chain);
+  const kind = kindName(node);
+  if (kind === "LocalVariableReadNode") return (node as Prism.LocalVariableReadNode).name;
+  if (kind === "InstanceVariableReadNode") return (node as Prism.InstanceVariableReadNode).name;
+  if (kind === "CallNode") {
+    const call = node as Prism.CallNode;
+    const receiver = call.receiver ? collapsedReceiver(call.receiver, bytes) : "";
+    const suffix = call.arguments_ || call.block ? "(...)" : "";
+    return receiver ? `${receiver}.${call.name}${suffix}` : `${call.name}${suffix}`;
+  }
+  return sliceSource(bytes, node.location).replace(/\s+/g, " ").slice(0, 40);
+}
+
+type TypeLookup = (name: string) => LocalType | undefined;
+
+function inferExpressionType(value: Node | null | undefined, local: TypeLookup, ivar: TypeLookup): LocalType | undefined {
+  if (!value) return undefined;
+  const kind = kindName(value);
+  if (kind === "LocalVariableReadNode") {
+    const name = (value as Prism.LocalVariableReadNode).name;
+    return local(name) ?? { type: camelize(name), via: "named" };
+  }
+  if (kind === "InstanceVariableReadNode") return ivar((value as Prism.InstanceVariableReadNode).name);
+  if (kind === "ConstantReadNode" || kind === "ConstantPathNode") {
+    const constant = constantPathText(value);
+    return constant ? { type: constant.replace(/^::/, ""), via: "assigned" } : undefined;
+  }
+  if (kind === "ParenthesesNode") return inferExpressionType(lastExpression(value), local, ivar);
+  if (kind !== "CallNode") return undefined;
+  const call = value as Prism.CallNode;
+  const blockValue = () => (PASSTHROUGH_BLOCK.has(call.name) && firstBlockBody(call) ? inferExpressionType(lastExpression(firstBlockBody(call)), local, ivar) : undefined);
+  if (!call.receiver) return blockValue();
+  const receiverConstant = constantPathText(call.receiver);
+  if (receiverConstant === "self") return call.name === "new" ? undefined : blockValue();
+  if (receiverConstant && !/^(::)?T(::|$)/.test(receiverConstant)) {
+    const root = receiverConstant.replace(/^::/, "");
+    if (constructorLike(call.name)) return { type: root, via: "assigned" };
+    const passthrough = blockValue();
+    if (passthrough) return passthrough;
+    if (SCALAR_METHODS.has(call.name) || DYNAMIC_DISPATCH.has(call.name) || DYNAMIC_CONSTANT.has(call.name) || /[?!]$/.test(call.name)) return undefined;
+    return { type: root, via: "assigned", collection: "relation", chain: [call.name] };
+  }
+  const receiverType = inferExpressionType(call.receiver, local, ivar);
+  if (!receiverType) return blockValue();
+  if (receiverType.collection) {
+    const element: LocalType = { type: receiverType.type, via: receiverType.via, chain: receiverType.chain };
+    if (MAP_METHODS.has(call.name)) {
+      const body = firstBlockBody(call);
+      if (!body) return undefined;
+      const params = blockParameterNames(call);
+      const scoped: TypeLookup = (name) => (params[0] === name ? element : local(name));
+      const mapped = inferExpressionType(lastExpression(body), scoped, ivar);
+      return mapped && !mapped.collection ? { ...mapped, collection: "array" } : undefined;
+    }
+    if (ELEMENT_METHODS.has(call.name) && !(call.name === "take" || ((call.name === "first" || call.name === "last") && argumentsOf(call).length))) return element;
+    if (SCALAR_METHODS.has(call.name) || DYNAMIC_DISPATCH.has(call.name)) return undefined;
+    if (receiverType.collection === "relation" && (RELATION_METHODS.has(call.name) || (!FILTER_METHODS.has(call.name) && !/[?!]$/.test(call.name)))) {
+      return { ...receiverType, chain: [...(receiverType.chain ?? []), call.name] };
+    }
+    if (FILTER_METHODS.has(call.name)) return { ...receiverType, collection: "array" };
+    return undefined;
+  }
+  if (IDENTITY_METHODS.has(call.name)) return { ...receiverType };
+  return blockValue();
+}
+
 class Parser {
   readonly definitions: AdapterDefinition[] = [];
   readonly namespaces: NamespaceInfo[] = [];
   readonly ivars = new Map<string, IvarInfo[]>();
   readonly defNodes = new Map<number, Node>();
-  readonly localTypes = new Map<number, Map<string, { type: string; via: InferenceVia }>>();
+  readonly localTypes = new Map<number, Map<string, LocalType>>();
   private readonly stack: NamespaceInfo[] = [];
   private singletonDepth = 0;
   private pendingSig: ParamInfo[] | undefined;
@@ -270,27 +436,26 @@ class Parser {
     if (this.pendingSig) {
       for (const param of this.pendingSig) {
         const target = byName.get(param.name);
-        if (target && param.type) target.type = param.type;
+        if (!target || !param.type) continue;
+        target.type = param.type;
+        if (param.collection) target.collection = param.collection;
       }
     }
     const preceding = this.comments.filter((comment) => comment.line < defLine && comment.line >= defLine - 12);
+    const annotate = (param: ParamInfo | undefined, info: TypeInfo | undefined) => {
+      if (!param || !info || param.type) return;
+      param.type = info.type;
+      if (info.collection) param.collection = info.collection;
+    };
     for (const comment of preceding) {
       const rbs = comment.text.match(/^#:\s*\((.*?)\)\s*->\s*(.+)$/);
       if (rbs) {
         const types = rbs[1]!.split(",").map((part) => part.trim()).filter(Boolean);
-        params.forEach((param, index) => {
-          const raw = types[index]?.replace(/^\??/, "").replace(/^[a-z_]\w*:\s*/, "");
-          const type = normalizeType(raw);
-          if (type && !param.type) param.type = type;
-        });
+        params.forEach((param, index) => annotate(param, normalizeTypeInfo(types[index]?.replace(/^\??/, "").replace(/^[a-z_]\w*:\s*/, ""))));
         returns ??= normalizeType(rbs[2]);
       }
       const yard = comment.text.match(/^#\s*@param\s+(?:\[([^\]]+)\]\s+)?(\w+)(?:\s+\[([^\]]+)\])?/);
-      if (yard) {
-        const param = byName.get(yard[2]!);
-        const type = normalizeType(yard[1] ?? yard[3]);
-        if (param && type && !param.type) param.type = type;
-      }
+      if (yard) annotate(byName.get(yard[2]!), normalizeTypeInfo(yard[1] ?? yard[3]));
       const yardReturn = comment.text.match(/^#\s*@return\s+\[([^\]]+)\]/);
       if (yardReturn) returns ??= normalizeType(yardReturn[1]);
     }
@@ -320,65 +485,40 @@ class Parser {
     this.pendingSig = undefined;
     this.pendingReturns = undefined;
     if (node.name === "initialize" && owner) this.collectIvars(node, owner, annotated.params);
-    this.collectLocalTypes(node, startLine, annotated.params);
+    this.localTypes.set(startLine, this.paramTypes(annotated.params));
+  }
+
+  private paramTypes(params: ParamInfo[]): Map<string, LocalType> {
+    const types = new Map<string, LocalType>();
+    for (const param of params) {
+      if (param.type) types.set(param.name, { type: param.type, via: "typed", collection: param.collection });
+      else types.set(param.name, { type: camelize(param.name), via: "named" });
+    }
+    return types;
+  }
+
+  private ivarLookup(owner: string | undefined): TypeLookup {
+    return (name) => {
+      const info = owner ? this.ivars.get(owner)?.find((entry) => entry.name === name && entry.type) : undefined;
+      return info?.type ? { type: info.type, via: info.via ?? "assigned", collection: info.collection } : undefined;
+    };
   }
 
   private collectIvars(def: Prism.DefNode, owner: string, params: ParamInfo[]): void {
-    const paramTypes = new Map(params.map((param) => [param.name, param.type]));
+    const types = this.paramTypes(params);
     const entries = this.ivars.get(owner) ?? [];
+    const lookup: TypeLookup = (name) => types.get(name);
     const visit = (node: Node | null) => {
       if (!node) return;
       if (kindName(node) === "InstanceVariableWriteNode") {
         const write = node as Prism.InstanceVariableWriteNode;
-        const inferred = this.inferValueType(write.value, paramTypes);
-        entries.push({ name: write.name, type: inferred?.type, via: inferred?.via, line: lineAt(this.lineStarts, node.location.startOffset) });
+        const inferred = inferExpressionType(write.value, lookup, this.ivarLookup(owner));
+        entries.push({ name: write.name, type: inferred?.type, via: inferred?.via, collection: inferred?.collection, line: lineAt(this.lineStarts, node.location.startOffset) });
       }
       for (const child of node.compactChildNodes()) visit(child);
     };
     visit(def.body);
     this.ivars.set(owner, entries);
-  }
-
-  private collectLocalTypes(def: Prism.DefNode, startLine: number, params: ParamInfo[]): void {
-    const types = new Map<string, { type: string; via: InferenceVia }>();
-    for (const param of params) {
-      if (param.type) types.set(param.name, { type: param.type, via: "typed" });
-      else types.set(param.name, { type: camelize(param.name), via: "named" });
-    }
-    const paramTypes = new Map(params.map((param) => [param.name, param.type]));
-    const visit = (node: Node | null) => {
-      if (!node) return;
-      if (kindName(node) === "LocalVariableWriteNode") {
-        const write = node as Prism.LocalVariableWriteNode;
-        const inferred = this.inferValueType(write.value, paramTypes);
-        if (inferred) types.set(write.name, inferred);
-        else if (!types.has(write.name)) types.set(write.name, { type: camelize(write.name), via: "named" });
-      }
-      for (const child of node.compactChildNodes()) visit(child);
-    };
-    visit(def.body);
-    this.localTypes.set(startLine, types);
-  }
-
-  private inferValueType(value: Node | null, paramTypes: Map<string, string | undefined>): { type: string; via: InferenceVia } | undefined {
-    if (!value) return undefined;
-    const kind = kindName(value);
-    if (kind === "LocalVariableReadNode") {
-      const name = (value as Prism.LocalVariableReadNode).name;
-      const typed = paramTypes.get(name);
-      return typed ? { type: typed, via: "typed" } : { type: camelize(name), via: "named" };
-    }
-    if (kind === "CallNode") {
-      const call = value as Prism.CallNode;
-      const receiver = constantPathText(call.receiver);
-      if (receiver && receiver !== "self" && constructorLike(call.name)) return { type: receiver.replace(/^::/, ""), via: "assigned" };
-      if (call.name === "new" && receiver === "self") return undefined;
-    }
-    if (kind === "ConstantReadNode" || kind === "ConstantPathNode") {
-      const constant = constantPathText(value);
-      if (constant) return { type: constant.replace(/^::/, ""), via: "assigned" };
-    }
-    return undefined;
   }
 
   private visitClassLevelCall(call: Prism.CallNode, inClassBody: boolean): void {
@@ -427,6 +567,7 @@ class Parser {
       } else {
         this.definitions.push({ name, symbol: owner ? `${owner} ${name}` : name, kind, startLine, endLine, owner });
       }
+      if (name === "scope") this.defNodes.set(startLine, call);
       const body = firstBlockBody(call);
       if (body && name !== "scope") this.visitBody(body, false);
       return;
@@ -449,7 +590,9 @@ class Parser {
               if (kindName(element) !== "AssocNode") continue;
               const assoc = element as Prism.AssocNode;
               const key = symbolValue(assoc.key);
-              if (key) params.push({ name: key, type: normalizeType(sliceSource(this.bytes, assoc.value.location)) });
+              if (!key) continue;
+              const info = normalizeTypeInfo(sliceSource(this.bytes, assoc.value.location));
+              params.push({ name: key, type: info?.type, collection: info?.collection });
             }
           }
         }
@@ -467,14 +610,22 @@ class CallCollector {
   readonly sites: CallSite[] = [];
   private readonly seen = new Set<string>();
   private readonly consumedReceivers = new Set<Node>();
+  private readonly localLookup: TypeLookup;
+  private readonly ivarLookup: TypeLookup;
 
   constructor(
     private readonly facts: RubyFacts,
     private readonly def: Definition,
     private readonly owner: string | undefined,
-    private readonly locals: Map<string, { type: string; via: InferenceVia }>,
+    private readonly locals: Map<string, LocalType>,
     private readonly ivars: Map<string, IvarInfo>,
-  ) {}
+  ) {
+    this.localLookup = (name) => this.locals.get(name);
+    this.ivarLookup = (name) => {
+      const info = this.ivars.get(name);
+      return info?.type ? { type: info.type, via: info.via ?? "assigned", collection: info.collection } : undefined;
+    };
+  }
 
   private push(site: CallSite): void {
     const key = `${site.source}:${site.receiver ?? ""}:${site.name}:${site.line}`;
@@ -488,13 +639,49 @@ class CallCollector {
   }
 
   visit(node: Node | null): void {
-    if (!node) return;
+    if (!node || this.consumedReceivers.has(node)) return;
     const kind = kindName(node);
+    if (["IfNode", "UnlessNode", "CaseNode", "CaseMatchNode", "WhileNode", "UntilNode", "RescueNode"].includes(kind)) {
+      const saved = new Map(this.locals);
+      const changed = new Set<string>();
+      for (const child of node.compactChildNodes()) {
+        this.locals.clear();
+        for (const [name, value] of saved) this.locals.set(name, value);
+        this.visit(child);
+        for (const [name, value] of this.locals) if (value !== saved.get(name)) changed.add(name);
+      }
+      this.locals.clear();
+      for (const [name, value] of saved) this.locals.set(name, value);
+      for (const name of changed) this.locals.set(name, { type: camelize(name), via: "named" });
+      return;
+    }
+    if (kind === "LocalVariableWriteNode") {
+      const write = node as Prism.LocalVariableWriteNode;
+      this.visit(write.value);
+      this.locals.set(write.name, inferExpressionType(write.value, this.localLookup, this.ivarLookup) ?? { type: camelize(write.name), via: "named" });
+      return;
+    }
     if (kind === "CallNode") {
       const call = node as Prism.CallNode;
       if (call.name === "sig" && call.block) return;
+      if (kindName(call.receiver) === "CallNode") this.visit(call.receiver);
       this.visitCall(call);
-      for (const child of call.compactChildNodes()) this.visit(child);
+      for (const child of call.compactChildNodes()) {
+        if (child === call.block || child === call.receiver && kindName(child) === "CallNode") continue;
+        this.visit(child);
+      }
+      if (kindName(call.block) === "BlockNode") {
+        const saved = new Map(this.locals);
+        const params = blockParameterNames(call);
+        const collection = call.receiver && BLOCK_ITERATORS.has(call.name) ? inferExpressionType(call.receiver, this.localLookup, this.ivarLookup) : undefined;
+        for (const name of params) this.locals.set(name, { type: camelize(name), via: "named" });
+        if (params[0] && collection?.collection) this.locals.set(params[0], { type: collection.type, via: collection.via, chain: collection.chain });
+        this.visit(firstBlockBody(call));
+        const changed = [...this.locals].filter(([name, value]) => saved.has(name) && !params.includes(name) && value !== saved.get(name)).map(([name]) => name);
+        this.locals.clear();
+        for (const [name, value] of saved) this.locals.set(name, value);
+        for (const name of changed) this.locals.set(name, { type: camelize(name), via: "named" });
+      } else this.visit(call.block);
       return;
     }
     if (kind === "ConstantReadNode" || kind === "ConstantPathNode") {
@@ -517,16 +704,76 @@ class CallCollector {
     return namespace?.superclass;
   }
 
+  private receiverKindOf(receiver: Node): NonNullable<CallSite["receiverKind"]> {
+    const kind = kindName(receiver);
+    if (kind === "SelfNode") return "self";
+    if (kind === "ConstantReadNode" || kind === "ConstantPathNode") return "constant";
+    if (kind === "LocalVariableReadNode") return "local";
+    if (kind === "InstanceVariableReadNode") return "ivar";
+    if (kind === "CallNode") return "chain";
+    return "other";
+  }
+
+  private literalMethodName(call: Prism.CallNode): string | undefined {
+    const first = argumentsOf(call)[0];
+    return first ? symbolValue(first) : undefined;
+  }
+
+  private visitSymbolProc(call: Prism.CallNode, line: number): void {
+    const block = call.block;
+    if (!block || kindName(block) !== "BlockArgumentNode") return;
+    const expression = (block as Prism.BlockArgumentNode).expression;
+    const receiver = call.receiver;
+    const receiverText = receiver ? collapsedReceiver(receiver, this.facts.bytes) : "";
+    const prefix = `${receiverText ? `${receiverText}.` : ""}${call.name}`;
+    if (expression && kindName(expression) === "SymbolNode") {
+      const method = symbolValue(expression)!;
+      const collection = receiver && BLOCK_ITERATORS.has(call.name) ? inferExpressionType(receiver, this.localLookup, this.ivarLookup) : undefined;
+      const element = collection?.collection ? collection : undefined;
+      this.push({
+        name: method, line, relationship: "calls", source: "symbol_proc", receiver: receiverText || undefined,
+        receiverKind: "local", receiverType: element?.type, via: element?.via,
+        chain: element?.chain, label: `${prefix}(&:${method})`,
+      });
+      return;
+    }
+    if (expression && kindName(expression) === "CallNode") {
+      const methodCall = expression as Prism.CallNode;
+      const name = symbolValue(argumentsOf(methodCall)[0]);
+      if (methodCall.name === "method" && name) {
+        const typed = methodCall.receiver ? this.typedReceiver(methodCall.receiver) : { receiverKind: "implicit" as const, receiverType: this.owner };
+        this.push({ name, line, relationship: "calls", source: "bare", ...typed, label: `${prefix}(&${collapsedReceiver(expression, this.facts.bytes).replace("(...)", `(:${name})`)})` });
+        this.consumedReceivers.add(expression);
+        return;
+      }
+    }
+    this.push({ name: call.name, line, relationship: "calls", source: "dynamic", label: `${prefix}(&${expression ? collapsedReceiver(expression, this.facts.bytes) : "..."})`, dynamic: "block argument is a runtime callback; its invoked method is not traced" });
+  }
+
   private visitCall(call: Prism.CallNode): void {
     const line = this.line(call);
     const receiver = call.receiver;
     const name = call.name;
-    if (!receiver) {
-      if (call.isVariableCall()) {
-        this.push({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
-      } else {
-        this.push({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
+    this.visitSymbolProc(call, line);
+    if (DYNAMIC_DISPATCH.has(name)) {
+      const literal = this.literalMethodName(call);
+      const receiverText = receiver ? collapsedReceiver(receiver, this.facts.bytes) : undefined;
+      const label = `${receiverText ? `${receiverText}.` : ""}${name}(${literal ? `:${literal}` : "..."})`;
+      if (!literal) {
+        this.push({ name, line, relationship: "calls", source: "dynamic", receiver: receiverText, receiverKind: receiver ? this.receiverKindOf(receiver) : "implicit", label, dynamic: `${name} with a runtime method name; the callee is not traced statically` });
+        return;
       }
+      const typed = receiver ? this.typedReceiver(receiver) : { receiverKind: "implicit" as const, receiverType: this.owner };
+      this.push({ name: literal, line, relationship: "calls", source: receiver ? "receiver_method" : "bare", receiver: receiverText, ...typed, label, dynamic: `${name}(:${literal}) dispatches by name at runtime` });
+      return;
+    }
+    if (DYNAMIC_CONSTANT.has(name)) {
+      const receiverText = receiver ? collapsedReceiver(receiver, this.facts.bytes) : undefined;
+      this.push({ name, line, relationship: "references", source: "dynamic", receiver: receiverText, receiverKind: receiver ? this.receiverKindOf(receiver) : "implicit", label: `${receiverText ? `${receiverText}.` : ""}${name}(...)`, dynamic: `${name} resolves a constant from a runtime value; the class is not traced statically` });
+      return;
+    }
+    if (!receiver) {
+      this.push({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
       return;
     }
     const receiverKind = kindName(receiver);
@@ -539,39 +786,26 @@ class CallCollector {
       const constant = (constantPathText(receiver) ?? "").replace(/^::/, "");
       if (constant === "T" || constant.startsWith("T::")) return;
       this.push({ name: constant, line, relationship: "references", source: "constant" });
-      if (name !== "new") {
-        this.push({ name, line, relationship: "calls", source: "constant_method", receiver: constant, receiverKind: "constant", receiverType: constant });
-      }
+      this.push({ name, line, relationship: "calls", source: "constant_method", receiver: constant, receiverKind: "constant", receiverType: constant });
       return;
     }
-    if (receiverKind === "LocalVariableReadNode") {
-      const local = (receiver as Prism.LocalVariableReadNode).name;
-      const inferred = this.locals.get(local);
-      this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: local, receiverKind: "local", receiverType: inferred?.type, via: inferred?.via });
-      return;
-    }
-    if (receiverKind === "InstanceVariableReadNode") {
+    const receiverText = collapsedReceiver(receiver, this.facts.bytes);
+    const typed = this.typedReceiver(receiver);
+    const source = typed.receiverKind === "chain" && typed.via === "chain" && chainOf(receiver) ? "constant_method" : "receiver_method";
+    this.push({ name, line, relationship: "calls", source, receiver: receiverText, ...typed });
+  }
+
+  private typedReceiver(receiver: Node): Pick<CallSite, "receiverKind" | "receiverType" | "via" | "chain"> {
+    const receiverKind = this.receiverKindOf(receiver);
+    const inferred = inferExpressionType(receiver, this.localLookup, this.ivarLookup);
+    if (receiverKind === "ivar" && !inferred) {
       const ivar = (receiver as Prism.InstanceVariableReadNode).name;
-      const info = this.ivars.get(ivar);
-      this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: ivar, receiverKind: "ivar", receiverType: info?.type ?? camelize(ivar.replace(/^@/, "")), via: info?.type ? info.via : "named" });
-      return;
+      return { receiverKind, receiverType: camelize(ivar.replace(/^@/, "")), via: "named" };
     }
-    if (receiverKind === "CallNode") {
-      const inner = receiver as Prism.CallNode;
-      const innerConstant = constantPathText(inner.receiver)?.replace(/^::/, "");
-      if (innerConstant && innerConstant !== "self" && constructorLike(inner.name)) {
-        this.push({ name, line, relationship: "calls", source: "constant_method", receiver: `${innerConstant}.${inner.name}(...)`, receiverKind: "chain", receiverType: innerConstant, via: "assigned" });
-        return;
-      }
-      if (!inner.receiver) {
-        const inferred = this.locals.get(inner.name);
-        this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: inner.name, receiverKind: "chain", receiverType: inferred?.type, via: inferred?.via });
-        return;
-      }
-      this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: sliceSource(this.facts.bytes, inner.location).slice(0, 40), receiverKind: "chain" });
-      return;
-    }
-    this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: receiverKind.replace(/Node$/, "").toLowerCase(), receiverKind: "other" });
+    if (!inferred) return { receiverKind };
+    if (inferred.collection === "relation") return { receiverKind, receiverType: inferred.type, via: "chain", chain: inferred.chain ?? [] };
+    if (inferred.collection === "array") return { receiverKind };
+    return { receiverKind, receiverType: inferred.type, via: inferred.via };
   }
 }
 
@@ -629,9 +863,12 @@ export class RubyAdapter implements LanguageAdapter {
     const owner = (facts.definitions.find((item) => item.startLine === def.startLine && item.symbol === def.symbol) as AdapterDefinition | undefined)?.owner;
     const ivars = new Map<string, IvarInfo>();
     for (const info of owner ? ruby.ivars.get(owner) ?? [] : []) if (!ivars.has(info.name) || info.type) ivars.set(info.name, info);
-    const locals = ruby.localTypes.get(def.startLine) ?? new Map();
+    const locals = new Map(ruby.localTypes.get(def.startLine));
     const collector = new CallCollector(ruby, def, owner, locals, ivars);
-    const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : firstBlockBody(node as Prism.CallNode);
+    const call = kindName(node) === "CallNode" ? node as Prism.CallNode : undefined;
+    const lambda = call ? argumentsOf(call).find((argument) => kindName(argument) === "LambdaNode") as Prism.LambdaNode | undefined : undefined;
+    const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : lambda?.body ?? (call ? firstBlockBody(call) : null);
+    if (!body && def.kind === "scope") return [{ name: def.name, line: def.startLine, source: "dynamic", relationship: "calls", label: def.symbol, dynamic: "scope body is not a literal lambda or block; its calls cannot be enumerated" }];
     collector.visit(body);
     return collector.sites;
   }

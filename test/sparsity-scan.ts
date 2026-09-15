@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import agenticSearchExtension, { indexSparsity, parseUnifiedDiff } from "../index.ts";
+import agenticSearchExtension, { parseUnifiedDiff, scanSparsity } from "../index.ts";
 
 const base: Record<string, string> = {
   "component.yml": "name: billing\n",
@@ -98,7 +98,7 @@ export function readProfile(id: string) {
   "config/settings.yml": "registration: true\n",
 };
 
-const cwd = await mkdtemp(join(tmpdir(), "sparsity-index-"));
+const cwd = await mkdtemp(join(tmpdir(), "sparsity-scan-"));
 const writeAll = async (files: Record<string, string>) => {
   for (const [path, content] of Object.entries(files)) {
     await mkdir(dirname(join(cwd, path)), { recursive: true });
@@ -123,7 +123,51 @@ await writeAll({
     end
 `, ""),
   "app/jobs/billing/registration_check_job.rb": base["app/jobs/billing/registration_check_job.rb"]!.replace("      mark_complete(shop)\n", "      mark_complete(shop) if Billing::Exemptions.legacy_applies?(shop)\n"),
-  "test/models/billing/reader_test.rb": base["test/models/billing/reader_test.rb"]!.replace("    assert Billing::Reader.new(shop).applicable?\n", "    assert Billing::Reader.new(shop).applicable?\n    assert_not Billing::Reader.new(frozen_shop).applicable?\n"),
+  "app/models/billing/new_policy.rb": `module Billing
+  class NewPolicy
+    def allowed?
+      true
+    end
+  end
+end
+`,
+  "test/models/billing/reader_test.rb": base["test/models/billing/reader_test.rb"]!
+    .replace("    assert Billing::Reader.new(shop).applicable?\n", "    assert Billing::Reader.new(shop).applicable?\n    assert_not Billing::Reader.new(frozen_shop).applicable?\n")
+    .replace("  end\nend\n", `  end
+
+  test "inactive" do
+    assert_not Billing::Reader.new(inactive_shop).applicable?
+  end
+
+  test "frozen" do
+    assert_not Billing::Reader.new(frozen_shop).applicable?
+  end
+
+  test "missing entity" do
+    assert_not Billing::Reader.new(missing_entity_shop).applicable?
+  end
+
+  test "incomplete entity" do
+    assert_not Billing::Reader.new(incomplete_entity_shop).applicable?
+  end
+
+  test "complete entity" do
+    assert Billing::Reader.new(complete_entity_shop).applicable?
+  end
+
+  test "legacy registration" do
+    assert Billing::Reader.new(legacy_shop).registration_due?
+  end
+
+  test "new registration" do
+    assert Billing::Reader.new(new_shop).registration_due?
+  end
+
+  test "exempt" do
+    assert Billing::Reader.new(exempt_shop).exempt?
+  end
+end
+`),
   "web/src/reader.ts": base["web/src/reader.ts"]!.replace("  return team.id;\n", "  return team.id.toUpperCase();\n"),
   "config/settings.yml": "registration: false\n",
 });
@@ -135,7 +179,7 @@ const defaults = { cwd, maxDepth: 2, vicinity: 20, maxNodes: 60, maxAnchors: 40,
 
 // Diff parsing on its own
 const parsed = parseUnifiedDiff(run(["diff", "--unified=0", "--no-color", "--no-ext-diff", "HEAD~1", "HEAD"]));
-assert.equal(parsed.length, 6);
+assert.equal(parsed.length, 7);
 const readerFile = parsed.find((file) => file.path === "app/models/billing/reader.rb")!;
 assert.equal(readerFile.kind, "code");
 assert.equal(readerFile.language, "ruby");
@@ -144,18 +188,31 @@ assert.equal(parsed.find((file) => file.path === "config/settings.yml")?.kind, "
 assert.equal(parsed.find((file) => file.path === "test/models/billing/reader_test.rb")?.kind, "test");
 
 // Index the committed range
-const result = await indexSparsity({ ...defaults, diff: "HEAD~1..HEAD" });
+const result = await scanSparsity({ ...defaults, diff: "HEAD~1..HEAD" });
 assert.match(result.label, /HEAD~1\.\.HEAD/);
 assert.equal(result.dirty, false);
 assert.deepEqual(result.roots.sort(), [".", "web"]);
-assert.equal(result.files.length, 6);
+assert.equal(result.files.length, 7);
+
+const dotRoot = await scanSparsity({ ...defaults, diff: "HEAD~1..HEAD", root: ".", outputDir: join(cwd, ".sparsity-dot-root") });
+assert.deepEqual(dotRoot.roots.sort(), [".", "web"], "root dot keeps automatic per-component roots instead of collapsing to the repository");
+assert.match(dotRoot.coverage.notes.join("\n"), /Whole-repository root override ignored/);
 
 const symbols = result.anchors.map((anchor) => anchor.symbol);
 assert.ok(symbols.includes("Billing::Reader#applicable?"), `anchors: ${symbols.join(", ")}`);
 assert.ok(symbols.includes("Billing::Reader#registration_due?"));
 assert.ok(symbols.includes("Billing::RegistrationCheckJob#perform"));
+assert.ok(symbols.includes("Billing::NewPolicy#allowed?"));
+assert.ok(!result.anchors.some((anchor) => anchor.path === "app/models/billing/new_policy.rb" && ["class", "module"].includes(anchor.kind)), "added class/module wrappers are redundant when a changed child definition is anchored");
 assert.ok(symbols.includes("readProfile"));
 assert.ok(symbols.some((symbol) => symbol.includes('test "applicable for complete entities"')), "changed test body is an anchor");
+assert.equal(result.anchors.filter((anchor) => anchor.path === "test/models/billing/reader_test.rb").length, 2, "only the first two changed test definitions become anchors");
+assert.equal(result.testGroups.length, 1);
+assert.equal(result.testGroups[0]!.entries.length, 7, "overflow test definitions stay readable in one group");
+assert.match(result.inline, /GROUPED TESTS.*test-group:t1/s);
+assert.equal(result.fileHunks.length, 1);
+assert.equal(result.fileHunks[0]!.path, "config/settings.yml");
+assert.match(result.inline, /## file:f1[\s\S]*f1 config\/settings\.yml[\s\S]*1 -\| registration: true[\s\S]*1 \+\| registration: false/);
 const applicable = result.anchors.find((anchor) => anchor.symbol === "Billing::Reader#applicable?")!;
 assert.ok(applicable.changedLines.includes(11), `changed lines ${applicable.changedLines.join(",")}`);
 const applicableNode = result.nodes.find((node) => node.id === applicable.id)!;
@@ -199,7 +256,7 @@ for (const section of result.sections) {
   assert.equal(lines[section.startLine - 1], `## ${section.id}`, `section ${section.id} starts at its declared line`);
   assert.ok(section.endLine >= section.startLine);
 }
-assert.match(result.inline, /SPARSITY INDEX HEAD~1\.\.HEAD/);
+assert.match(result.inline, /SPARSITY SCAN HEAD~1\.\.HEAD/);
 assert.match(result.inline, /FILES\n/);
 assert.match(result.inline, /M app\/models\/billing\/reader\.rb {2}\[code, ruby\]/);
 assert.match(result.inline, /M config\/settings\.yml {2}\[other\]/);
@@ -210,7 +267,7 @@ assert.equal(json.anchors.length, result.anchors.length);
 assert.equal(json.inline, undefined);
 
 // Inline budget spills sections and the manifest says where they went
-const tight = await indexSparsity({ ...defaults, diff: "HEAD~1..HEAD", outputDir: join(cwd, ".sparsity-tight"), inlineBudgetBytes: 1500 });
+const tight = await scanSparsity({ ...defaults, diff: "HEAD~1..HEAD", outputDir: join(cwd, ".sparsity-tight"), inlineBudgetBytes: 1500 });
 assert.ok(tight.sections.some((section) => !section.inline && section.id !== "manifest"), "some section spilled");
 assert.match(tight.inline, /\[spilled: read .*pack\.md lines \d+-\d+/);
 assert.match(tight.sections.find((section) => section.id === "manifest")!.body, /spilled/);
@@ -220,14 +277,14 @@ await writeAll({
   "app/models/admin/legal_entity.rb": base["app/models/admin/legal_entity.rb"]!.replace("      true\n", "      organization_id.present?\n"),
   "app/models/billing/notice.rb": "# frozen_string_literal: true\n\nmodule Billing\n  class Notice\n    def deliver\n      Billing::Reader.new(shop).applicable?\n    end\n  end\nend\n",
 });
-const worktree = await indexSparsity({ ...defaults, diff: "worktree", outputDir: join(cwd, ".sparsity-wt") });
+const worktree = await scanSparsity({ ...defaults, diff: "worktree", outputDir: join(cwd, ".sparsity-wt") });
 assert.equal(worktree.dirty, true);
 assert.ok(worktree.anchors.some((anchor) => anchor.symbol === "Admin::LegalEntity#complete?"));
 assert.ok(worktree.anchors.some((anchor) => anchor.symbol === "Billing::Notice#deliver"), "untracked file definitions are anchors");
 assert.ok(worktree.files.find((file) => file.path === "app/models/billing/notice.rb")?.status === "added");
 
 // With a Ruby index: callers and tests come from the inverse call map, edges carry how they were resolved
-const indexed = await indexSparsity({ ...defaults, diff: "HEAD~1..HEAD", outputDir: join(cwd, ".sparsity-indexed"), indexCacheDir: join(cwd, ".sparsity-cache") });
+const indexed = await scanSparsity({ ...defaults, diff: "HEAD~1..HEAD", outputDir: join(cwd, ".sparsity-scanned"), indexCacheDir: join(cwd, ".sparsity-cache") });
 assert.match(indexed.inline, /^index: Ruby index for \.: \d+ files, \d+ definitions/m, "manifest reports the index");
 const indexedApplicable = indexed.anchors.find((anchor) => anchor.symbol === "Billing::Reader#applicable?")!;
 assert.ok(indexedApplicable.callers.some((caller) => caller.symbol === "Billing::RegistrationCheckJob#perform"), "caller found through the call index");
@@ -245,9 +302,9 @@ assert.ok(indexedDangling.callers.some((caller) => caller.path === "app/jobs/bil
 
 // Metrics: one file per run, one line per run in the rolling log, summarizable
 const metricsLog = join(cwd, ".sparsity-metrics.jsonl");
-const measured = await indexSparsity({ ...defaults, diff: "HEAD~1..HEAD", outputDir: join(cwd, ".sparsity-metrics"), indexCacheDir: join(cwd, ".sparsity-cache"), metricsLog });
+const measured = await scanSparsity({ ...defaults, diff: "HEAD~1..HEAD", outputDir: join(cwd, ".sparsity-metrics"), indexCacheDir: join(cwd, ".sparsity-cache"), metricsLog });
 const metrics = JSON.parse(await readFile(measured.metricsPath, "utf8"));
-assert.equal(metrics.kind, "sparsity_index");
+assert.equal(metrics.kind, "sparsity_scan");
 assert.equal(metrics.anchors.expanded, measured.anchors.length);
 assert.equal(metrics.edges, measured.edges.length);
 assert.ok(metrics.resolution.exact > 0);
@@ -260,11 +317,11 @@ const logLines = (await readFile(metricsLog, "utf8")).trim().split("\n");
 assert.equal(logLines.length, 1);
 assert.equal(JSON.parse(logLines[0]!).label, metrics.label);
 const { summarizeMetrics } = await import("../src/metrics.ts");
-assert.match(await summarizeMetrics(metricsLog), /1 index run, 0 collect runs \(last 1\)\nmedian index run \d+ ms/);
+assert.match(await summarizeMetrics(metricsLog), /1 scan run, 0 collect runs \(last 1\)\nmedian scan run \d+ ms/);
 assert.match(await summarizeMetrics(join(cwd, "missing.jsonl")), /No sparsity runs recorded yet/);
 
 // Explicit anchors bypass the diff
-const explicit = await indexSparsity({ ...defaults, diff: "", anchors: ["app/models/billing/reader.rb:10"], outputDir: join(cwd, ".sparsity-explicit") });
+const explicit = await scanSparsity({ ...defaults, diff: "", anchors: ["app/models/billing/reader.rb:10"], outputDir: join(cwd, ".sparsity-explicit") });
 assert.equal(explicit.anchors.length, 1);
 assert.equal(explicit.anchors[0]!.symbol, "Billing::Reader#applicable?");
 
@@ -273,7 +330,7 @@ const headSha = run(["rev-parse", "HEAD"]).trim();
 const baseSha = run(["rev-parse", "HEAD~1"]).trim();
 run(["checkout", "-q", baseSha]);
 try {
-  const detached = await indexSparsity({ ...defaults, diff: `${baseSha}..${headSha}`, outputDir: join(cwd, ".sparsity-detached"), indexCacheDir: join(cwd, ".sparsity-detached-cache") });
+  const detached = await scanSparsity({ ...defaults, diff: `${baseSha}..${headSha}`, outputDir: join(cwd, ".sparsity-detached"), indexCacheDir: join(cwd, ".sparsity-detached-cache") });
   const applicable = detached.anchors.find((anchor) => anchor.symbol === "Billing::Reader#applicable?")!;
   assert.ok(applicable, "the changed method is still an anchor");
   const detachedPack = await readFile(join(cwd, ".sparsity-detached", "pack.md"), "utf8");
@@ -296,14 +353,14 @@ let tool: any;
 agenticSearchExtension({
   registerTool(definition: { name: string }) {
     registered.push(definition.name);
-    if (definition.name === "sparsity_index") tool = definition;
+    if (definition.name === "sparsity_scan") tool = definition;
   },
   registerCommand() {},
 } as any);
-assert.deepEqual(registered, ["sparsity_index", "sparsity_collect", "agentic_search"]);
+assert.deepEqual(registered, ["sparsity_scan", "sparsity_collect", "agentic_search"]);
 const executed = await tool.execute("call", { diff: "HEAD~1..HEAD", output_dir: join(cwd, ".sparsity-tool") }, undefined, undefined, { cwd });
-assert.match(executed.content[0].text, /SPARSITY INDEX/);
+assert.match(executed.content[0].text, /SPARSITY SCAN/);
 assert.equal(executed.details.nodes, undefined, "bulky arrays stay out of tool details");
 assert.ok(executed.details.packPath.endsWith("pack.md"));
 
-console.log(`sparsity_index ok: ${result.anchors.length} anchors, ${result.nodes.length} nodes, ${result.edges.length} edges, ${result.dangling.length} dangling, inline ${Buffer.byteLength(result.inline)} bytes, ${result.coverage.elapsedMs} ms`);
+console.log(`sparsity_scan ok: ${result.anchors.length} anchors, ${result.nodes.length} nodes, ${result.edges.length} edges, ${result.dangling.length} dangling, inline ${Buffer.byteLength(result.inline)} bytes, ${result.coverage.elapsedMs} ms`);

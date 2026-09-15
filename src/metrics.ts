@@ -4,12 +4,13 @@ import type { RubyIndex } from "./adapters/ruby-index.ts";
 import type { Language, SparsityEdge, SparsityNode } from "./sparsity.ts";
 
 export interface RunMetrics {
-  kind: "sparsity_index" | "sparsity_collect";
+  kind: "sparsity_scan" | "sparsity_collect";
   at: string;
   cwd: string;
   label: string;
   head?: string;
   elapsedMs: number;
+  setupMs?: number;
   rgCalls: number;
   truncatedBy: string;
   files?: { total: number; code: number; test: number; generated: number; other: number };
@@ -90,7 +91,7 @@ export async function summarizeMetrics(logPath: string, last = 20): Promise<stri
     }
   });
   if (!runs.length) return `No readable sparsity runs in ${logPath}.`;
-  const indexRuns = runs.filter((run) => run.kind === "sparsity_index");
+  const scanRuns = runs.filter((run) => run.kind === "sparsity_scan");
   const collectRuns = runs.filter((run) => run.kind === "sparsity_collect");
   const indexes = runs.flatMap((run) => run.index);
   const hits = indexes.filter((index) => index.cacheHit).length;
@@ -105,9 +106,9 @@ export async function summarizeMetrics(logPath: string, last = 20): Promise<stri
   }
   const perLanguage = [...languages.entries()].map(([language, total]) => `${language} ${total.edges ? Math.round((total.unresolved / total.edges) * 100) : 0}% unresolved`).join(", ");
   return [
-    `sparsity: ${indexRuns.length} index run${indexRuns.length === 1 ? "" : "s"}, ${collectRuns.length} collect run${collectRuns.length === 1 ? "" : "s"} (last ${runs.length})`,
-    `median index run ${median(indexRuns.map((run) => run.elapsedMs))} ms, ${median(indexRuns.map((run) => run.anchors?.expanded ?? 0))} anchors, ${median(indexRuns.map((run) => run.edges))} edges, ${median(indexRuns.map((run) => Math.round(run.unresolvedRate * 100)))}% unresolved`,
-    `index cache hits ${hits}/${indexes.length}; ${perLanguage || "no edges"}`,
-    `median inline ${median(indexRuns.map((run) => run.tokens?.inline ?? 0))} tokens, spilled ${median(indexRuns.map((run) => run.tokens?.spilled ?? 0))} tokens`,
+    `sparsity: ${scanRuns.length} scan run${scanRuns.length === 1 ? "" : "s"}, ${collectRuns.length} collect run${collectRuns.length === 1 ? "" : "s"} (last ${runs.length})`,
+    `median scan run ${median(scanRuns.map((run) => run.elapsedMs))} ms, ${median(scanRuns.map((run) => run.anchors?.expanded ?? 0))} anchors, ${median(scanRuns.map((run) => run.edges))} edges, ${median(scanRuns.map((run) => Math.round(run.unresolvedRate * 100)))}% unresolved`,
+    `Ruby lookup cache hits ${hits}/${indexes.length}; ${perLanguage || "no edges"}`,
+    `median inline ${median(scanRuns.map((run) => run.tokens?.inline ?? 0))} tokens, spilled ${median(scanRuns.map((run) => run.tokens?.spilled ?? 0))} tokens`,
   ].join("\n");
 }

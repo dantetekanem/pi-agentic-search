@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -147,16 +147,44 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 3;
 const DEFAULT_MAX_FILES = 8000;
 
-function rgFiles(root: string, cwd: string, signal?: AbortSignal): Promise<string[]> {
+function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
   const args = ["--files", "--hidden", "--color=never", "-t", "ruby"];
   addRgExcludes(args);
   args.push(root);
   return new Promise((resolvePromise) => {
-    execFile("rg", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, signal, timeout: 30_000 }, (_error, stdout) => {
-      resolvePromise(String(stdout ?? "").split("\n").map((line) => line.trim()).filter(Boolean).map(normalizeRepoRelativePath));
+    const files: string[] = [];
+    let carry = "";
+    let capped = false;
+    let settled = false;
+    const child = spawn("rg", args, { cwd, signal, stdio: ["ignore", "pipe", "ignore"] });
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolvePromise({ files, capped });
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      carry += chunk;
+      const lines = carry.split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        files.push(normalizeRepoRelativePath(line.trim()));
+        if (files.length > maxFiles) {
+          capped = true;
+          child.kill();
+          finish();
+          return;
+        }
+      }
+    });
+    child.on("error", finish);
+    child.on("close", () => {
+      if (!capped && carry.trim()) files.push(normalizeRepoRelativePath(carry.trim()));
+      finish();
     });
   });
 }
@@ -264,10 +292,11 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
   const ready = await rubyAdapter.ready();
   if (!ready) return { ...assemble(root, "none", {}, Date.now() - started, false, 0), skipped: "Prism parser unavailable" };
 
-  const files = await rgFiles(root, options.cwd, options.signal);
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
-  if (files.length > maxFiles) {
-    return { ...assemble(root, "none", {}, Date.now() - started, false, 0), skipped: `${files.length} Ruby files under ${root} exceed the index cap of ${maxFiles}` };
+  const discovery = await rgFiles(root, options.cwd, maxFiles, options.signal);
+  const files = discovery.files;
+  if (discovery.capped) {
+    return { ...assemble(root, "none", {}, Date.now() - started, false, 0), skipped: `more than ${maxFiles} Ruby files under ${root} exceed the index cap; discovery stopped at ${maxFiles + 1}` };
   }
 
   const treeHash = (await treeHashFor(options.cwd, root, options.signal)) ?? "worktree";
@@ -290,7 +319,7 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
   }
 
   if (!base) {
-    log(`Indexing code changes for agents… parsing ${files.length} Ruby files under ${root}`);
+    log(`Scanning code changes for agents… parsing ${files.length} Ruby files under ${root}`);
     base = {};
     const tracked = files.filter((path) => !dirty.untracked.includes(path));
     for (const path of tracked) {

@@ -255,7 +255,7 @@ agenticSearchExtension({
   },
   registerCommand() {},
 } as any);
-assert.deepEqual(registered, ["sparsity_index", "sparsity_collect", "agentic_search"]);
+assert.deepEqual(registered, ["sparsity_scan", "sparsity_collect", "agentic_search"]);
 assert.match(JSON.stringify(tool.parameters), /"target"/);
 assert.match(JSON.stringify(tool.parameters), /max_depth/);
 assert.match(JSON.stringify(tool.parameters), /vicinity_check/);

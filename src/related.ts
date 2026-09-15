@@ -22,7 +22,7 @@ export function relatedReferencesForPath(related: RelatedExpansionDetails | unde
   }) ?? [];
 }
 
-async function traverse(files: ProjectFiles, roots: string[], only?: Language, intent?: SearchIntent, querySymbol?: string): Promise<RelatedExpansionDetails> {
+async function traverse(files: ProjectFiles, roots: string[], only?: Language, intent?: SearchIntent, querySymbol?: string, seeded = false): Promise<RelatedExpansionDetails> {
   const symbolSearches: NonNullable<RelatedExpansionDetails["symbolSearches"]> = [];
   const details: RelatedExpansionDetails = { enabled: true, label: "related", roots: [], packageRoots: [], resolved: [], unresolved: [], skipped: files.skipped, symbolSearches };
   const queue: string[] = [];
@@ -42,7 +42,7 @@ async function traverse(files: ProjectFiles, roots: string[], only?: Language, i
   for (const root of roots) {
     if (!files.alive()) break;
     const canonical = await files.canonical(root);
-    if ((await files.fileStat(canonical))?.isFile()) explicitFiles.add(canonical);
+    if (!seeded && (await files.fileStat(canonical))?.isFile()) explicitFiles.add(canonical);
     const candidates = (await files.list(root)).filter((path) => language(path) && (!only || language(path) === only));
     const room = Math.max(0, files.limits.nodes - queue.length);
     queue.push(...candidates.slice(0, room));
@@ -131,14 +131,16 @@ async function traverse(files: ProjectFiles, roots: string[], only?: Language, i
   return details;
 }
 
-async function expand(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, only?: Language, intent?: SearchIntent, querySymbol?: string): Promise<RelatedExpansionDetails> {
+async function expand(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, only?: Language, intent?: SearchIntent, querySymbol?: string, seeded = false): Promise<RelatedExpansionDetails> {
   const request = files?.request ?? new SearchRequest(signal);
-  try { return await traverse(files ?? new ProjectFiles(cwd, request), roots, only, intent, querySymbol); }
+  try { return await traverse(files ?? new ProjectFiles(cwd, request), roots, only, intent, querySymbol, seeded); }
   finally { if (!files) request.dispose(); }
 }
 
-export async function expandRelatedFiles(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, intent?: SearchIntent, querySymbol?: string): Promise<RelatedExpansionDetails | undefined> {
-  const details = await expand(cwd, roots, signal, files, undefined, intent, querySymbol);
+// seeded roots are files chosen by ranking rather than named by the caller, so a resolved target that is also a seed
+// still counts as a related root.
+export async function expandRelatedFiles(cwd: string, roots: string[], signal?: AbortSignal, files?: ProjectFiles, intent?: SearchIntent, querySymbol?: string, seeded = false): Promise<RelatedExpansionDetails | undefined> {
+  const details = await expand(cwd, roots, signal, files, undefined, intent, querySymbol, seeded);
   return details.resolved.length || details.unresolved.length || details.skipped?.length ? details : undefined;
 }
 export function expandRubyMixins(cwd: string, roots: string[], signal?: AbortSignal): Promise<RelatedExpansionDetails> {

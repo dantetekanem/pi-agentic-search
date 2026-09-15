@@ -1,10 +1,26 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Changed
+
+- Diff indexing ignores a whole-repository `root: "."` override and keeps the nearest component root per changed file. Ruby discovery stops at the 8,001st path when a root exceeds the 8,000-file cap instead of enumerating the repository.
+- Non-code and generated files now get changed-hunk sections with `+|` and `-|`, so schema, JSON and YAML changes are review evidence in the pack rather than collector work.
+- Added-file class/module wrappers are omitted when child definitions carry the behavior. Each changed test file keeps two representative anchors and groups the rest into one file-level section. The manifest exposes production anchors, test anchors/groups, non-code hunks and closed gaps as `REVIEW INPUTS`.
+
+### Fixed
+
+- Call expansion ranks internal destinations across the whole definition. External calls, callback parameters and repeated destinations no longer consume the expansion allowance. Callback parameters no longer create false self-cycles.
+- `sparsity_collect` reports wall time including initial parser, index and compiler setup. Its header groups unexpanded calls by cap or budget reason, and callers respect the total node cap.
+- Ruby traces follow constructors, declared scope chains and symbol-to-proc calls through local `map`/filter element types. Unknown callbacks, missing constructors and dynamic scope bodies remain explicit gaps. Collection inference respects reassignment and block shadowing; the Ruby index cache version changes with these facts.
+- Directory and partial-path searches expand from ranked matching files rather than walking every source file in the directory. The selected seeds and omissions are recorded. Directory searches no longer widen into the owning repository merely because the intent is `references`.
+- Search text and the TUI group repeated coverage reasons with counts and bounded examples. Detailed reasons, roots and relationships remain available in the tool result.
+
 ## 0.4.0 (unreleased)
 
 ### Added
 
-- `sparsity_index`: one call per diff (`base..head`, `base...head`, a commit or `worktree`) that returns a ranked context pack: manifest, one section per changed definition with `+|` and `-|` marks, resolved calls with `[resolution, how]` labels, callers, tests by name, definitions removed with surviving callers, depth tiers and a recap of gaps; sections over the inline budget spill to `pack.md` with line ranges.
+- `sparsity_scan`: one call per diff (`base..head`, `base...head`, a commit or `worktree`) that returns a ranked context pack: manifest, one section per changed definition with `+|` and `-|` marks, resolved calls with `[resolution, how]` labels, callers, tests by name, definitions removed with surviving callers, depth tiers and a recap of gaps; sections over the inline budget spill to `pack.md` with line ranges.
 - `sparsity_collect`: bounded call context for one `path:line` with the same labels, callers, cycles and frontier.
 - Ruby adapter on `@ruby/prism` with a per-component index cached by git tree hash; TypeScript and JavaScript adapter on the compiler API with one program per tsconfig; checker-resolved and inferred edges never share a label with name-only guesses.
 - Boundary ranking of anchors and callers, per-run `metrics.json`, a rolling `sparsity/metrics.jsonl` log and the `/agentic-search-stats` command.

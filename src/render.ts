@@ -1,5 +1,6 @@
 import { truncateLine } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { groupCoverageReasons } from "./coverage-summary.ts";
 import { relatedReferencesForPath, type RelatedExpansionDetails } from "./related.ts";
 import type { CodeMatch, RankedFileResult, SearchCoverageDetails, SearchDetails, SearchTopMatch, SearchEvidence } from "./types.ts";
 
@@ -90,7 +91,12 @@ export function renderResult(
     const first = result.content.find((item) => item.type === "text")?.text?.split("\n").find((line) => line.trim());
     text = theme.fg("success", first ?? "Search completed");
   }
-  if (coverage?.status && coverage.status !== "complete") text += `\n${theme.fg("warning", `Coverage ${coverage.status}: ${coverage.reasons.join("; ")}`)}`;
+  if (coverage?.status && coverage.status !== "complete") {
+    const groups = groupCoverageReasons(coverage.reasons ?? []);
+    const shown = groups.slice(0, 3).map((group) => (group.count > 1 ? `${group.kind} ×${group.count}` : group.kind)).join("; ");
+    const more = groups.length > 3 ? `; ${groups.length - 3} more kinds` : "";
+    text += `\n${theme.fg("warning", `Coverage ${coverage.status}: ${coverage.reasons?.length ?? 0} reason${(coverage.reasons?.length ?? 0) === 1 ? "" : "s"}${shown ? ` — ${shown}${more}` : ""}`)}`;
+  }
   const top = files[0];
   if (top?.path) {
     text += `\n${theme.fg("accent", `top: ${top.path}`)}`;

@@ -123,6 +123,7 @@ export interface SearchCoverageDetails {
   truncatedMatches: number;
   limits: { candidates: number; snippetsPerFile: number; snippetBytes: number; retainedBytes: number; eventBytes: number };
   executionLimits?: { packageConcurrency: number; packages: number; rootBatch: number; replayBytes: number };
+  relatedSeeding?: { roots: string[]; matchingFiles: number; limit: number; omittedFiles: number };
   contextRanking?: {
     fileLimit: number; readByteLimit: number; blockByteLimit: number;
     enrichedCandidates: number; unexaminedCandidates: number;

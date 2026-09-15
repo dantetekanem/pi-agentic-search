@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
-import { rubyAdapter } from "./adapters/ruby.ts";
+import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
@@ -19,9 +19,9 @@ import {
 export type Language = "ruby" | "javascript";
 export type Resolution = "exact" | "static_candidate" | "ambiguous" | "unresolved" | "external" | "local";
 
-export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "self" | "lexical" | "constant" | "superclass" | "same_file" | "import" | "name_only";
+export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "self" | "lexical" | "constant" | "chain" | "superclass" | "same_file" | "import" | "name_only";
 
-export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), superclass, same_file, import (followed an import), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
+export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a parameter, callback or variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), chain (a scope or relation chain on a model; each step checked against the index), superclass, same_file, import (followed an import), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
 export type Truncation = "none" | "max_nodes" | "budget" | "rg_timeout";
 
 export interface SparsityNode {
@@ -62,6 +62,7 @@ export interface SparsityCoverage {
   cycles: string[];
   rgCalls: number;
   elapsedMs: number;
+  setupMs: number;
   notes: string[];
 }
 
@@ -107,6 +108,7 @@ export interface CollectorOptions {
   vicinity: number;
   maxNodes: number;
   budgetMs: number;
+  capReferences?: boolean;
   signal?: AbortSignal;
 }
 
@@ -149,11 +151,18 @@ interface ConstantResolution {
   note?: string;
 }
 
+interface SiteResolution {
+  candidates: Candidate[];
+  resolution: Resolution;
+  note?: string;
+  via?: EdgeVia;
+}
+
 const RUBY_EXTENSIONS = new Set([".rb", ".rake"]);
 const JS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs"]);
 const ROOT_MARKERS = ["component.yml", "package.json", "Gemfile", ".git"];
 const RG_CALL_TIMEOUT_MS = 8_000;
-const MAX_CALLS_PER_NODE = 16;
+const MAX_CALLS_PER_NODE = 24;
 const MAX_CANDIDATES_PER_CALL = 4;
 const MAX_CALLERS = 8;
 const MAX_CALLER_FILES = 40;
@@ -243,7 +252,9 @@ export class Budget {
   }
 
   get exhausted(): boolean {
-    return this.elapsedMs >= this.limitMs;
+    const exhausted = this.elapsedMs >= this.limitMs;
+    if (exhausted && this.truncatedBy === "none") this.truncatedBy = "budget";
+    return exhausted;
   }
 
   spend(): boolean {
@@ -913,6 +924,12 @@ export class Collector {
     if (shared.tsPrograms) tsAdapter.attach(shared.tsPrograms, options.cwd);
   }
 
+  private knownNode(candidate: Candidate): boolean {
+    const display = this.displayPath(this.absolutePath(candidate.path));
+    return this.nodes.some((node) => node.path === display && node.startLine === candidate.line
+      && (!candidate.symbol || node.symbol === candidate.symbol || this.definitionOf(node).name === candidate.symbol));
+  }
+
   definitionOf(node: SparsityNode): Definition {
     return { name: node.symbol.split(/[#. ]/).pop() ?? node.symbol, symbol: node.symbol, kind: node.kind, startLine: node.startLine, endLine: node.endLine };
   }
@@ -1000,7 +1017,7 @@ export class Collector {
     node.snippet = this.snippet(lines, this.definitionOf(node), focus, marks);
   }
 
-  async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string): Promise<{ node: SparsityNode; created: boolean; def: Definition } | undefined> {
+  async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string, allowNew = true): Promise<{ node: SparsityNode; created: boolean; def: Definition } | undefined> {
     const lines = await this.lines(path);
     if (!lines) return undefined;
     const language = languageFor(path);
@@ -1014,6 +1031,11 @@ export class Collector {
     const key = `${display}:${def.startLine}:${def.symbol}`;
     const existing = this.nodesByKey.get(key);
     if (existing) return { node: existing, created: false, def };
+    if (!allowNew) {
+      this.budget.truncatedBy = this.budget.truncatedBy === "none" ? "max_nodes" : this.budget.truncatedBy;
+      this.frontier.push(`${display}:${line} ${def.symbol} not expanded (max_nodes)`);
+      return undefined;
+    }
 
     const node: SparsityNode = {
       id: this.nextId(),
@@ -1105,7 +1127,7 @@ export class Collector {
     if (hits.length) return { candidates: this.rankCandidates(hits, fromPath, constant) };
 
     if (segments.length >= 2 && !(await this.namespaceUnderRoot(segments[0]!, signal))) {
-      return { candidates: [], note: `${segments[0]} is not defined under ${this.rootDisplay}; ${constant} comes from a gem, the platform or another component.` };
+      return { candidates: [], note: `${segments[0]} is not defined under ${this.rootDisplay}; ${constant} comes from the platform, a gem or another component.` };
     }
 
     const pattern = `^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(last)}([^\\w]|$)`;
@@ -1143,7 +1165,7 @@ export class Collector {
     ];
   }
 
-  private async resolveRubyMethod(name: string, fromPath: string, receiverConstant?: string, signal?: AbortSignal): Promise<{ candidates: Candidate[]; resolution: Resolution; note?: string; via?: EdgeVia }> {
+  private async resolveRubyMethod(name: string, fromPath: string, receiverConstant?: string, signal?: AbortSignal): Promise<SiteResolution & { ownerFallback?: boolean }> {
     const patterns = this.rubyMethodPattern(name);
     const patternArgs = patterns.flatMap((pattern) => ["-e", pattern]);
 
@@ -1157,7 +1179,7 @@ export class Collector {
           const ranked = this.rankCandidates(hits, fromPath, receiverConstant);
           return { candidates: ranked, resolution: ranked.length === 1 ? "exact" : "static_candidate", via: "constant" };
         }
-        return { candidates: owners.slice(0, 1), resolution: "static_candidate", via: "constant", note: `${receiverConstant} found, but no ${name} definition inside it; showing the constant. Inherited, delegated or dynamic.` };
+        return { candidates: owners.slice(0, 1), resolution: "static_candidate", via: "constant", note: `${receiverConstant} found, but no ${name} definition inside it; showing the constant. Inherited, delegated or dynamic.`, ownerFallback: true };
       }
       return { candidates: [], resolution: resolved.note && /comes from the platform, a gem or another component/.test(resolved.note) ? "external" : "unresolved", via: "constant", note: resolved.note ?? `receiver ${receiverConstant} was not found under ${this.rootDisplay}; it is probably defined outside this root.` };
     }
@@ -1238,75 +1260,148 @@ export class Collector {
     return { candidates: ranked, resolution: "static_candidate", via: "name_only" };
   }
 
+  private callSites(node: SparsityNode, def: Definition, lines: string[], facts: FileFacts | undefined): CallSite[] {
+    if (facts && node.language === "ruby") {
+      return rubyAdapter.calls(facts, def).filter((site) => {
+        if (site.source === "symbol_proc" || site.source === "dynamic") return true;
+        if (RUBY_KEYWORDS.has(site.name)) return false;
+        if (site.source === "constant") return true;
+        if (site.name === "new" && site.receiverKind === "constant") return true;
+        return !RUBY_COMMON_METHODS.has(site.name);
+      });
+    }
+    if (facts && node.language === "javascript") {
+      return tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name)));
+    }
+    return node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def);
+  }
+
+  private siteLabel(site: CallSite): string {
+    return site.label ?? (site.receiver ? `${site.receiver}.${site.name}` : site.name);
+  }
+
+  private async resolveSite(site: CallSite, node: SparsityNode, def: Definition, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<SiteResolution> {
+    if (site.source === "dynamic") return { candidates: [], resolution: "unresolved", note: site.dynamic ?? "dynamic dispatch; the callee is a runtime value" };
+    if (node.language !== "ruby") return site.target ? this.resolveFromTarget(site) : this.resolveJs(site, node.path, imports, signal);
+    const resolved = await this.resolveRubySite(site, node, def, signal);
+    if (!site.dynamic) return resolved;
+    return { ...resolved, resolution: resolved.resolution === "exact" ? "static_candidate" : resolved.resolution, note: [resolved.note, site.dynamic].filter(Boolean).join("; ") };
+  }
+
+  private async resolveRubySite(site: CallSite, node: SparsityNode, def: Definition, signal?: AbortSignal): Promise<SiteResolution> {
+    if (site.source === "symbol_proc" && !site.receiverType) return { candidates: [], resolution: "unresolved", note: "symbol-to-proc call detected, but the collection element type is unknown" };
+    const indexed = this.rubyIndex ? this.resolveViaIndex(site, node, def) : undefined;
+    if (indexed) return indexed;
+    if (!/^[A-Za-z_]/.test(site.name) && site.source !== "constant") return { candidates: [], resolution: "unresolved", note: "operator call detected, but its receiver type is unknown; name-only operator lookup is omitted" };
+    if (site.source === "constant") {
+      const { candidates, note } = await this.resolveRubyConstant(site.name, node.path, signal);
+      const outside = !candidates.length && /comes from the platform, a gem or another component/.test(note ?? "");
+      const resolution: Resolution = outside ? "external" : !candidates.length ? "unresolved" : note ? "static_candidate" : candidates.length === 1 ? "exact" : "static_candidate";
+      return { candidates, resolution, note };
+    }
+    if (site.name === "new" && site.receiverKind === "constant" && site.receiver) return this.resolveRubyInitialize(site.receiver, node.path, signal);
+    if (site.via === "chain" && site.receiverType) return this.resolveRubyChainLoosely(site, node, signal);
+    if (site.receiverType && site.receiverKind !== "constant" && site.via !== "named") {
+      const resolved = await this.resolveRubyMethod(site.name, node.path, site.receiverType, signal);
+      resolved.via = site.via;
+      return resolved;
+    }
+    return this.resolveRubyMethod(site.name, node.path, site.receiverKind === "constant" ? site.receiver : undefined, signal);
+  }
+
+  private async resolveRubyChainLoosely(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
+    const receiverType = site.receiverType!;
+    const steps = site.chain?.length ? ` through ${site.chain.join(".")}` : "";
+    const typed = await this.resolveRubyMethod(site.name, node.path, receiverType, signal);
+    if (typed.resolution === "external") return { ...typed, via: "chain" };
+    if (typed.candidates.length && !typed.ownerFallback) {
+      const reason = this.rubyIndex ? "a chain step is not a declared scope, so the relation type is assumed" : "chain steps are not verified without a Ruby index";
+      return { ...typed, via: "chain", resolution: typed.resolution === "exact" ? "static_candidate" : typed.resolution, note: [typed.note, `relation of ${receiverType}${steps} assumed; ${reason}`].filter(Boolean).join("; ") };
+    }
+    const loose = await this.resolveRubyMethod(site.name, node.path, undefined, signal);
+    return { ...loose, note: [loose.note, `receiver ${site.receiver ?? receiverType} is a chained value whose type was not traced; ${receiverType} declares no ${site.name}`].filter(Boolean).join("; ") };
+  }
+
+  private readonly modelCache = new Map<string, boolean>();
+
+  private isModel(index: RubyIndex, typeSymbol: string): boolean {
+    const cached = this.modelCache.get(typeSymbol);
+    if (cached !== undefined) return cached;
+    const ancestors = ancestorsOf(index, typeSymbol);
+    const model = ancestors.some((ancestor) => /(^|::)(ApplicationRecord|ActiveRecord::Base)$|Record$/.test(ancestor))
+      || index.definitions.some((item) => item.kind === "scope" && ancestors.includes(item.owner ?? ""));
+    this.modelCache.set(typeSymbol, model);
+    return model;
+  }
+
+  private async resolveRubyInitialize(constant: string, fromPath: string, signal?: AbortSignal): Promise<SiteResolution> {
+    const owners = (await this.resolveRubyConstant(constant, fromPath, signal)).candidates;
+    if (!owners.length) return { candidates: [], resolution: "external", via: "constant", note: `${constant} is outside ${this.rootDisplay}; its constructor is not inspected` };
+    const files = uniqueValues(owners.map((owner) => owner.path));
+    const hits = await rgJson(["-t", "ruby", "--max-count", "2", "-e", "^\\s*def\\s+initialize([^\\w?!=]|$)", ...files], this.options.cwd, this.budget, signal);
+    if (!hits.length) return { candidates: [], resolution: "unresolved", via: "constant", note: `no initialize definition found in ${constant}; inherited or dynamic construction is not traced` };
+    const ranked = this.rankCandidates(hits, fromPath, constant);
+    return { candidates: ranked, resolution: ranked.length === 1 ? "exact" : "static_candidate", via: "constant", note: "new dispatches to initialize" };
+  }
+
   async expand(node: SparsityNode, def: Definition, depth: number, ancestry: string[], queue: QueueItem[], signal?: AbortSignal, focus?: number[]): Promise<void> {
     if (depth > 0 && !EXPANDABLE_KINDS.has(def.kind)) return;
     const lines = await this.lines(node.path);
     if (!lines) return;
     const facts = this.factsFor(node.language, node.path, lines);
-    let sites: CallSite[] = facts && node.language === "ruby"
-      ? rubyAdapter.calls(facts, def).filter((site) => !RUBY_KEYWORDS.has(site.name) && !(RUBY_COMMON_METHODS.has(site.name) && site.source !== "constant"))
-      : facts && node.language === "javascript"
-        ? tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name)))
-        : node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def);
-    if (focus?.length) {
-      const distance = (line: number) => Math.min(...focus.map((f) => Math.abs(f - line)));
-      sites = [...sites].sort((a, b) => distance(a.line) - distance(b.line) || a.line - b.line);
-    }
+    if (facts?.errors) this.frontier.push(`${node.path}: ${facts.errors} parse errors; call detection may be incomplete (parser)`);
+    const distance = focus?.length ? (line: number) => Math.min(...focus.map((f) => Math.abs(f - line))) : () => 0;
+    const examined = [...this.callSites(node, def, lines, facts)].sort((a, b) => distance(a.line) - distance(b.line) || a.line - b.line);
     const imports = node.language === "javascript" ? parseJsImports(lines.join("\n")) : new Map<string, JsImport>();
-    const followed = sites.slice(0, MAX_CALLS_PER_NODE);
-    for (const dropped of sites.slice(MAX_CALLS_PER_NODE)) this.frontier.push(`${node.id} → ${dropped.receiver ? `${dropped.receiver}.` : ""}${dropped.name} (call cap)`);
-
-    for (const site of followed) {
+    type Pending = { site: CallSite; label: string; resolved: SiteResolution; order: number };
+    const pending: Pending[] = [];
+    for (const [order, site] of examined.entries()) {
       if (this.budget.exhausted || signal?.aborted) {
-        this.frontier.push(`${node.id} → ${site.receiver ? `${site.receiver}.` : ""}${site.name} (budget)`);
+        this.frontier.push(`${node.id} → ${this.siteLabel(site)} (budget)`);
         continue;
       }
+      const resolved = await this.resolveSite(site, node, def, imports, signal);
+      pending.push({ site, label: this.siteLabel(site), resolved, order });
+    }
+
+    const emitted: Array<{ order: number; edge: SparsityEdge }> = [];
+    for (const item of pending.filter((entry) => !entry.resolved.candidates.length)) {
+      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note } });
+    }
+
+    const trust = (resolution: Resolution) => (resolution === "exact" ? 0 : resolution === "static_candidate" ? 1 : 2);
+    const followable = pending
+      .filter((entry) => entry.resolved.candidates.length)
+      .sort((a, b) => trust(a.resolved.resolution) - trust(b.resolved.resolution) || Number(a.site.relationship !== "calls") - Number(b.site.relationship !== "calls") || a.order - b.order);
+    let newTargets = 0;
+    for (const item of followable) {
+      const { site, label, resolved } = item;
       if (depth >= this.options.maxDepth) {
-        this.frontier.push(`${node.id} → ${site.receiver ? `${site.receiver}.` : ""}${site.name} (depth ${this.options.maxDepth})`);
+        this.frontier.push(`${node.id} → ${label} (depth ${this.options.maxDepth})`);
         continue;
       }
-
-      let resolved: { candidates: Candidate[]; resolution: Resolution; note?: string; via?: EdgeVia };
-      if (node.language === "ruby") {
-        const indexed = this.rubyIndex ? this.resolveViaIndex(site, node, def) : undefined;
-        if (indexed) {
-          resolved = indexed;
-        } else if (site.source === "constant") {
-          const { candidates, note } = await this.resolveRubyConstant(site.name, node.path, signal);
-          const outside = !candidates.length && /comes from the platform, a gem or another component/.test(note ?? "");
-          const resolution: Resolution = outside ? "external" : !candidates.length ? "unresolved" : note ? "static_candidate" : candidates.length === 1 ? "exact" : "static_candidate";
-          resolved = { candidates, resolution, note };
-        } else if (site.receiverType && site.receiverKind !== "constant" && site.via !== "named") {
-          resolved = await this.resolveRubyMethod(site.name, node.path, site.receiverType, signal);
-          resolved.via = site.via;
-        } else {
-          resolved = await this.resolveRubyMethod(site.name, node.path, site.receiverKind === "constant" ? site.receiver : undefined, signal);
-        }
-      } else {
-        resolved = site.target ? this.resolveFromTarget(site) : await this.resolveJs(site, node.path, imports, signal);
-      }
-
-      const label = site.receiver ? `${site.receiver}.${site.name}` : site.name;
-      if (!resolved.candidates.length) {
-        this.edges.push({ from: node.id, name: label, relationship: site.relationship, resolution: resolved.resolution, via: resolved.via, line: site.line, note: resolved.note });
-        continue;
-      }
-
       const shown = resolved.candidates.slice(0, resolved.resolution === "ambiguous" ? 1 : Math.min(2, MAX_CANDIDATES_PER_CALL));
       for (const candidate of shown) {
-        if (this.atNodeCap) {
+        if (newTargets >= MAX_CALLS_PER_NODE && !this.knownNode(candidate)) {
+          this.frontier.push(`${node.id} → ${label} at ${candidate.path}:${candidate.line} (call cap)`);
+          continue;
+        }
+        if (this.atNodeCap && !this.knownNode(candidate)) {
           this.budget.truncatedBy = this.budget.truncatedBy === "none" ? "max_nodes" : this.budget.truncatedBy;
           this.frontier.push(`${node.id} → ${label} at ${candidate.path}:${candidate.line} (max_nodes)`);
           continue;
         }
         const created = await this.node(candidate.path, candidate.line, depth + 1, undefined, candidate.symbol);
-        if (created?.created) this.expandedNodes += 1;
+        if (created?.created) {
+          this.expandedNodes += 1;
+          newTargets += 1;
+        }
         if (!created) {
-          this.edges.push({ from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed` });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed` } });
           continue;
         }
         if (created.node.id === node.id && candidate.line !== created.def.startLine) {
-          this.edges.push({ from: node.id, name: label, relationship: site.relationship, resolution: "local", line: site.line, note: `${label} is defined inside this definition at line ${candidate.line}; a local, not a separate definition.` });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "local", line: site.line, note: `${label} is defined inside this definition at line ${candidate.line}; a local, not a separate definition.` } });
           continue;
         }
         const edge: SparsityEdge = {
@@ -1320,7 +1415,7 @@ export class Collector {
           note: resolved.note,
         };
         if (resolved.resolution === "ambiguous") edge.candidates = resolved.candidates.slice(0, 8).map((c) => `${c.path}:${c.line}`);
-        this.edges.push(edge);
+        emitted.push({ order: item.order, edge });
 
         if (ancestry.includes(created.node.id) || created.node.id === node.id) {
           this.cycles.push(`${[...ancestry, node.id, created.node.id].join(" → ")}`);
@@ -1331,11 +1426,12 @@ export class Collector {
         }
       }
     }
+    emitted.sort((a, b) => a.edge.line - b.edge.line || a.order - b.order);
+    for (const { edge } of emitted) this.edges.push(edge);
   }
 
-  private resolveViaIndex(site: CallSite, node: SparsityNode, def: Definition): { candidates: Candidate[]; resolution: Resolution; note?: string; via?: EdgeVia } | undefined {
+  private resolveViaIndex(site: CallSite, node: SparsityNode, def: Definition): SiteResolution | undefined {
     const index = this.rubyIndex!;
-    const ownerSymbol = node.symbol.split(/[#. ]/)[0]!;
     const toCandidates = (defs: IndexedDefinition[]): Candidate[] => defs.map((item) => ({ path: item.path, line: item.startLine, text: item.symbol, symbol: item.symbol }));
 
     if (site.source === "constant") {
@@ -1357,23 +1453,63 @@ export class Collector {
     const receiverType = site.receiverType;
     if (!receiverType) return undefined;
     const typeSymbol = resolveIndexedConstant(index, receiverType, node.symbol) ?? (index.namespaces.has(receiverType) ? receiverType : undefined);
-    const singleton = site.receiverKind === "constant";
+    const constructor = site.name === "new" && site.receiverKind === "constant";
+    const symbolProc = site.source === "symbol_proc";
+    const chain = site.via === "chain";
+    const singleton = !symbolProc && !constructor && (site.receiverKind === "constant" || chain);
     const implicit = site.receiverKind === "implicit" || site.receiverKind === "self";
     if (!typeSymbol) {
       if (implicit) return undefined;
       if (site.via === "named") return undefined;
-      return { candidates: [], resolution: "external", via: site.receiverKind === "constant" ? "constant" : site.via, note: `receiver ${receiverType} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
+      return { candidates: [], resolution: "external", via: site.receiverKind === "constant" ? "constant" : chain ? "chain" : site.via, note: `receiver ${receiverType} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
     }
-    const found = this.lookupMethod(index, typeSymbol, site.name, singleton || (implicit && def.kind === "singleton_method"));
+    if (constructor) {
+      const customNew = this.lookupMethod(index, typeSymbol, "new", true);
+      if (customNew.length) return { candidates: toCandidates(customNew), resolution: customNew.length === 1 ? "exact" : "static_candidate", via: "constant" };
+    }
+    const methodName = constructor ? "initialize" : site.name;
+    const verdicts = chain || symbolProc ? this.chainVerdicts(index, typeSymbol, site.chain ?? []) : { classMethods: [], unknown: [] };
+    if (chain && !this.isModel(index, typeSymbol) && (verdicts.classMethods.length || verdicts.unknown.length)) return undefined;
+    const found = this.lookupMethod(index, typeSymbol, methodName, singleton || (implicit && def.kind === "singleton_method"));
     if (found.length) {
-      const resolution: Resolution = site.via === "named" || found.length > 1 ? "static_candidate" : "exact";
-      const via = site.receiverKind === "constant" ? "constant" : implicit ? "self" : site.via ?? "typed";
-      const note = site.via === "named" ? `receiver type ${receiverType} guessed from the variable name` : site.via === "assigned" ? `receiver type ${receiverType} inferred from an assignment` : undefined;
-      return { candidates: toCandidates(found.slice(0, MAX_CANDIDATES_PER_CALL)), resolution, via, note };
+      let resolution: Resolution = site.via === "named" || found.length > 1 ? "static_candidate" : "exact";
+      const via: EdgeVia = constructor || site.receiverKind === "constant" ? "constant" : implicit ? "self" : chain ? "chain" : site.via ?? "typed";
+      const notes: string[] = [];
+      const subject = symbolProc ? "element type" : "receiver type";
+      if (site.via === "named") notes.push(`${subject} ${receiverType} guessed from the variable name`);
+      else if (site.via === "assigned") notes.push(`${subject} ${receiverType} inferred from an assignment`);
+      if (constructor) notes.push("new dispatches to initialize");
+      if (chain || symbolProc && site.chain?.length) {
+        if (verdicts.classMethods.length) {
+          resolution = "static_candidate";
+          notes.push(`chain step${verdicts.classMethods.length === 1 ? "" : "s"} ${verdicts.classMethods.join(", ")} ${verdicts.classMethods.length === 1 ? "is a class method" : "are class methods"} on ${typeSymbol}; a relation return type is assumed`);
+        }
+        if (verdicts.unknown.length) {
+          resolution = "static_candidate";
+          notes.push(`chain step${verdicts.unknown.length === 1 ? "" : "s"} ${verdicts.unknown.join(", ")} not declared on ${typeSymbol} under ${this.rootDisplay}; relation type assumed`);
+        }
+        if (!verdicts.classMethods.length && !verdicts.unknown.length) notes.push(site.chain?.length ? `scope chain on ${typeSymbol} through ${site.chain.join(".")}; each step is a declared scope or relation method` : `relation of ${typeSymbol}`);
+      }
+      return { candidates: toCandidates(found.slice(0, MAX_CANDIDATES_PER_CALL)), resolution, via, note: notes.join("; ") || undefined };
     }
+    if (constructor) return { candidates: [], resolution: "unresolved", via: "constant", note: `${typeSymbol} has no new or initialize definition under ${this.rootDisplay}; inherited or dynamic construction is not traced` };
     if (implicit) return undefined;
     if (site.via === "named") return undefined;
-    return { candidates: [], resolution: "unresolved", via: site.via, note: `${typeSymbol} and its ancestors under ${this.rootDisplay} define no ${site.name}; delegated, dynamic, or defined outside this root.` };
+    if (chain && (verdicts.classMethods.length || verdicts.unknown.length)) return undefined;
+    return { candidates: [], resolution: "unresolved", via: chain ? "chain" : site.via, note: `${typeSymbol} and its ancestors under ${this.rootDisplay} define no ${methodName}; delegated, dynamic, or defined outside this root.` };
+  }
+
+  private chainVerdicts(index: RubyIndex, typeSymbol: string, steps: string[]): { classMethods: string[]; unknown: string[] } {
+    const classMethods: string[] = [];
+    const unknown: string[] = [];
+    for (const step of steps) {
+      if (RELATION_METHODS.has(step)) continue;
+      const declared = this.lookupMethod(index, typeSymbol, step, true);
+      if (declared.some((item) => item.kind === "scope")) continue;
+      if (declared.length) classMethods.push(step);
+      else unknown.push(step);
+    }
+    return { classMethods, unknown };
   }
 
   private realCwd?: string;
@@ -1397,11 +1533,17 @@ export class Collector {
     return displaySearchRoot(this.realCwd, real);
   }
 
-  private resolveFromTarget(site: CallSite): { candidates: Candidate[]; resolution: Resolution; note?: string; via?: EdgeVia } {
+  private resolveFromTarget(site: CallSite): SiteResolution {
     const target = site.target!;
     if (target.external) return { candidates: [], resolution: "external", via: "checker", note: `from package ${target.external}` };
     const display = this.displayRealPath(target.path);
-    if (display.startsWith("..") || isAbsolute(display)) return { candidates: [], resolution: "external", via: "checker", note: `declared outside the repository at ${target.path}` };
+    if (target.local) {
+      const note = target.local === "parameter"
+        ? `${site.name} is a parameter declared at ${display}:${target.line}; a callback or value passed in, not a separate definition.`
+        : `${site.name} is declared inside an enclosing function at ${display}:${target.line}; a local, not a separate definition.`;
+      return { candidates: [], resolution: "local", via: "checker", note };
+    }
+    if (display.startsWith("..") || isAbsolute(display) || this.root !== "." && display !== this.root && !display.startsWith(`${this.root}/`)) return { candidates: [], resolution: "external", via: "checker", note: `declared outside root ${this.rootDisplay} at ${target.path}` };
     const note = target.declaration ? "resolved to a declaration file; the implementation lives in the package that builds it" : undefined;
     return { candidates: [{ path: display, line: target.line, text: target.symbol ?? site.name, symbol: target.symbol }], resolution: "exact", via: "checker", note };
   }
@@ -1451,7 +1593,7 @@ export class Collector {
     const hits: ReferenceHit[] = [];
     for (const site of chosen) {
       if (hits.length >= options.limit) break;
-      const created = await this.node(site.path, site.line, options.depth ?? 1, site.line);
+      const created = await this.node(site.path, site.line, options.depth ?? 1, site.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
       hits.push({ node: created.node, def: created.def, line: site.line, text: await this.lineText(site.path, site.line), test: isTestPath(site.path) });
     }
@@ -1492,7 +1634,7 @@ export class Collector {
     const hits: ReferenceHit[] = [];
     for (const hit of ranked) {
       if (hits.length >= options.limit) break;
-      const created = await this.node(hit.path, hit.line, options.depth ?? 1, hit.line);
+      const created = await this.node(hit.path, hit.line, options.depth ?? 1, hit.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
       hits.push({ node: created.node, def: created.def, line: hit.line, text: hit.text.trim(), test: isTestPath(hit.path) });
     }
@@ -1543,6 +1685,7 @@ export class Collector {
 }
 
 export async function collectSparsity(options: SparsityOptions): Promise<SparsityResult> {
+  const startedAt = Date.now();
   const { path, line } = parseTarget(options.target);
   const absolute = ensureInsideCwd(options.cwd, path);
   if (!(await fileExists(absolute))) throw new Error(`target file not found: ${path}`);
@@ -1557,7 +1700,8 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
     : undefined;
   const tsPrograms = language === "javascript" ? new TsPrograms(options.cwd) : undefined;
   tsPrograms?.prepare([absolute], options.signal);
-  const collector = new Collector(options, root, { rubyReady, rubyIndex: rubyIndex && !rubyIndex.skipped ? rubyIndex : undefined, tsPrograms });
+  const setupMs = Date.now() - startedAt;
+  const collector = new Collector({ ...options, capReferences: true }, root, { rubyReady, rubyIndex: rubyIndex && !rubyIndex.skipped ? rubyIndex : undefined, tsPrograms });
   const anchor = await collector.node(displaySearchRoot(options.cwd, absolute), line, 0, line);
   if (!anchor) throw new Error(`no definition found around ${path}:${line}`);
 
@@ -1582,7 +1726,8 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
     language === "ruby"
       ? "Ruby destinations are static candidates found by definition name; dynamic dispatch, mixins and metaprogramming are not proven."
       : "JS/TS destinations follow imports and same-file definitions; runtime dispatch and dependency injection are not proven.",
-    `Searched under ${collector.rootDisplay}; nothing outside that root was inspected.`,
+    `Definitions expanded under ${collector.rootDisplay}; parser/compiler preparation can read dependencies outside this root.`,
+    "Common library operations are omitted; zero unresolved counts detected edges only, not every possible runtime call.",
   ];
 
   const result: SparsityResult = {
@@ -1602,7 +1747,8 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
       frontier: uniqueValues(collector.frontier),
       cycles: uniqueValues(collector.cycles),
       rgCalls: collector.budget.rgCalls,
-      elapsedMs: collector.budget.elapsedMs,
+      elapsedMs: Date.now() - startedAt,
+      setupMs,
       notes,
     },
   };
@@ -1613,6 +1759,7 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
       cwd: options.cwd,
       label: `${result.target.path}:${line}`,
       elapsedMs: result.coverage.elapsedMs,
+      setupMs,
       rgCalls: result.coverage.rgCalls,
       truncatedBy: result.coverage.truncatedBy,
       nodes: result.nodes.length,
@@ -1625,11 +1772,28 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
   return result;
 }
 
+export function summarizeFrontier(frontier: string[]): Array<{ reason: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const item of frontier) {
+    const match = item.match(/\(([^()]*)\)$/);
+    const reason = match ? match[1]!.replace(/^depth \d+$/, "depth cap") : "not expanded";
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+}
+
+export function describeCoverageBoundary(coverage: Pick<SparsityCoverage, "frontier" | "truncatedBy" | "depthReached" | "maxDepth">): string {
+  if (!coverage.frontier.length && coverage.truncatedBy === "none") return "no frontier for retained call sites";
+  const groups = summarizeFrontier(coverage.frontier).map((group) => `${group.count} ${group.reason}`).join(", ");
+  const truncated = coverage.truncatedBy === "none" ? "" : `; stopped by ${coverage.truncatedBy}`;
+  return `bounded: ${coverage.frontier.length} frontier entr${coverage.frontier.length === 1 ? "y" : "ies"} (${groups})${truncated}`;
+}
+
 export function formatSparsity(result: SparsityResult): string {
   const { anchor, coverage } = result;
   const byId = new Map(result.nodes.map((node) => [node.id, node]));
   const out: string[] = [];
-  out.push(`sparsity_collect ${result.target.path}:${result.target.line} (${result.target.language}) root ${coverage.root} depth ${coverage.depthReached}/${coverage.maxDepth} vicinity ±${coverage.vicinity}`);
+  out.push(`sparsity_collect ${result.target.path}:${result.target.line} (${result.target.language}) root ${coverage.root} depth ${coverage.depthReached}/${coverage.maxDepth} vicinity ±${coverage.vicinity} — ${describeCoverageBoundary(coverage)}`);
   out.push("");
   out.push(`ANCHOR ${anchor.id} ${anchor.symbol} [${anchor.kind}] ${anchor.path}:${anchor.startLine}-${anchor.endLine} fp ${anchor.fingerprint}`);
   out.push(anchor.snippet);
@@ -1670,7 +1834,12 @@ export function formatSparsity(result: SparsityResult): string {
   }
 
   out.push("COVERAGE");
-  out.push(`  nodes ${coverage.nodes}, edges ${coverage.edges}, unresolved ${coverage.unresolved}, rg calls ${coverage.rgCalls}, ${coverage.elapsedMs} ms, truncated: ${coverage.truncatedBy}`);
+  const byResolution = new Map<string, number>();
+  for (const edge of result.edges) byResolution.set(edge.resolution, (byResolution.get(edge.resolution) ?? 0) + 1);
+  const resolutionSummary = [...byResolution.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([resolution, count]) => `${count} ${resolution}`).join(", ");
+  out.push(`  nodes ${coverage.nodes}, edges ${coverage.edges}${resolutionSummary ? ` (${resolutionSummary})` : ""}, unresolved ${coverage.unresolved}, rg calls ${coverage.rgCalls}, truncated: ${coverage.truncatedBy}`);
+  out.push(`  time: ${coverage.elapsedMs} ms wall (setup ${coverage.setupMs} ms for parser, index and program preparation; traversal ${Math.max(0, coverage.elapsedMs - coverage.setupMs)} ms)`);
+  out.push(`  depth ${coverage.depthReached}/${coverage.maxDepth} reached; ${describeCoverageBoundary(coverage)}`);
   if (coverage.cycles.length) out.push(`  cycles: ${coverage.cycles.join("; ")}`);
   if (coverage.frontier.length) {
     out.push(`  frontier (${coverage.frontier.length} not expanded):`);

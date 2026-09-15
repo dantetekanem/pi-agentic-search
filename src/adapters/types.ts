@@ -11,6 +11,7 @@ export interface Definition {
 export interface ParamInfo {
   name: string;
   type?: string;
+  collection?: CollectionKind;
 }
 
 export interface AdapterDefinition extends Definition {
@@ -32,10 +33,13 @@ export interface NamespaceInfo {
 
 export type InferenceVia = "typed" | "assigned" | "ivar" | "named";
 
+export type CollectionKind = "relation" | "array";
+
 export interface IvarInfo {
   name: string;
   type?: string;
   via?: InferenceVia;
+  collection?: CollectionKind;
   line: number;
 }
 
@@ -48,7 +52,7 @@ export interface FileFacts {
   errors: number;
 }
 
-export type CallSource = "constant_method" | "receiver_method" | "bare" | "constant" | "call" | "member" | "jsx" | "new" | "super";
+export type CallSource = "constant_method" | "receiver_method" | "bare" | "constant" | "call" | "member" | "jsx" | "new" | "super" | "symbol_proc" | "dynamic";
 
 export interface ResolvedTarget {
   path: string;
@@ -56,6 +60,7 @@ export interface ResolvedTarget {
   symbol?: string;
   external?: string;
   declaration?: boolean;
+  local?: "parameter" | "local";
 }
 
 export interface CallSite {
@@ -66,8 +71,11 @@ export interface CallSite {
   source: CallSource;
   receiverKind?: "implicit" | "self" | "constant" | "local" | "ivar" | "chain" | "other";
   receiverType?: string;
-  via?: InferenceVia | "checker";
+  via?: InferenceVia | "checker" | "chain";
   target?: ResolvedTarget;
+  label?: string;
+  chain?: string[];
+  dynamic?: string;
 }
 
 export interface LanguageAdapter {

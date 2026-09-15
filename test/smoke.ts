@@ -50,7 +50,7 @@ agenticSearchExtension({
   },
 } as any);
 
-assert.deepEqual(registeredTools, ["sparsity_index", "sparsity_collect", "agentic_search"]);
+assert.deepEqual(registeredTools, ["sparsity_scan", "sparsity_collect", "agentic_search"]);
 assert.deepEqual(registeredCommands, ["agentic-search-stats", "agentic-search-info"]);
 assert.ok(searchTool, "agentic_search tool should be registered");
 assert.equal(searchTool.parameters.properties.context.type, "string");
@@ -572,7 +572,7 @@ assert.equal(importedPackageResult.details.files[0].path, "node_modules/@fixture
 assert.match(importedPackageText, /export function filterMap/);
 assert.match(importedPackageText, /imported package.*@fixture\/model-api/i);
 assert.ok(importedPackageResult.details.coverage.runs.some((run: { stage?: string; roots: string[] }) => run.stage === "entry" && run.roots.includes("node_modules/@fixture/model-api/dist/index.js")));
-assert.equal(importedPackageResult.details.coverage.status, "partial");
+assert.equal(importedPackageResult.details.coverage.status, "complete", "searched package dependencies do not make otherwise complete coverage partial");
 assert.doesNotMatch(importedPackageText, /falling back to broad shell search/i);
 
 // 8. A miss is complete only within its successfully searched scopes.

@@ -162,6 +162,17 @@ function kindForName(name: string, functionLike: boolean): string {
   return /^[A-Z]/.test(name) ? "component" : "function";
 }
 
+function localDeclarationKind(declaration: ts.Node): ResolvedTarget["local"] | undefined {
+  let node: ts.Node | undefined = declaration;
+  while (node && !ts.isSourceFile(node)) {
+    if (ts.isParameter(node)) return "parameter";
+    if (node !== declaration && (ts.isFunctionLike(node) || ts.isBlock(node))) return "local";
+    if (ts.isClassLike(node) || ts.isModuleBlock(node)) return undefined;
+    node = node.parent;
+  }
+  return undefined;
+}
+
 function packageNameFrom(fileName: string): string | undefined {
   const match = fileName.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/g);
   if (!match) return undefined;
@@ -305,6 +316,11 @@ class Calls {
     const declFile = declaration.getSourceFile();
     const fileName = declFile.fileName;
     if (handle.program.isSourceFileDefaultLibrary(declFile) || /\/typescript\/lib\/lib\./.test(fileName)) return { builtin: true };
+    const local = localDeclarationKind(declaration);
+    if (local) {
+      const real = ts.sys.realpath ? ts.sys.realpath(fileName) : fileName;
+      return { target: { path: real, line: lineOf(declFile, declaration.getStart(declFile)), symbol: symbol.getName(), local }, builtin: false };
+    }
     const external = packageNameFrom(fileName);
     if (external && !fileName.includes(`${this.cwd}/`.replace(/\/node_modules\/.*/, ""))) {
       return { target: { path: fileName, line: lineOf(declFile, declaration.getStart(declFile)), external, symbol: symbol.getName() }, builtin: false };

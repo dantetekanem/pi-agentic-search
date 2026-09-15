@@ -56,7 +56,7 @@ const cold = await buildRubyIndex({ cwd, root: ".", cacheDir, log: (message) => 
 assert.equal(cold.skipped, undefined);
 assert.equal(cold.cacheHit, false);
 assert.equal(cold.fileCount, 6, "five .rb files plus the Gemfile");
-assert.ok(logs[0]?.startsWith("Indexing code changes for agents"), "progress note printed on a cold build");
+assert.ok(logs[0]?.startsWith("Scanning code changes for agents"), "progress note printed on a cold build");
 assert.ok(cold.bySymbol.has("Billing::Reader#applicable?"));
 assert.ok(cold.bySymbol.has("Admin::LegalEntity.for_shop"));
 assert.equal(cold.namespaces.get("Billing::Reader")?.superclass, "ApplicationRecord");
@@ -82,6 +82,10 @@ assert.equal(warm.cacheHit, true);
 assert.equal(warm.definitions.length, cold.definitions.length);
 assert.equal(warm.callSites.size, cold.callSites.size);
 assert.equal(warm.namespaces.get("Billing::Reader")?.superclass, "ApplicationRecord");
+
+const capped = await buildRubyIndex({ cwd, root: ".", cacheDir, maxFiles: 1 });
+assert.match(capped.skipped ?? "", /more than 1 Ruby files.*discovery stopped at 2/, "file discovery stops as soon as the cap is proven");
+assert.equal(capped.fileCount, 0);
 
 // Overlay: modify a tracked file, add an untracked file, delete a tracked file
 await write("app/models/admin/legal_entity.rb", files["app/models/admin/legal_entity.rb"]!.replace("def complete?", "def complete?(strict = false)"));

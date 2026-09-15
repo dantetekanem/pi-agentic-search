@@ -1,6 +1,6 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Pi extension for agent-oriented ranked code search and one-call diff context packs",
   "license": "MIT",
   "type": "module",
@@ -36,7 +36,7 @@
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "smoke": "tsx test/smoke.ts && tsx test/sparsity.ts && tsx test/sparsity-index.ts && tsx test/ruby-adapter.ts && tsx test/ruby-index.ts && tsx test/ts-adapter.ts && tsx test/rank.ts",
+    "smoke": "tsx test/smoke.ts && tsx test/sparsity.ts && tsx test/sparsity-scan.ts && tsx test/ruby-adapter.ts && tsx test/ruby-index.ts && tsx test/ts-adapter.ts && tsx test/rank.ts",
     "benchmark": "node --import tsx test/benchmark.ts",
     "test:benchmark": "node --import tsx test/benchmark-metrics.test.ts"
   },

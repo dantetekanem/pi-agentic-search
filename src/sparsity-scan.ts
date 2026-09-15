@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   Budget,
@@ -26,7 +26,7 @@ import { ensureInsideCwd } from "./sparsity-shared.ts";
 import { boundarySignal, RANKING_EXPLANATION } from "./rank.ts";
 import { edgeMetrics, indexMetrics, writeMetrics } from "./metrics.ts";
 
-export interface IndexOptions {
+export interface ScanOptions {
   cwd: string;
   diff: string;
   anchors?: string[];
@@ -66,6 +66,21 @@ export interface ChangedFile {
   binary: boolean;
 }
 
+export interface FileHunkRecord {
+  id: string;
+  path: string;
+  kind: "generated" | "other";
+  status: ChangedFile["status"];
+  hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }>;
+  omittedLines: number;
+}
+
+export interface TestGroupRecord {
+  id: string;
+  path: string;
+  entries: Array<{ symbol: string; startLine: number; endLine: number; fingerprint: string; snippet: string }>;
+}
+
 export interface AnchorRecord {
   id: string;
   symbol: string;
@@ -100,7 +115,7 @@ export interface Section {
   endLine: number;
 }
 
-export interface IndexResult {
+export interface ScanResult {
   label: string;
   head: string;
   base?: string;
@@ -108,7 +123,9 @@ export interface IndexResult {
   dirty: boolean;
   roots: string[];
   files: ChangedFile[];
+  fileHunks: FileHunkRecord[];
   anchors: AnchorRecord[];
+  testGroups: TestGroupRecord[];
   skippedAnchors: string[];
   nodes: SparsityNode[];
   edges: SparsityEdge[];
@@ -134,6 +151,7 @@ export interface IndexResult {
 
 const GIT_TIMEOUT_MS = 20_000;
 const SEARCH_CONCURRENCY = 4;
+const MAX_TEST_ANCHORS_PER_FILE = 2;
 
 async function pool<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -310,7 +328,7 @@ function anchorPriority(file: ChangedFile, def: Definition): number {
   return score;
 }
 
-export async function indexSparsity(options: IndexOptions): Promise<IndexResult> {
+export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   const budget = new Budget(options.budgetMs);
   let counter = 0;
   const nextId = () => `n${++counter}`;
@@ -353,7 +371,7 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
   const headContentAbsolute = new Map<string, string>();
   const checkoutHead = options.anchors?.length || dirty ? head : (await git(["rev-parse", "HEAD"], cwd, signal).catch(() => head)).trim();
   if (checkoutHead !== head) {
-    const readable = files.filter((file) => file.status !== "deleted" && file.language && (file.kind === "code" || file.kind === "test"));
+    const readable = files.filter((file) => file.status !== "deleted" && !file.binary);
     await pool(readable, SEARCH_CONCURRENCY, async (file) => {
       const content = await git(["show", `${head}:${file.path}`], cwd, signal).catch(() => undefined);
       if (content === undefined) return;
@@ -370,9 +388,11 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
   tsPrograms?.prepare(tsFiles, signal);
   indexNotes.push(...(tsPrograms?.describe() ?? []));
   const collectors = new Map<string, Collector>();
+  const rootOverride = options.root && resolve(cwd, options.root) !== resolve(cwd) ? options.root : undefined;
+  if (options.root && !rootOverride) indexNotes.push("Whole-repository root override ignored for a diff; using the nearest component root per changed file.");
   const collectorFor = async (path: string): Promise<{ collector: Collector; rootDisplay: string } | undefined> => {
     const absolute = ensureInsideCwd(cwd, path);
-    const root = await findRoot(cwd, absolute, options.root);
+    const root = await findRoot(cwd, absolute, rootOverride);
     const rootDisplay = displaySearchRoot(cwd, root);
     let collector = collectors.get(rootDisplay);
     if (!collector) {
@@ -461,9 +481,49 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
     const body = lines ? lines.slice(candidate.def.startLine - 1, candidate.def.endLine).join("\n") : "";
     candidate.boundary = candidate.file.kind === "test" ? { score: 0, tags: [] } : boundarySignal(candidate.file.path, candidate.def.symbol, body);
   }
-  candidates.sort((a, b) => a.priority - b.priority || b.boundary.score - a.boundary.score || a.file.path.localeCompare(b.file.path) || a.def.startLine - b.def.startLine);
-  const chosen = candidates.slice(0, options.maxAnchors);
-  const skippedAnchors = candidates.slice(options.maxAnchors).map((candidate) => `${candidate.file.path}:${candidate.def.startLine} ${candidate.def.symbol}`);
+  const prunedCandidates = candidates.filter((candidate) => {
+    if (candidate.file.status !== "added" || !["class", "module"].includes(candidate.def.kind)) return true;
+    return !candidates.some((other) => other !== candidate
+      && other.file.path === candidate.file.path
+      && other.def.startLine > candidate.def.startLine
+      && other.def.endLine < candidate.def.endLine);
+  });
+  prunedCandidates.sort((a, b) => a.priority - b.priority || b.boundary.score - a.boundary.score || a.file.path.localeCompare(b.file.path) || a.def.startLine - b.def.startLine);
+
+  const testCounts = new Map<string, number>();
+  const eligible: Candidate[] = [];
+  const grouped = new Map<string, Candidate[]>();
+  for (const candidate of prunedCandidates) {
+    if (candidate.file.kind !== "test") {
+      eligible.push(candidate);
+      continue;
+    }
+    const count = testCounts.get(candidate.file.path) ?? 0;
+    testCounts.set(candidate.file.path, count + 1);
+    if (count < MAX_TEST_ANCHORS_PER_FILE) eligible.push(candidate);
+    else grouped.set(candidate.file.path, [...(grouped.get(candidate.file.path) ?? []), candidate]);
+  }
+
+  const testGroups: TestGroupRecord[] = [];
+  let testGroupCounter = 0;
+  for (const [path, overflow] of grouped) {
+    const entries = [];
+    for (const candidate of overflow) {
+      const lines = await candidate.collector.lines(path);
+      if (!lines) continue;
+      entries.push({
+        symbol: candidate.def.symbol,
+        startLine: candidate.def.startLine,
+        endLine: candidate.def.endLine,
+        fingerprint: candidate.node.fingerprint,
+        snippet: candidate.collector.snippet(lines, candidate.def, candidate.changedLines, new Set(candidate.changedLines)),
+      });
+    }
+    if (entries.length) testGroups.push({ id: `t${++testGroupCounter}`, path, entries });
+  }
+
+  const chosen = eligible.slice(0, options.maxAnchors);
+  const skippedAnchors = eligible.slice(options.maxAnchors).map((candidate) => `${candidate.file.path}:${candidate.def.startLine} ${candidate.def.symbol}`);
   const anchorIds = new Set(chosen.map((candidate) => candidate.node.id));
   for (const candidate of chosen) await candidate.collector.refocus(candidate.node, candidate.changedLines, new Set(candidate.changedLines));
 
@@ -476,6 +536,34 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
     oldFiles.set(path, lines);
     return lines;
   };
+  const fileHunks: FileHunkRecord[] = [];
+  let fileHunkCounter = 0;
+  for (const file of files) {
+    if ((file.kind !== "other" && file.kind !== "generated") || file.binary) continue;
+    const old = file.status === "added" ? [] : await oldLines(file.oldPath ?? file.path) ?? [];
+    let current: string[] = [];
+    if (file.status !== "deleted") {
+      const content = headContent.get(file.path) ?? await readFile(resolve(cwd, file.path), "utf8").catch(() => undefined);
+      current = content?.split("\n") ?? [];
+    }
+    let remaining = 240;
+    let omittedLines = 0;
+    const hunks = [];
+    for (const hunk of file.hunks) {
+      const oldSlice = old.slice(hunk.oldStart - 1, hunk.oldStart - 1 + hunk.oldCount);
+      const newSlice = current.slice(hunk.newStart - 1, hunk.newStart - 1 + hunk.newCount);
+      const combined = oldSlice.length + newSlice.length;
+      const oldLines = oldSlice.slice(0, remaining);
+      remaining -= oldLines.length;
+      const newLines = newSlice.slice(0, remaining);
+      remaining -= newLines.length;
+      omittedLines += combined - oldLines.length - newLines.length;
+      if (oldLines.length || newLines.length) hunks.push({ oldStart: hunk.oldStart, oldLines, newStart: hunk.newStart, newLines });
+      if (remaining === 0) break;
+    }
+    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind, status: file.status, hunks, omittedLines });
+  }
+
   const removedFor = async (candidate: Candidate): Promise<AnchorRecord["removed"]> => {
     const removed: AnchorRecord["removed"] = [];
     let total = 0;
@@ -600,12 +688,12 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
     truncatedBy: budget.truncatedBy,
     frontier: [...new Set(all.flatMap((collector) => collector.frontier))],
     cycles: [...new Set(all.flatMap((collector) => collector.cycles))],
-    notes: [...new Set([...indexNotes.filter((note) => !note.startsWith("Indexing code changes")), ...(files.some((file) => file.language === "ruby") && !rubyReady ? ["Prism parser unavailable; Ruby definitions and calls came from the regex engine."] : []), ...all.flatMap((collector) => collector.notes)])],
+    notes: [...new Set([...indexNotes.filter((note) => !note.startsWith("Scanning code changes")), ...(files.some((file) => file.language === "ruby") && !rubyReady ? ["Prism parser unavailable; Ruby definitions and calls came from the regex engine."] : []), ...all.flatMap((collector) => collector.notes)])],
     rgCalls: budget.rgCalls,
     elapsedMs: budget.elapsedMs,
   };
 
-  const partial: Omit<IndexResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline"> = {
+  const partial: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline"> = {
     label,
     head,
     base,
@@ -613,7 +701,9 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
     dirty,
     roots: [...collectors.keys()],
     files,
+    fileHunks,
     anchors,
+    testGroups,
     skippedAnchors,
     nodes,
     edges,
@@ -629,11 +719,11 @@ export async function indexSparsity(options: IndexOptions): Promise<IndexResult>
   const { pack, inline, finalSections } = assemble(sections, packPath, options.inlineBudgetBytes, partial);
   await writeFile(packPath, pack, { encoding: "utf8", mode: 0o600 });
   const metricsPath = join(outputDir, "metrics.json");
-  const result: IndexResult = { ...partial, sections: finalSections, packPath, jsonPath, metricsPath, inline };
+  const result: ScanResult = { ...partial, sections: finalSections, packPath, jsonPath, metricsPath, inline };
   await writeFile(jsonPath, `${JSON.stringify({ ...result, inline: undefined }, null, 0)}\n`, { encoding: "utf8", mode: 0o600 });
   const byKind = (kind: FileKind) => files.filter((file) => file.kind === kind).length;
   await writeMetrics({
-    kind: "sparsity_index",
+    kind: "sparsity_scan",
     at: new Date().toISOString(),
     cwd,
     label,
@@ -664,7 +754,7 @@ function edgeLine(edge: SparsityEdge, byId: Map<string, SparsityNode>): string {
   return `  - :${edge.line} \`${edge.name}\` → [${label}] ${destination}${extras ? `  (${extras})` : ""}`;
 }
 
-async function renderSections(result: Omit<IndexResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, collectors: Collector[], anchorIds: Set<string>): Promise<Array<Omit<Section, "startLine" | "endLine" | "inline">>> {
+async function renderSections(result: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, collectors: Collector[], anchorIds: Set<string>): Promise<Array<Omit<Section, "startLine" | "endLine" | "inline">>> {
   const byId = new Map(result.nodes.map((node) => [node.id, node]));
   const collectorFor = (path: string) => collectors.find((collector) => collector.nodes.some((node) => node.path === path)) ?? collectors[0]!;
   const sections: Array<Omit<Section, "startLine" | "endLine" | "inline">> = [];
@@ -672,6 +762,34 @@ async function renderSections(result: Omit<IndexResult, "sections" | "packPath" 
     const bytes = Buffer.byteLength(body, "utf8");
     sections.push({ id, body, bytes, tokens: estimateTokens(bytes) });
   };
+
+  for (const file of result.fileHunks) {
+    const out: string[] = [`${file.id} ${file.path} [${file.kind}, ${file.status}]`];
+    for (const hunk of file.hunks) {
+      if (hunk.oldLines.length) {
+        const width = String(hunk.oldStart + hunk.oldLines.length).length;
+        out.push(`old lines ${hunk.oldStart}-${hunk.oldStart + hunk.oldLines.length - 1}:`);
+        hunk.oldLines.forEach((text, index) => out.push(`${String(hunk.oldStart + index).padStart(width)} -| ${text}`));
+      }
+      if (hunk.newLines.length) {
+        const width = String(hunk.newStart + hunk.newLines.length).length;
+        out.push(`new lines ${hunk.newStart}-${hunk.newStart + hunk.newLines.length - 1}:`);
+        hunk.newLines.forEach((text, index) => out.push(`${String(hunk.newStart + index).padStart(width)} +| ${text}`));
+      }
+    }
+    if (file.omittedLines) out.push(`… ${file.omittedLines} changed lines omitted after the 240-line file-hunk cap`);
+    push(`file:${file.id}`, out.join("\n"));
+  }
+
+  for (const group of result.testGroups) {
+    const out: string[] = [`${group.id} ${group.path}: ${group.entries.length} changed test definitions grouped after the first ${MAX_TEST_ANCHORS_PER_FILE} anchors.`];
+    for (const entry of group.entries) {
+      out.push("");
+      out.push(`${entry.symbol} ${group.path}:${entry.startLine}-${entry.endLine} fp ${entry.fingerprint}`);
+      out.push(entry.snippet);
+    }
+    push(`test-group:${group.id}`, out.join("\n"));
+  }
 
   for (const anchor of result.anchors) {
     const node = byId.get(anchor.id)!;
@@ -772,10 +890,10 @@ async function renderSections(result: Omit<IndexResult, "sections" | "packPath" 
   return sections;
 }
 
-function manifestText(result: Omit<IndexResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, sections: Section[], packPath: string): string {
+function manifestText(result: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, sections: Section[], packPath: string): string {
   const out: string[] = [];
   const byKind = (kind: FileKind) => result.files.filter((file) => file.kind === kind).length;
-  out.push(`SPARSITY INDEX ${result.label}${result.dirty ? " [dirty worktree]" : ""}`);
+  out.push(`SPARSITY SCAN ${result.label}${result.dirty ? " [dirty worktree]" : ""}`);
   if (result.checkoutHead !== result.head) out.push(`revision: changed files, anchors, snippets and line numbers are from the range head ${result.head.slice(0, 12)}; the checkout is at ${result.checkoutHead.slice(0, 12)}, which callers, tests and unchanged files reflect. Do not re-read the changed files at the head; the pack already did.`);
   out.push(`roots: ${result.roots.join(", ") || "none"}  depth ${result.coverage.depthReached}/${result.coverage.maxDepth}  vicinity ±${result.coverage.vicinity}`);
   for (const note of result.coverage.notes.filter((item) => /^Ruby index for |^Prism parser unavailable|^TypeScript program for /.test(item))) out.push(`index: ${note}`);
@@ -786,12 +904,25 @@ function manifestText(result: Omit<IndexResult, "sections" | "packPath" | "jsonP
     const anchorsHere = result.anchors.filter((anchor) => anchor.path === file.path).map((anchor) => anchor.id);
     const status = file.status[0]!.toUpperCase();
     const rename = file.oldPath && file.status === "renamed" ? ` (from ${file.oldPath})` : "";
-    out.push(`  ${status} ${file.path}${rename}  [${file.kind}${file.language ? `, ${file.language}` : ""}] +${file.additions} -${file.deletions}${anchorsHere.length ? `  anchors: ${anchorsHere.join(", ")}` : ""}`);
+    const hunk = result.fileHunks.find((item) => item.path === file.path);
+    out.push(`  ${status} ${file.path}${rename}  [${file.kind}${file.language ? `, ${file.language}` : ""}] +${file.additions} -${file.deletions}${anchorsHere.length ? `  anchors: ${anchorsHere.join(", ")}` : ""}${hunk ? `  changed hunk: file:${hunk.id}` : ""}`);
   }
   out.push("");
   out.push("ANCHORS (changed definitions)");
   for (const anchor of result.anchors) out.push(`  ${anchor.id} ${anchor.symbol} ${anchor.path}:${anchor.startLine}-${anchor.endLine}  callers ${anchor.callers.length}  tests ${anchor.tests.length}${anchor.boundary.tags.length ? `  [${anchor.boundary.tags.join(", ")}]` : ""}`);
   out.push(`  ${RANKING_EXPLANATION}`);
+  if (result.testGroups.length) {
+    out.push("");
+    out.push("GROUPED TESTS (read these file-level sections after the test anchors)");
+    for (const group of result.testGroups) out.push(`  test-group:${group.id} ${group.path}: ${group.entries.length} definitions`);
+  }
+  out.push("");
+  out.push("REVIEW INPUTS");
+  out.push(`  production anchors: ${result.anchors.filter((anchor) => !isTestPath(anchor.path)).map((anchor) => anchor.id).join(", ") || "none"}`);
+  out.push(`  test anchors: ${result.anchors.filter((anchor) => isTestPath(anchor.path)).map((anchor) => anchor.id).join(", ") || "none"}`);
+  out.push(`  grouped tests: ${result.testGroups.map((group) => `test-group:${group.id}`).join(", ") || "none"}`);
+  out.push(`  non-code changed hunks: ${result.fileHunks.map((file) => `file:${file.id}`).join(", ") || "none"}`);
+  out.push(`  closed gaps: ${result.coverage.unresolved || result.coverage.frontier.length || result.skippedAnchors.length ? "read recap" : "none from static coverage; judge runtime/dynamic contracts in the zones"}`);
   out.push("");
   out.push(`SECTIONS (full pack: ${packPath})`);
   for (const section of sections) out.push(`  ${section.id.padEnd(14)} lines ${String(section.startLine).padStart(5)}-${String(section.endLine).padEnd(5)} ~${String(section.tokens).padStart(5)} tok  ${section.inline ? "inline" : "spilled"}`);
@@ -800,7 +931,7 @@ function manifestText(result: Omit<IndexResult, "sections" | "packPath" | "jsonP
   return out.join("\n");
 }
 
-function assemble(rendered: Array<Omit<Section, "startLine" | "endLine" | "inline">>, packPath: string, inlineBudgetBytes: number, result: Omit<IndexResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">): { pack: string; inline: string; finalSections: Section[] } {
+function assemble(rendered: Array<Omit<Section, "startLine" | "endLine" | "inline">>, packPath: string, inlineBudgetBytes: number, result: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">): { pack: string; inline: string; finalSections: Section[] } {
   const order = ["manifest", ...rendered.map((section) => section.id)];
   const bodies = new Map(rendered.map((section) => [section.id, section.body]));
 
@@ -824,7 +955,7 @@ function assemble(rendered: Array<Omit<Section, "startLine" | "endLine" | "inlin
   sections = layout(manifestBody);
 
   let used = 0;
-  const inlineOrder = ["manifest", ...result.anchors.map((anchor) => `anchor:${anchor.id}`), "dangling", "depth1", "recap", "depth2"];
+  const inlineOrder = ["manifest", ...result.anchors.map((anchor) => `anchor:${anchor.id}`), ...result.fileHunks.map((file) => `file:${file.id}`), ...result.testGroups.map((group) => `test-group:${group.id}`), "dangling", "depth1", "recap", "depth2"];
   for (const id of inlineOrder) {
     const section = sections.find((item) => item.id === id);
     if (!section) continue;
