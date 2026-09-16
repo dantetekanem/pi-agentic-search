@@ -34,6 +34,7 @@ export interface SparsityNode {
   endLine: number;
   fingerprint: string;
   snippet: string;
+  vicinity?: string;
   depth: number;
 }
 
@@ -272,6 +273,29 @@ export function languageFor(path: string): Language | undefined {
   if (RUBY_EXTENSIONS.has(ext)) return "ruby";
   if (JS_EXTENSIONS.has(ext)) return "javascript";
   return undefined;
+}
+
+export function renderSurroundings(lines: string[], startLine: number, endLine: number, vicinity: number): string {
+  const aboveStart = Math.max(1, startLine - vicinity);
+  const aboveEnd = startLine - 1;
+  const belowStart = endLine + 1;
+  const belowEnd = Math.min(lines.length, endLine + vicinity);
+  const width = String(Math.max(belowEnd, endLine)).length;
+  const render = (n: number) => `${String(n).padStart(width)}  | ${lines[n - 1] ?? ""}`;
+  const out: string[] = [];
+  if (aboveEnd >= aboveStart) {
+    out.push(`vicinity above (${aboveStart}-${aboveEnd}${aboveStart > 1 ? `, ${aboveStart - 1} more lines before` : ", file start"}):`);
+    for (let n = aboveStart; n <= aboveEnd; n += 1) out.push(render(n));
+  } else {
+    out.push("vicinity above: the definition starts the file");
+  }
+  if (belowEnd >= belowStart) {
+    out.push(`vicinity below (${belowStart}-${belowEnd}${belowEnd < lines.length ? `, ${lines.length - belowEnd} more lines after` : ", file end"}):`);
+    for (let n = belowStart; n <= belowEnd; n += 1) out.push(render(n));
+  } else {
+    out.push("vicinity below: the definition ends the file");
+  }
+  return out.join("\n");
 }
 
 function escapeRegex(value: string): string {
@@ -948,6 +972,23 @@ export class Collector {
   async lineText(path: string, line: number): Promise<string> {
     const lines = await this.lines(path);
     return lines?.[line - 1]?.trim() ?? "";
+  }
+
+  async surroundings(node: Pick<SparsityNode, "path" | "startLine" | "endLine">): Promise<string> {
+    const lines = await this.lines(node.path);
+    if (!lines) return "";
+    return renderSurroundings(lines, node.startLine, node.endLine, this.options.vicinity);
+  }
+
+  async contextAround(path: string, line: number, radius: number): Promise<string> {
+    const lines = await this.lines(path);
+    if (!lines) return "";
+    const start = Math.max(1, line - radius);
+    const end = Math.min(lines.length, line + radius);
+    const width = String(end).length;
+    const out: string[] = [];
+    for (let n = start; n <= end; n += 1) out.push(`      ${String(n).padStart(width)} ${n === line ? ">" : " "}| ${lines[n - 1] ?? ""}`);
+    return out.join("\n");
   }
 
   get rootDisplay(): string {
@@ -1704,6 +1745,7 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
   const collector = new Collector({ ...options, capReferences: true }, root, { rubyReady, rubyIndex: rubyIndex && !rubyIndex.skipped ? rubyIndex : undefined, tsPrograms });
   const anchor = await collector.node(displaySearchRoot(options.cwd, absolute), line, 0, line);
   if (!anchor) throw new Error(`no definition found around ${path}:${line}`);
+  anchor.node.vicinity = await collector.surroundings(anchor.node);
 
   const queue: QueueItem[] = [
     { node: anchor.node, def: anchor.def, depth: 0, ancestry: [] },
@@ -1797,6 +1839,7 @@ export function formatSparsity(result: SparsityResult): string {
   out.push("");
   out.push(`ANCHOR ${anchor.id} ${anchor.symbol} [${anchor.kind}] ${anchor.path}:${anchor.startLine}-${anchor.endLine} fp ${anchor.fingerprint}`);
   out.push(anchor.snippet);
+  if (anchor.vicinity) out.push(anchor.vicinity);
 
   const outgoing = result.edges.filter((edge) => edge.relationship !== "called_by");
   const incoming = result.edges.filter((edge) => edge.relationship === "called_by");

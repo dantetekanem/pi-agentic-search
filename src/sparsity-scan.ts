@@ -11,6 +11,7 @@ import {
   isTestPath,
   jsDefinitionStart,
   languageFor,
+  renderSurroundings,
   type Definition,
   type Language,
   type QueueItem,
@@ -71,8 +72,9 @@ export interface FileHunkRecord {
   path: string;
   kind: "generated" | "other";
   status: ChangedFile["status"];
-  hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }>;
+  hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[]; vicinity: string }>;
   omittedLines: number;
+  parsed: boolean;
 }
 
 export interface TestGroupRecord {
@@ -91,8 +93,9 @@ export interface AnchorRecord {
   fingerprint: string;
   changedLines: number[];
   removed: Array<{ oldStart: number; lines: string[] }>;
+  vicinity: string;
   boundary: { score: number; tags: string[] };
-  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; test: boolean; changed: boolean; boundary: string[] }>;
+  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[] }>;
   tests: Array<{ id: string; symbol: string; path: string; line: number; text: string }>;
 }
 
@@ -152,6 +155,7 @@ export interface ScanResult {
 const GIT_TIMEOUT_MS = 20_000;
 const SEARCH_CONCURRENCY = 4;
 const MAX_TEST_ANCHORS_PER_FILE = 2;
+const CALLER_CONTEXT_LINES = 3;
 
 async function pool<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -558,10 +562,15 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       const newLines = newSlice.slice(0, remaining);
       remaining -= newLines.length;
       omittedLines += combined - oldLines.length - newLines.length;
-      if (oldLines.length || newLines.length) hunks.push({ oldStart: hunk.oldStart, oldLines, newStart: hunk.newStart, newLines });
+      const vicinity = newLines.length
+        ? renderSurroundings(current, hunk.newStart, hunk.newStart + newLines.length - 1, options.vicinity)
+        : oldLines.length
+          ? renderSurroundings(old, hunk.oldStart, hunk.oldStart + oldLines.length - 1, options.vicinity).replace(/^vicinity (above|below)/gm, "vicinity $1 (old file)")
+          : "";
+      if (oldLines.length || newLines.length) hunks.push({ oldStart: hunk.oldStart, oldLines, newStart: hunk.newStart, newLines, vicinity });
       if (remaining === 0) break;
     }
-    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind, status: file.status, hunks, omittedLines });
+    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind, status: file.status, hunks, omittedLines, parsed: false });
   }
 
   const removedFor = async (candidate: Candidate): Promise<AnchorRecord["removed"]> => {
@@ -616,7 +625,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     const callerRecords = [];
     for (const hit of callers) {
       const boundary = hit.test ? { score: 0, tags: [] } : boundarySignal(hit.node.path, hit.node.symbol);
-      callerRecords.push({ id: hit.node.id, symbol: hit.node.symbol, path: hit.node.path, line: hit.line, text: hit.text, test: hit.test, changed: anchorIds.has(hit.node.id), boundary: boundary.tags, score: boundary.score });
+      const context = hit.test ? "" : await candidate.collector.contextAround(hit.node.path, hit.line, CALLER_CONTEXT_LINES);
+      callerRecords.push({ id: hit.node.id, symbol: hit.node.symbol, path: hit.node.path, line: hit.line, text: hit.text, context, test: hit.test, changed: anchorIds.has(hit.node.id), boundary: boundary.tags, score: boundary.score });
     }
     callerRecords.sort((a, b) => Number(b.changed) - Number(a.changed) || b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
     const testRecords = [];
@@ -637,6 +647,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       fingerprint: candidate.node.fingerprint,
       changedLines: candidate.changedLines,
       removed: await removedFor(candidate),
+      vicinity: await candidate.collector.surroundings(candidate.node),
       boundary: candidate.boundary,
       callers: callerRecords.filter((record) => !record.test).map(({ score: _score, ...record }) => record),
       tests: testRecords,
@@ -765,6 +776,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
 
   for (const file of result.fileHunks) {
     const out: string[] = [`${file.id} ${file.path} [${file.kind}, ${file.status}]`];
+    if (!file.parsed) out.push(`no parser for this file: the hunks and their vicinity (±${result.coverage.vicinity} lines from the head file) are below; callers, tests and sibling definitions must be read by hand.`);
     for (const hunk of file.hunks) {
       if (hunk.oldLines.length) {
         const width = String(hunk.oldStart + hunk.oldLines.length).length;
@@ -776,6 +788,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
         out.push(`new lines ${hunk.newStart}-${hunk.newStart + hunk.newLines.length - 1}:`);
         hunk.newLines.forEach((text, index) => out.push(`${String(hunk.newStart + index).padStart(width)} +| ${text}`));
       }
+      if (hunk.vicinity) out.push(hunk.vicinity);
     }
     if (file.omittedLines) out.push(`… ${file.omittedLines} changed lines omitted after the 240-line file-hunk cap`);
     push(`file:${file.id}`, out.join("\n"));
@@ -797,6 +810,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     out.push(`${anchor.id} ${anchor.symbol} [${anchor.kind}] ${anchor.path}:${anchor.startLine}-${anchor.endLine} fp ${anchor.fingerprint}`);
     out.push(`changed lines (+): ${compressRanges(anchor.changedLines)}`);
     out.push(node.snippet);
+    if (anchor.vicinity) out.push(anchor.vicinity);
     for (const block of anchor.removed) {
       const width = String(block.oldStart + block.lines.length).length;
       out.push(`removed (old lines ${block.oldStart}-${block.oldStart + block.lines.length - 1}):`);
@@ -811,7 +825,10 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     }
     if (anchor.callers.length) {
       out.push(`callers (${anchor.callers.length}):`);
-      for (const caller of anchor.callers) out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
+      for (const caller of anchor.callers) {
+        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
+        if (caller.context) out.push(caller.context);
+      }
     } else {
       out.push("callers: none found in root (or name too common)");
     }

@@ -16,11 +16,11 @@ The search can also follow supported Ruby mixins and JavaScript/TypeScript impor
 
 The context tools collect definitions, calls, callers, and related tests for Ruby, JavaScript, and TypeScript.
 
-`sparsity_collect` takes a file and line number, finds the enclosing definition, and follows its calls up to the requested depth. The result includes source snippets, static callers, and calls it couldn't resolve.
+`sparsity_collect` takes a file and line number, finds the enclosing definition, and follows its calls up to the requested depth. The result includes source snippets, the file lines above and below the definition (`vicinity above`/`vicinity below`, as many as `vicinity_check`), static callers, and calls it couldn't resolve.
 
 `sparsity_scan` collects context for a whole diff, including removed definitions that still have callers. It accepts commits, Git ranges, or uncommitted changes with untracked files.
 
-A manifest lists the pack's contents and points to sections in `pack.md`. The agent can read the section it needs without loading the whole pack into the conversation. Schemas, configuration, and other files include their changed hunks without call expansion. Additional test definitions are grouped by file.
+A manifest lists the pack's contents and points to sections in `pack.md`. The agent can read the section it needs without loading the whole pack into the conversation. Each changed definition comes with its vicinity (the file lines above and below it) and three lines around every caller's call site. Schemas, configuration, and files without a parser include their changed hunks and the surrounding file lines without call expansion, with a note that callers, tests and sibling definitions must be read by hand. Additional test definitions are grouped by file.
 
 ## Installation
 

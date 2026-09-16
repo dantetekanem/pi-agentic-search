@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2 (2026-09-16)
+
+### Added
+
+- Every `sparsity_scan` anchor and the `sparsity_collect` anchor now end with `vicinity above` and `vicinity below`: the same number of file lines as `vicinity_check` outside the definition, with the count of lines that remain before and after. A new definition is read in the company of its neighbors instead of alone.
+- Each production caller in a `sparsity_scan` anchor section shows three lines around the call site, the calling line marked `>`.
+- Files without a parser (any language other than Ruby and JS/TS) keep their `file:` hunk sections and now carry `vicinity_check` head-file lines around each hunk, plus a note that callers, tests and sibling definitions must be read by hand. Deleted-only hunks take their vicinity from the old file.
+
+### Changed
+
+- `AnchorRecord` gains `vicinity`; caller records gain `context`; `FileHunkRecord` hunks gain `vicinity` and the record gains `parsed`. `SparsityNode.vicinity` is optional and set on anchors only.
+
 ## 0.5.1 (2026-09-15)
 
 ### Changed
