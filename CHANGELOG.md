@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Document Code Mode setup, tool discovery, activation limits and text return values in the README, tool descriptions and built-in agent guidance.
+
 ## 0.5.2 (2026-09-16)
 
 ### Added

@@ -44,6 +44,34 @@ Pi can call these tools during coding work. You can also ask for one by name:
 
 Pi can collect the diff with `diff: "worktree"`, read the relevant sections, and use `sparsity_collect` for a closer look at a definition. When starting from a name rather than a diff, `agentic_search` finds candidates first.
 
+### Code Mode
+
+All three tools support Pi's Code Mode with the same arguments as direct calls. They are callable while active in both `codemode.mode: "on"` and `"only"`; `"only"` hides their direct declarations without disabling script calls.
+
+The extension does not enable `codemode` itself. If needed, add it in Pi's user or project settings:
+
+```json
+{
+  "defaultTools": ["+codemode"]
+}
+```
+
+An explicit `--tools` allowlist must include `codemode` and the search tools you want, alongside any other tools you need. Tool exclusions can disable them.
+
+Inside a `codemode` script (replace the example query and target with your own):
+
+```js
+text(await tools.agentic_search({ query: "calculateTotal", intent: "definition" }));
+text(await tools.sparsity_collect({ target: "src/cart.ts:12" }));
+text(await tools.sparsity_scan({ diff: "worktree" }));
+```
+
+Each awaited call returns a text string, not structured JSON. Read coverage notes and any context-pack paths in that text.
+
+Find tools through `ALL_TOOLS` or `await searchTools("sparsity")`; inspect a tool's arguments with `await describeTool("sparsity_collect")`. A tool omitted from Code Mode's inline declarations can still be discovered and called.
+
+The extension's built-in agent guidance comes from its tool registrations; it does not ship a separate skill.
+
 ## Scope and limitations
 
 Depth, file, node, and time limits bound each search or traversal. When a tool stops early, it reports unfinished scopes and unresolved relationships so the agent knows where to follow up. The collector reports setup time and total wall time separately. Its traversal budget doesn't interrupt initial parser, index, or compiler setup.

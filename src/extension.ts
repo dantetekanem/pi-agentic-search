@@ -214,10 +214,11 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
   registerSparsityTools(pi);
   pi.registerTool({
     name: "agentic_search", label: "Agentic Search",
-    description: `Preferred ranked search for files, classes, scopes, methods, and call sites. Use intent for definition, references, tests, or file lookup; context disambiguates ranking. Set expand_related true for Ruby/Rails mixins or JS/TS imports, owning packages, and imported packages. Check coverage before treating a miss as decisive. Output is limited to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
+    description: `Preferred ranked search for files, classes, scopes, methods, and call sites. Use intent for definition, references, tests, or file lookup; context disambiguates ranking. Set expand_related true for Ruby/Rails mixins or JS/TS imports, owning packages, and imported packages. Check coverage before treating a miss as decisive. Output is limited to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. Code Mode: await tools.agentic_search(args) returns a text string, not structured JSON.`,
     promptSnippet: "Preferred ranked search for locating files, classes, scopes, methods, and call sites. Use context for natural-language disambiguation, intent for the requested evidence, and expand_related for module relationships. Inspect reported unfinished scopes when coverage is partial.",
     promptGuidelines: [
       "Prefer agentic_search over grep for locating files, classes, scopes, methods, and call sites.",
+      "In Code Mode, call await tools.agentic_search(args) with the same arguments as a direct call and read the returned text. Use searchTools or describeTool to discover callable tools and their arguments even when inline declarations are omitted.",
       "For agentic_search, keep query as code syntax and context as a domain hint; for example query remaining_value with context actual goal progress.",
       "For Rails scopes in a named file, use agentic_search query scope\\s+: and path event_occurrence.rb, then read the target.",
       "For Rails questions such as 'how many scopes does User have', enable agentic_search expand_related true for concerns and mixins.",
