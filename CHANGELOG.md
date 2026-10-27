@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 (2026-10-26)
+
+### Fixed
+
+- Clarify the skill's package-relative `.mjs` fallback when the command is not on `PATH`, including missing-build handling without compiling or installing software.
+
 ## 0.7.0 (2026-10-26)
 
 ### Added

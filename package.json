@@ -1,6 +1,6 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Ranked code search and diff context packs for coding agents, as a CLI and Pi tools",
   "bin": { "agentic-search": "./bin/agentic-search.mjs" },
   "engines": { "node": ">=22" },
