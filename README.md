@@ -1,6 +1,6 @@
 # pi-agentic-search
 
-`pi-agentic-search` is a Pi extension for finding code with fewer tool round-trips.
+`pi-agentic-search` finds code with fewer tool round-trips. Use its CLI from any coding harness with shell access, or its native tools in Pi.
 
 I built it to avoid the repeated searches and file reads an agent goes through before reaching the right place in a codebase. It ranks search results and collects related code in one call, so the agent doesn't have to fetch each file separately.
 
@@ -24,7 +24,20 @@ A manifest lists the pack's contents and points to sections in `pack.md`. The ag
 
 ## Installation
 
-You need Pi and `rg` ([ripgrep](https://github.com/BurntSushi/ripgrep)) on your `PATH`. Diff context also uses Git. The package includes its Ruby parser and TypeScript dependency.
+You need Node.js 22+ and `rg` ([ripgrep](https://github.com/BurntSushi/ripgrep)) on your `PATH`. Diff context also uses Git. The package includes its Ruby parser and TypeScript dependency. The CLI does not need Pi or a TypeScript loader.
+
+### CLI and other harnesses
+
+```bash
+pnpm add -g pi-agentic-search
+agentic-search --help
+```
+
+From a source checkout with dependencies already present, run the `build` script, then `node bin/agentic-search.mjs --help`. Published packages include the compiled CLI.
+
+The portable [skill](skills/agentic-search/SKILL.md) explains when to search, collect or scan without listing every option. Copy its `agentic-search` directory into a skill location supported by your harness, or point the harness at the file as instructions. Installation does not edit harness configuration.
+
+### Pi
 
 ```bash
 pi install npm:pi-agentic-search
@@ -37,6 +50,26 @@ pi -e npm:pi-agentic-search
 ```
 
 ## Usage
+
+### CLI
+
+```bash
+agentic-search search 'remaining_value' --intent definition --context 'actual goal progress'
+agentic-search search 'calculateTotal' --path src/cart.ts --expand-related
+agentic-search collect app/models/goal.rb:42 --max-depth 3
+agentic-search scan --diff main..HEAD
+agentic-search scan --diff worktree --output-dir /tmp/review-context
+```
+
+Run in the repository or add `--cwd /path/to/repo` after the subcommand. Use `search --help`, `collect --help` or `scan --help` for all options. Numeric CLI options reject values outside their documented limits. `scan --anchor path:line` accepts repeated anchors instead of `--diff`.
+
+Text is the default. `--json` writes one `{text, details}` object to stdout, including coverage and pack paths. JSON is not truncated; text is capped at 2,000 lines or 50 KiB, with overflow saved to a reported temporary file. Diagnostics go to stderr. Ruby parsing can emit Node's WASI warning there.
+
+Exit codes: `0` for a result, including a complete search with no matches; `1` for execution failure; `2` for invalid arguments; `130` for interruption. A successful exit can still contain partial coverage or unresolved calls. Inspect the result before drawing conclusions.
+
+Scan packs default to a fresh system temporary directory. A relative `--output-dir` resolves against the selected repository. The CLI builds its Ruby index in temporary storage and removes that index when the command finishes. It does not use Pi's metrics log or persistent cache; Pi keeps its existing storage locations. Use a dedicated output directory: a scan writes `pack.md`, `pack.json` and `metrics.json` there. These files contain source and remain until you remove them.
+
+### Pi tools
 
 Pi can call these tools during coding work. You can also ask for one by name:
 
@@ -70,7 +103,7 @@ Each awaited call returns a text string, not structured JSON. Read coverage note
 
 Find tools through `ALL_TOOLS` or `await searchTools("sparsity")`; inspect a tool's arguments with `await describeTool("sparsity_collect")`. A tool omitted from Code Mode's inline declarations can still be discovered and called.
 
-The extension's built-in agent guidance comes from its tool registrations; it does not ship a separate skill.
+Pi's built-in tool guidance comes from its registrations. The package also ships the portable skill; it prefers native tools when they are available.
 
 ## Scope and limitations
 
@@ -134,6 +167,8 @@ npm test
 npm run smoke
 npm run benchmark -- --samples 15 --check --output /tmp/search-benchmark.json
 ```
+
+The `build` script compiles the standalone CLI. `prepack` runs it before packaging. The `test:cli` script builds and checks the CLI against Pi results, argument errors, and execution without Pi packages. The regular test script also builds before running tests.
 
 The smoke command covers search, call cycles, committed-range context, the language adapters, cached Ruby indexing, and boundary ranking. Write new benchmark runs to a separate output file.
 

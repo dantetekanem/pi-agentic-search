@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "rewriteRelativeImportExtensions": true,
+    "noEmit": false
+  },
+  "include": [
+    "src/cli.ts"
+  ],
+  "exclude": [
+    "test"
+  ]
+}

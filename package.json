@@ -1,7 +1,9 @@
 {
   "name": "pi-agentic-search",
-  "version": "0.5.2",
-  "description": "Pi extension for agent-oriented ranked code search and one-call diff context packs",
+  "version": "0.7.0",
+  "description": "Ranked code search and diff context packs for coding agents, as a CLI and Pi tools",
+  "bin": { "agentic-search": "./bin/agentic-search.mjs" },
+  "engines": { "node": ">=22" },
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/dantetekanem/pi-agentic-search#readme",
@@ -26,16 +28,25 @@
     "SECURITY.md",
     "docs/access.md",
     "index.ts",
-    "src"
+    "src",
+    "bin",
+    "dist",
+    "tsconfig.json",
+    "tsconfig.cli.json",
+    "skills"
   ],
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "skills": ["./skills"]
   },
   "scripts": {
+    "build": "tsc -p tsconfig.cli.json",
+    "prepack": "tsc -p tsconfig.cli.json",
+    "test:cli": "tsc -p tsconfig.cli.json && node --import tsx --test test/cli.test.ts",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "tsc -p tsconfig.cli.json && node --import tsx --test test/*.test.ts",
     "smoke": "tsx test/smoke.ts && tsx test/sparsity.ts && tsx test/sparsity-scan.ts && tsx test/ruby-adapter.ts && tsx test/ruby-index.ts && tsx test/ts-adapter.ts && tsx test/rank.ts",
     "benchmark": "node --import tsx test/benchmark.ts",
     "test:benchmark": "node --import tsx test/benchmark-metrics.test.ts"
@@ -45,6 +56,12 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
   },
   "dependencies": {
     "@ruby/prism": "^1.9.0",

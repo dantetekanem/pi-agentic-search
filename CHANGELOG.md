@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-10-26)
+
+### Added
+
+- Standalone `agentic-search search|collect|scan` CLI with text or JSON output, per-command help and a portable skill. Pi tools and the CLI share the search and context implementation.
+- Compiled CLI packaging with optional Pi peer dependencies, so other harnesses can use the command without installing Pi.
 
 ### Changed
 

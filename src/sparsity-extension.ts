@@ -1,14 +1,15 @@
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir, truncateHead, type TruncationResult } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { summarizeMetrics } from "./metrics.ts";
 import { clampInt } from "./shared.ts";
-import { collectSparsity, formatSparsity } from "./sparsity.ts";
-import { packId, scanSparsity } from "./sparsity-scan.ts";
+import { formatSparsity } from "./sparsity.ts";
+import { packId } from "./sparsity-scan.ts";
+import { collectContext, scanContext, repositoryCwd } from "./context.ts";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
@@ -46,14 +47,6 @@ async function writeFullOutputIfTruncated(output: string, prefix: string, detail
   details.truncation = truncation;
   details.fullOutputPath = fullOutputPath;
   return `${truncation.content}\n\n[Output truncated. Full output saved to ${fullOutputPath}]`;
-}
-
-async function repositoryCwd(requested: unknown, fallback: string): Promise<string> {
-  if (typeof requested !== "string" || !requested.trim()) return fallback;
-  const resolved = resolve(requested.trim().replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
-  const stats = await stat(resolved).catch(() => undefined);
-  if (!stats?.isDirectory()) throw new Error(`cwd is not a directory: ${requested}`);
-  return resolved;
 }
 
 const SparsityParams = Type.Object({
@@ -100,22 +93,7 @@ export function registerSparsityTools(pi: ExtensionAPI): void {
       const outputDir = typeof params.output_dir === "string" && params.output_dir.trim()
         ? params.output_dir.trim()
         : join(getAgentDir(), "sparsity", packId(cwd, diff, String(Date.now())));
-      const result = await scanSparsity({
-        cwd,
-        diff,
-        anchors: Array.isArray(params.anchors) && params.anchors.length ? params.anchors.map(String) : undefined,
-        maxDepth: clampInt(params.max_depth, 2, 1, 4),
-        vicinity: clampInt(params.vicinity_check, 20, 5, 60),
-        maxNodes: clampInt(params.max_nodes, 120, 2, 300),
-        maxAnchors: clampInt(params.max_anchors, 60, 1, 200),
-        root: typeof params.root === "string" && params.root.trim() ? params.root.trim() : undefined,
-        budgetMs: clampInt(params.budget_ms, 30_000, 2_000, 120_000),
-        outputDir,
-        inlineBudgetBytes: clampInt(params.inline_budget_kb, 40, 4, 48) * 1024,
-        indexCacheDir: indexCacheDir(),
-        metricsLog: metricsLogPath(),
-        signal,
-      });
+      const result = await scanContext(params, cwd, outputDir, { indexCacheDir: indexCacheDir(), metricsLog: metricsLogPath(), signal });
       const { inline, ...details } = result;
       const text = await writeFullOutputIfTruncated(inline, "pi-sparsity-scan-", details as unknown as { truncation?: TruncationResult; fullOutputPath?: string });
       return { content: [{ type: "text", text }], details: { ...details, nodes: undefined, edges: undefined, sections: details.sections.map((section) => ({ ...section, body: undefined })) } };
@@ -137,19 +115,7 @@ export function registerSparsityTools(pi: ExtensionAPI): void {
     parameters: SparsityParams,
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const result = await collectSparsity({
-        cwd: await repositoryCwd(params.cwd, ctx.cwd),
-        target: params.target,
-        maxDepth: clampInt(params.max_depth, 3, 1, 4),
-        vicinity: clampInt(params.vicinity_check, 20, 5, 60),
-        maxNodes: clampInt(params.max_nodes, 24, 2, 60),
-        root: typeof params.root === "string" && params.root.trim() ? params.root.trim() : undefined,
-        callers: params.callers ?? true,
-        budgetMs: clampInt(params.budget_ms, 20_000, 2_000, 60_000),
-        indexCacheDir: indexCacheDir(),
-        metricsLog: metricsLogPath(),
-        signal,
-      });
+      const result = await collectContext(params, await repositoryCwd(params.cwd, ctx.cwd), { indexCacheDir: indexCacheDir(), metricsLog: metricsLogPath(), signal });
       const details: Record<string, unknown> = { ...result };
       const text = await writeFullOutputIfTruncated(formatSparsity(result), "pi-sparsity-collect-", details as { truncation?: TruncationResult; fullOutputPath?: string });
       return { content: [{ type: "text", text }], details };
