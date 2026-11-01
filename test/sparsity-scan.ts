@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import agenticSearchExtension, { parseUnifiedDiff, scanSparsity } from "../index.ts";
@@ -345,6 +345,107 @@ try {
   assert.ok(!detached.inline.includes("toUpperCase") || detached.inline.includes("team.id.toUpperCase()"), "TypeScript anchors come from the head content too");
 } finally {
   run(["checkout", "-q", "main"]);
+}
+
+// Strict scans use a separate clean repository and keep all artifacts outside it.
+const strictRoot = await mkdtemp(join(tmpdir(), "sparsity-strict-"));
+const strictCwd = join(strictRoot, "repo");
+await mkdir(strictCwd);
+const strictGit = (args: string[]) => execFileSync("git", ["--no-optional-locks", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: strictCwd, encoding: "utf8" });
+const strictOptions = { ...defaults, cwd: strictCwd, strictRevision: true, diff: "HEAD~1..HEAD", outputDir: join(strictRoot, "pack") };
+const rejected = async (pattern: RegExp, overrides = {}) => {
+  const outputDir = join(strictRoot, "rejected");
+  const before = strictGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const index = await readFile(join(strictCwd, ".git/index"));
+  const head = strictGit(["rev-parse", "HEAD"]);
+  await assert.rejects(scanSparsity({ ...strictOptions, outputDir, ...overrides }), pattern);
+  assert.equal(strictGit(["rev-parse", "HEAD"]), head);
+  assert.equal(strictGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]), before);
+  assert.deepEqual(await readFile(join(strictCwd, ".git/index")), index, "guard leaves the index untouched");
+  await assert.rejects(stat(outputDir), { code: "ENOENT" });
+};
+try {
+  strictGit(["init", "-q"]);
+  await writeFile(join(strictCwd, ".gitignore"), "node_modules/\nignored-output/\n");
+  await writeFile(join(strictCwd, "cart.ts"), "export function total() { return 1; }\n");
+  await writeFile(join(strictCwd, "caller.ts"), 'import { total } from "./cart";\nexport function caller() {\n  return total();\n}\n');
+  await writeFile(join(strictCwd, "cart.test.ts"), 'import { total } from "./cart";\nexport function check() {\n  return total();\n}\n');
+  strictGit(["add", "."]);
+  strictGit(["commit", "-qm", "base"]);
+  const base = strictGit(["rev-parse", "HEAD"]).trim();
+  await writeFile(join(strictCwd, "cart.ts"), "export function total() { return 2; }\n");
+  strictGit(["commit", "-qam", "change"]);
+  const head = strictGit(["rev-parse", "HEAD"]).trim();
+  await writeFile(join(strictCwd, "caller.ts"), "export function laterCaller() { return 3; }\n");
+  await writeFile(join(strictCwd, "cart.test.ts"), "export function laterCheck() { return 3; }\n");
+  strictGit(["commit", "-qam", "later callers and tests"]);
+  const range = `${base}..${head}`;
+  await rejected(/strict revision: checkout HEAD .* differs from requested head .*clean checkout/s, { diff: range });
+  const permissive = await scanSparsity({ ...strictOptions, diff: range, strictRevision: false });
+  assert.match(permissive.inline, /callers, tests and unchanged files reflect the checkout/);
+  assert.equal(permissive.anchors.find((anchor) => anchor.symbol === "total")?.callers.length, 0);
+  strictGit(["checkout", "-q", head]);
+  await mkdir(join(strictCwd, "node_modules"));
+  await writeFile(join(strictCwd, "node_modules/ignored.ts"), "export const ignored = true;\n");
+  strictGit(["tag", "-a", "review-head", "-m", "annotated head"]);
+  for (const diff of [range, `${base}...${head}`, "review-head"]) {
+    const clean = await scanSparsity({ ...strictOptions, diff });
+    assert.equal(clean.head, head);
+    assert.ok(clean.anchors.find((anchor) => anchor.symbol === "total")?.callers.some((caller) => caller.path === "caller.ts"));
+    assert.ok(clean.anchors.find((anchor) => anchor.symbol === "total")?.tests.some((test) => test.path === "cart.test.ts"));
+    assert.match(await readFile(clean.packPath, "utf8"), /total/);
+    assert.equal(strictGit(["status", "--porcelain"]), "");
+  }
+  await rejected(/committed diff.*anchors|anchors.*committed diff/, { anchors: ["cart.ts:1"] });
+  await rejected(/committed diff/, { diff: "worktree" });
+  await rejected(/committed diff/, { diff: "" });
+  await writeFile(join(strictCwd, "caller.ts"), "export const dirty = true;\n");
+  await rejected(/tracked or untracked changes.*caller\.ts/s);
+  strictGit(["add", "caller.ts"]);
+  await rejected(/tracked or untracked changes.*caller\.ts/s);
+  strictGit(["restore", "--staged", "--worktree", "caller.ts"]);
+  await rm(join(strictCwd, "cart.test.ts"));
+  await rejected(/tracked or untracked changes.*cart\.test\.ts/s);
+  strictGit(["restore", "cart.test.ts"]);
+  await writeFile(join(strictCwd, "new\ncaller.ts"), "export const untracked = true;\n");
+  await rejected(/tracked or untracked changes/);
+  await rm(join(strictCwd, "new\ncaller.ts"));
+  for (const flag of ["skip-worktree", "assume-unchanged"]) {
+    strictGit(["update-index", `--${flag}`, "caller.ts"]);
+    await rejected(/skip-worktree|assume-unchanged/);
+    strictGit(["update-index", `--no-${flag}`, "caller.ts"]);
+  }
+  strictGit(["config", "core.sparseCheckout", "true"]);
+  await rejected(/sparse checkout/);
+  strictGit(["config", "core.sparseCheckout", "false"]);
+  strictGit(["update-index", "--add", "--cacheinfo", `160000,${head},submodule`]);
+  strictGit(["commit", "-qm", "gitlink"]);
+  await rejected(/submodules/);
+  strictGit(["checkout", "-q", head]);
+  for (const outputDir of [join(strictCwd, "new-output"), join(strictCwd, "ignored-output")]) {
+    await rejected(/output.*outside the repository/, { outputDir });
+    await assert.rejects(stat(outputDir), { code: "ENOENT" });
+  }
+  await symlink(strictCwd, join(strictRoot, "alias"), "dir");
+  await rejected(/output.*outside the repository/, { outputDir: join(strictRoot, "alias/new-output") });
+  await rejected(/index cache.*outside the repository/, { indexCacheDir: join(strictCwd, "cache") });
+  await rejected(/metrics log.*outside the repository/, { metricsLog: join(strictCwd, "metrics.jsonl") });
+  await mkdir(join(strictCwd, "nested"));
+  await writeFile(join(strictCwd, "untracked.json"), "{}\n");
+  await rejected(/tracked or untracked changes.*untracked\.json/, { cwd: join(strictCwd, "nested"), root: "." });
+  await rm(join(strictCwd, "untracked.json"));
+  const processCwd = process.cwd();
+  try {
+    process.chdir(join(strictCwd, "nested"));
+    await rejected(/index cache.*outside the repository/, { indexCacheDir: "../cache" });
+    await rejected(/metrics log.*outside the repository/, { metricsLog: "../metrics.jsonl" });
+  } finally {
+    process.chdir(processCwd);
+  }
+  await symlink(join(strictCwd, "cart.ts"), join(strictOptions.outputDir, "linked.json"));
+  await rejected(/metrics log.*outside the repository/, { metricsLog: join(strictOptions.outputDir, "linked.json") });
+} finally {
+  await rm(strictRoot, { recursive: true, force: true });
 }
 
 // Registration

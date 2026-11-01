@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -89,12 +89,52 @@ test("CLI scan writes a readable pack and preserves Pi anchors", () => fixture(a
   assert.ok(anchored.details.anchors.some((anchor) => anchor.symbol === "ruby_total"));
 }));
 
+test("strict CLI and Pi scans reject mixed revisions before writing packs", () => fixture(async (cwd) => {
+  const output = await mkdtemp(join(tmpdir(), "strict-cli-packs-"));
+  const git = (args: string[]) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd, encoding: "utf8" });
+  try {
+    git(["add", "."]);
+    git(["commit", "-qm", "source"]);
+    const head = git(["rev-parse", "HEAD"]).trim();
+    const args = ["scan", "--diff", head, "--strict-revision", "--output-dir", join(output, "cli")];
+    const actual = json<ScanResult>(cwd, args);
+    const expected = await pi("sparsity_scan", cwd, { diff: head, strict_revision: true, output_dir: join(output, "pi") });
+    assert.deepEqual(actual.details.anchors, JSON.parse(JSON.stringify((expected.details as ScanResult).anchors)));
+    assert.equal(git(["status", "--porcelain"]), "");
+    const rejectedDir = join(output, "rejected");
+    for (const path of ["cart.ts", "untracked.ts"]) {
+      const original = path === "cart.ts" ? await readFile(join(cwd, path), "utf8") : undefined;
+      await writeFile(join(cwd, path), "export const dirty = true;\n");
+      const dirty = cli(cwd, [...args.slice(0, -1), rejectedDir]);
+      assert.equal(dirty.status, 1, dirty.stderr);
+      assert.match(dirty.stderr, /tracked or untracked changes/);
+      await assert.rejects(stat(rejectedDir), { code: "ENOENT" });
+      assert.equal(await readFile(join(cwd, path), "utf8"), "export const dirty = true;\n");
+      if (original) await writeFile(join(cwd, path), original);
+      else await rm(join(cwd, path));
+    }
+    await writeFile(join(cwd, "cart.ts"), "export const later = true;\n");
+    git(["commit", "-qam", "later"]);
+    const result = cli(cwd, [...args.slice(0, -1), rejectedDir]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /strict revision: checkout HEAD .* differs from requested head .*clean checkout/s);
+    await assert.rejects(stat(rejectedDir), { code: "ENOENT" });
+    await assert.rejects(pi("sparsity_scan", cwd, { diff: head, strict_revision: true, output_dir: rejectedDir }), /differs from requested head/);
+    await assert.rejects(stat(rejectedDir), { code: "ENOENT" });
+    assert.match(json<ScanResult>(cwd, ["scan", "--diff", head, "--output-dir", join(output, "default")]).text, /reflect the checkout/);
+  } finally { await rm(output, { recursive: true, force: true }); }
+}));
+
 test("CLI rejects invalid arguments before executing", () => fixture(async (cwd) => {
   for (const args of [
     ["unknown"], ["search"], ["collect"], ["scan", "extra"],
     ["search", "total", "--unknown"], ["search", "total", "--intent", "wrong"],
     ["collect", "cart.ts:1", "--max-depth", "NaN"], ["collect", "cart.ts:1", "--max-depth", "0"],
     ["scan", "--diff", "worktree", "--anchor", "cart.ts:1"],
+    ["scan", "--strict-revision"], ["scan", "--strict-revision", "--diff", "worktree"],
+    ["scan", "--strict-revision", "--diff", " "], ["scan", "--strict-revision", "--anchor", "cart.ts:1"],
+    ["scan", "--strict-revision=false"],
   ]) {
     const result = cli(cwd, args);
     assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);

@@ -47,6 +47,7 @@ const commands: Record<string, { usage: string; options: Record<string, Option> 
   scan: { usage: "scan [--diff <worktree|commit|range>]", options: {
     ...contextOptions,
     diff: { type: "string", description: "Git diff target (default: worktree, including untracked files)" },
+    "strict-revision": { type: "boolean", description: "Require a clean, full checkout at the committed diff head; outputs outside the repository" },
     anchor: { type: "string", multiple: true, description: "path:line instead of a diff; repeat for multiple anchors" },
     "max-depth": numberOption("Call hops", 2, 1, 4),
     "max-nodes": numberOption("Expanded definitions", 120, 2, 300),
@@ -127,6 +128,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const intent = string("intent");
     if (intent !== undefined && !["definition", "references", "tests", "file", "auto"].includes(intent)) throw new UsageError(`Invalid intent: ${intent}`);
     if (values.diff !== undefined && values.anchor !== undefined) throw new UsageError("Use --diff or --anchor, not both");
+    if (values["strict-revision"] && (values.anchor !== undefined || !string("diff")?.trim() || string("diff")?.trim() === "worktree")) {
+      throw new UsageError("--strict-revision requires --diff <commit|range>, not worktree or --anchor");
+    }
     const cwd = await repositoryCwd(string("cwd"), process.cwd());
     if (command !== "search") indexCacheDir = await mkdtemp(join(tmpdir(), "agentic-search-index-"));
     const runtime = { indexCacheDir, signal: controller.signal };
@@ -162,6 +166,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const { inline, ...details } = await scanContext({
         ...context,
         diff: string("diff"),
+        strict_revision: values["strict-revision"] === true,
         anchors: Array.isArray(values.anchor) ? values.anchor.filter((value): value is string => typeof value === "string") : undefined,
         max_anchors: number("max-anchors"),
         inline_budget_kb: number("inline-budget-kb"),
