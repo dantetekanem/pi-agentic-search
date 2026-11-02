@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import agenticSearchExtension, { parseUnifiedDiff, scanSparsity } from "../index.ts";
@@ -354,15 +354,15 @@ await mkdir(strictCwd);
 const strictGit = (args: string[]) => execFileSync("git", ["--no-optional-locks", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: strictCwd, encoding: "utf8" });
 const strictOptions = { ...defaults, cwd: strictCwd, strictRevision: true, diff: "HEAD~1..HEAD", outputDir: join(strictRoot, "pack") };
 const rejected = async (pattern: RegExp, overrides = {}) => {
-  const outputDir = join(strictRoot, "rejected");
+  const options = { ...strictOptions, outputDir: join(strictRoot, "rejected"), ...overrides };
   const before = strictGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   const index = await readFile(join(strictCwd, ".git/index"));
   const head = strictGit(["rev-parse", "HEAD"]);
-  await assert.rejects(scanSparsity({ ...strictOptions, outputDir, ...overrides }), pattern);
+  await assert.rejects(scanSparsity(options), pattern);
   assert.equal(strictGit(["rev-parse", "HEAD"]), head);
   assert.equal(strictGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]), before);
   assert.deepEqual(await readFile(join(strictCwd, ".git/index")), index, "guard leaves the index untouched");
-  await assert.rejects(stat(outputDir), { code: "ENOENT" });
+  await assert.rejects(stat(options.outputDir), { code: "ENOENT" });
 };
 try {
   strictGit(["init", "-q"]);
@@ -442,6 +442,32 @@ try {
   } finally {
     process.chdir(processCwd);
   }
+
+  // A cold Ruby cache must not follow an existing temp-file symlink into the checkout.
+  const rubySource = "class Cart\n  def total\n    2\n  end\nend\n";
+  await writeFile(join(strictCwd, "cart.rb"), rubySource);
+  strictGit(["add", "cart.rb"]);
+  strictGit(["commit", "-qm", "Ruby source"]);
+  const indexCacheDir = join(strictRoot, "ruby-cache");
+  const rubyScan = await scanSparsity({ ...strictOptions, indexCacheDir });
+  assert.ok(rubyScan.anchors.some((anchor) => anchor.path === "cart.rb"));
+  const cacheFiles = await readdir(indexCacheDir);
+  assert.equal(cacheFiles.length, 1, "the production Ruby scan built its cache");
+  const cachePath = join(indexCacheDir, cacheFiles[0]!);
+
+  await rm(cachePath);
+  const cacheTemp = `${cachePath}.${process.pid}.tmp`;
+  await symlink(join(strictCwd, "cart.rb"), cacheTemp);
+
+  await rejected(/EEXIST/, { indexCacheDir });
+  assert.equal(await readFile(join(strictCwd, "cart.rb"), "utf8"), rubySource);
+
+  await rm(cacheTemp);
+  const rebuilt = await scanSparsity({ ...strictOptions, indexCacheDir });
+  assert.ok(rebuilt.anchors.some((anchor) => anchor.path === "cart.rb"));
+  assert.ok((await stat(cachePath)).isFile(), "a fresh cache can still be published");
+  assert.equal(strictGit(["status", "--porcelain"]), "");
+
   await symlink(join(strictCwd, "cart.ts"), join(strictOptions.outputDir, "linked.json"));
   await rejected(/metrics log.*outside the repository/, { metricsLog: join(strictOptions.outputDir, "linked.json") });
 } finally {

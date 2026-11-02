@@ -343,7 +343,7 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
     if (treeHash !== "worktree" && !options.signal?.aborted) {
       await mkdir(options.cacheDir, { recursive: true, mode: 0o700 });
       const temp = `${cachePath}.${process.pid}.tmp`;
-      await writeFile(temp, serialize(root, treeHash, base), { mode: 0o600 });
+      await writeFile(temp, serialize(root, treeHash, base), { mode: 0o600, flag: "wx" });
       await rename(temp, cachePath);
     }
   }
