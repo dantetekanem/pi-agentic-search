@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import agenticSearchExtension, { formatSearchResults, parseRipgrepJsonLines, rankFileGroups } from "../index.ts";
@@ -53,8 +53,44 @@ agenticSearchExtension({
 assert.deepEqual(registeredTools, ["sparsity_scan", "sparsity_collect", "agentic_search"]);
 assert.deepEqual(registeredCommands, ["agentic-search-stats", "agentic-search-info"]);
 assert.ok(searchTool, "agentic_search tool should be registered");
+assert.equal(searchTool.parameters.properties.cwd?.type, "string");
+assert.ok(!searchTool.parameters.required.includes("cwd"));
 assert.equal(searchTool.parameters.properties.context.type, "string");
 assert.deepEqual(searchTool.parameters.properties.intent.enum, ["definition", "references", "tests", "file", "auto"]);
+
+const cwdFixture = await mkdtemp(join(tmpdir(), "pi-agentic-search-cwd-"));
+try {
+  const sessionRepo = join(cwdFixture, "session");
+  const targetRepo = join(cwdFixture, "target");
+  await mkdir(sessionRepo);
+  await mkdir(targetRepo);
+  await writeFile(join(sessionRepo, "session.ts"), "export const cwdNeedle = 'session';\n");
+  await writeFile(join(targetRepo, "target.ts"), "export const cwdNeedle = 'target';\n");
+
+  const explicitCwd = await searchTool.execute(
+    "cwd-override", { query: "cwdNeedle", cwd: targetRepo },
+    undefined, undefined, { cwd: sessionRepo },
+  );
+  assert.deepEqual(explicitCwd.details.files.map((file: { path: string }) => file.path), ["target.ts"]);
+  assert.equal(explicitCwd.details.coverage.status, "complete");
+  assert.deepEqual(explicitCwd.details.coverage.completedRoots, ["."]);
+
+  const defaultCwd = await searchTool.execute(
+    "cwd-default", { query: "cwdNeedle" },
+    undefined, undefined, { cwd: sessionRepo },
+  );
+  assert.deepEqual(defaultCwd.details.files.map((file: { path: string }) => file.path), ["session.ts"]);
+  assert.equal(defaultCwd.details.coverage.status, "complete");
+  assert.deepEqual(defaultCwd.details.coverage.completedRoots, ["."]);
+
+  await assert.rejects(
+    searchTool.execute("cwd-invalid", { query: "cwdNeedle", cwd: join(targetRepo, "target.ts") },
+      undefined, undefined, { cwd: sessionRepo }),
+    /cwd is not a directory:/,
+  );
+} finally {
+  await rm(cwdFixture, { recursive: true, force: true });
+}
 
 const identityTheme = {
   fg: (_name: string, text: string) => text,

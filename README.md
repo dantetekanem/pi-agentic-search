@@ -77,6 +77,8 @@ Pi can call these tools during coding work. You can also ask for one by name:
 
 Pi can collect the diff with `diff: "worktree"`, read the relevant sections, and use `sparsity_collect` for a closer look at a definition. When starting from a name rather than a diff, `agentic_search` finds candidates first.
 
+All three Pi tools accept an optional `cwd` to select another repository, defaulting to the session's working directory. For example, call `agentic_search` with `{ query: "calculateTotal", cwd: "/path/to/repo" }`. Use `path` separately to narrow the search within that repository.
+
 ### Code Mode
 
 All three tools support Pi's Code Mode with the same arguments as direct calls. They are callable while active in both `codemode.mode: "on"` and `"only"`; `"only"` hides their direct declarations without disabling script calls.
