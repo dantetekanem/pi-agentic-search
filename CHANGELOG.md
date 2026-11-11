@@ -17,7 +17,7 @@
 
 - Document Code Mode setup, tool discovery, activation limits and text return values in the README, tool descriptions and built-in agent guidance.
 
-## 0.5.2 (2026-09-16)
+## 0.5.2 (unreleased draft; superseded by 0.7.0)
 
 ### Added
 
@@ -61,7 +61,7 @@
 - Boundary ranking of anchors and callers, per-run `metrics.json`, a rolling `sparsity/metrics.jsonl` log and the `/agentic-search-stats` command.
 - Changed files are read at the range head when the checkout sits on another commit; the manifest says so in a `revision:` line.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-09-08)
 
 This version covers the search improvement stack (#1 through #9) and the Ruby lookup repair (#10).
 
