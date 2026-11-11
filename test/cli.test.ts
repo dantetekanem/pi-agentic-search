@@ -106,11 +106,26 @@ test("CLI rejects invalid arguments before executing", () => fixture(async (cwd)
   assert.equal(cli(cwd, ["search", "total"], bin, { ...process.env, PATH: "" }).status, 1);
 }));
 
+for (const flag of ["--version", "-v"]) {
+  test(`CLI ${flag} reports its package version from any repository without search executables`, () => fixture(async (cwd) => {
+    const { version } = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+    await writeFile(join(cwd, "package.json"), '{"name":"fixture","version":"99.0.0"}');
+
+    for (const directory of [root, cwd]) {
+      const result = cli(directory, [flag], bin, { ...process.env, PATH: "" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `${version}\n`);
+      assert.equal(result.stderr, "");
+    }
+  }));
+}
+
 test("CLI help is available without a repository or search executables", async () => {
   for (const args of [[], ["--help"], ["search", "--help"], ["collect", "--help"], ["scan", "--help"]]) {
     const result = cli(tmpdir(), args, bin, { ...process.env, PATH: "" });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /agentic-search/);
+    if (args.length <= 1) assert.match(result.stdout, /--version.*-v/);
   }
 });
 
@@ -150,6 +165,12 @@ test("built CLI runs with only declared runtime dependencies, without Pi or tsx"
     }
     for (const name of Object.keys(manifest.peerDependencies)) assert.equal(manifest.peerDependenciesMeta[name].optional, true);
     const executable = join(isolated, manifest.bin["agentic-search"]);
+    for (const flag of ["--version", "-v"]) {
+      const result = cli(cwd, [flag], executable, { ...process.env, PATH: "" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `${manifest.version}\n`);
+      assert.equal(result.stderr, "");
+    }
     assert.equal(json(cwd, ["search", "total", "--path", "cart.ts"], executable).details.files[0].path, "cart.ts");
     assert.equal(json<SparsityResult>(cwd, ["collect", "cart.rb:2"], executable).details.anchor.symbol, "ruby_total");
     const scanned = json<ScanResult>(cwd, ["scan"], executable);
