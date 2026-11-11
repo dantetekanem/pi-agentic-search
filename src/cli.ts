@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -66,6 +66,7 @@ function help(command?: string): string {
   return [
     `Usage: agentic-search ${definition?.usage ?? "<search|collect|scan>"} [options]`,
     ...(definition ? [] : ["search: locate code; collect: trace one definition; scan: collect a diff.", "Run agentic-search <command> --help for command options."]),
+    ...(definition ? [] : ["  --version, -v  Show the installed package version"]),
     ...Object.entries(options).map(([name, option]) => `  --${name}${option.type === "string" ? " <value>" : ""}  ${option.description}`),
     "Exit: 0 result (may have coverage gaps), 1 execution failure, 2 usage error, 130 interrupted.",
     "A complete search with no matches exits 0. Read coverage before drawing conclusions.",
@@ -97,6 +98,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const [command, ...args] = argv;
     if (!command || command === "--help" || command === "-h") {
       process.stdout.write(`${help()}\n`);
+      return 0;
+    }
+    if (command === "--version" || command === "-v") {
+      const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+      process.stdout.write(`${version}\n`);
       return 0;
     }
     const definition = Object.hasOwn(commands, command) ? commands[command] : undefined;
