@@ -8,7 +8,7 @@ import { SKIP_DIRS } from "./classifications.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
-import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
+import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
 import {
   camelToSnake,
@@ -161,6 +161,48 @@ export interface ReferenceHit {
   line: number;
   text: string;
   test: boolean;
+  /** The call provably dispatches to the searched definition, and how its receiver's type was known. Set only with a Ruby index. */
+  exactVia?: EdgeVia;
+  /** The call enqueues the searched definition (a job's `perform`) instead of calling it. */
+  enqueue?: boolean;
+  /** Set by `callers`: the conditions dominating the call site, outermost first. */
+  guards?: Guard[];
+}
+
+/** What a reference search found: the hits it shows, and every site that passed its filters. */
+export interface ReferenceSearch {
+  hits: ReferenceHit[];
+  /** Distinct files among `sites`. */
+  totalFiles: number;
+  /** Every site that passed the filters, several per file, before the per-file rule and the limit. */
+  sites: Array<{ path: string; line: number; test: boolean }>;
+  /** False when the search may have missed sites: ripgrep's per-file match cap, the time budget, or sites dropped for an unknown receiver type. */
+  exhaustive: boolean;
+}
+
+/** Production call sites of an anchor: how many the search found, how many it lists, and whether that list is all of them. */
+export interface CallerCount {
+  total: number;
+  shown: number;
+  complete: boolean;
+}
+
+export interface CallerSearch {
+  hits: ReferenceHit[];
+  count: CallerCount;
+}
+
+export interface ReferenceOptions {
+  exclude?: SparsityNode;
+  onlyTests?: boolean;
+  skipTests?: boolean;
+  limit: number;
+  depth?: number;
+  perFile?: boolean;
+  /** Keep only sites whose receiver type the Ruby index knows, for names too common to search by name alone. */
+  typedOnly?: boolean;
+  /** Ripgrep's matching lines per file (default 4); a file that reaches it makes the search not exhaustive. */
+  maxCount?: number;
 }
 
 export type QueueItem = { node: SparsityNode; def: Definition; depth: number; ancestry: string[]; focus?: number[] };
@@ -219,6 +261,8 @@ const MAX_CALLS_PER_NODE = 24;
 const MAX_CANDIDATES_PER_CALL = 4;
 const MAX_CALLERS = 8;
 const MAX_CALLER_FILES = 40;
+// Ripgrep's matching lines per file when every caller is wanted.
+const ALL_MATCHES_PER_FILE = 1000;
 
 const EXPANDABLE_KINDS = new Set(["method", "singleton_method", "scope", "define_method", "class_method", "function", "component", "test", "it", "describe", "context", "scenario"]);
 
@@ -435,6 +479,11 @@ function indexedCandidates(defs: IndexedDefinition[]): Candidate[] {
 /** The guards a call site carries onto its edges. */
 function siteGuards(site: CallSite): { guards?: Guard[] } {
   return site.guards?.length ? { guards: site.guards } : {};
+}
+
+/** Guards as text, outermost first: `unless x [after-return, line 3] › if y [then, line 5]`. */
+export function guardText(guards: Guard[]): string {
+  return guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`).join(" › ");
 }
 
 /** A Ruby call whose method name is an operator such as `+`, `[]` or `<=>`. */
@@ -982,15 +1031,26 @@ function extractJsCalls(lines: string[], def: Definition): CallSite[] {
 
 // Ripgrep
 
-async function rgJson(args: string[], cwd: string, budget: Budget, signal?: AbortSignal): Promise<RgHit[]> {
-  if (!budget.spend()) return [];
+/** Whether a search saw everything it was asked to search; set false when the budget or a timeout cut it. */
+interface SearchStatus {
+  complete: boolean;
+}
+
+async function rgJson(args: string[], cwd: string, budget: Budget, signal?: AbortSignal, status?: SearchStatus): Promise<RgHit[]> {
+  if (!budget.spend()) {
+    if (status) status.complete = false;
+    return [];
+  }
   const full = ["--json", "--line-number", "--color=never", "--hidden"];
   addRgExcludes(full);
   full.push(...args);
 
   const output = await new Promise<string>((resolvePromise) => {
     execFile("rg", full, { cwd, encoding: "utf8", maxBuffer: 20 * 1024 * 1024, signal, timeout: RG_CALL_TIMEOUT_MS }, (error, stdout) => {
-      if (error && (error as { killed?: boolean }).killed) budget.truncatedBy = "rg_timeout";
+      if (error && (error as { killed?: boolean }).killed) {
+        budget.truncatedBy = "rg_timeout";
+        if (status) status.complete = false;
+      }
       resolvePromise(String(stdout ?? ""));
     });
   });
@@ -1145,13 +1205,16 @@ export class Collector {
   }
 
   /** Ripgrep over the checkout, except that files served from a revision are matched against that revision's lines. */
-  private async search(spec: SearchSpec, signal?: AbortSignal): Promise<RgHit[]> {
-    if (this.budget.exhausted) return [];
+  private async search(spec: SearchSpec, signal?: AbortSignal, status?: SearchStatus): Promise<RgHit[]> {
+    if (this.budget.exhausted) {
+      if (status) status.complete = false;
+      return [];
+    }
     const hits: RgHit[] = [];
 
     const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
     if (onDisk.length) {
-      const checkoutHits = await rgJson(ripgrepArgs(spec, onDisk), this.options.cwd, this.budget, signal);
+      const checkoutHits = await rgJson(ripgrepArgs(spec, onDisk), this.options.cwd, this.budget, signal, status);
       hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path)));
     }
 
@@ -1802,22 +1865,54 @@ export class Collector {
     return name.length < 4 || RUBY_COMMON_METHODS.has(name) || JS_GLOBALS.has(name) || ["render", "perform", "call", "execute", "run", "handle", "main", "default", "index", "show", "create", "update", "destroy"].includes(name);
   }
 
-  private async indexedReferences(name: string, options: { exclude?: SparsityNode; onlyTests?: boolean; skipTests?: boolean; limit: number; depth?: number; perFile?: boolean }): Promise<{ hits: ReferenceHit[]; totalFiles: number }> {
+  private get indexed(): boolean {
+    return Boolean(this.rubyIndex && !this.rubyIndex.skipped);
+  }
+
+  /** Whether calls in `inDef` with no explicit receiver run on the class: inside a singleton method or a scope body. */
+  private classContext(index: RubyIndex, inDef: string | undefined): boolean {
+    return (index.bySymbol.get(inDef ?? "") ?? []).some((item) => item.kind === "singleton_method" || item.kind === "scope");
+  }
+
+  /** How the receiver type of `site` was known, when the method it dispatches to through that type is `target` and nothing else. */
+  private dispatchVia(index: RubyIndex, site: IndexedCallSite, type: string | undefined, name: string, target: SparsityNode | undefined): EdgeVia | undefined {
+    if (!target || !type || !["method", "singleton_method", "scope"].includes(target.kind)) return undefined;
+    if (site.via === "named" || site.via === "chain") return undefined;
+    const constantReceiver = site.receiver !== undefined && site.receiver === site.receiverType;
+    const implicit = site.receiver === undefined || site.receiver === "self";
+    const onClass = site.enqueue ? false : constantReceiver || (implicit && this.classContext(index, site.inDef));
+    const found = this.lookupMethod(index, type, name, onClass);
+    if (found.length !== 1 || found[0]!.path !== target.path || found[0]!.startLine !== target.startLine) return undefined;
+    if (site.enqueue || constantReceiver) return "constant";
+    return implicit ? "self" : (site.via as EdgeVia | undefined) ?? "typed";
+  }
+
+  private async indexedReferences(name: string, options: ReferenceOptions): Promise<ReferenceSearch> {
     const index = this.rubyIndex!;
     const sites = index.callSites.get(name) ?? [];
     const ownerSymbol = options.exclude?.symbol.split(/[#. ]/)[0];
     const ownerAncestors = ownerSymbol ? ancestorsOf(index, ownerSymbol) : [];
-    const compatible = (receiverType: string | undefined, fromDef: string | undefined): boolean => {
-      if (!receiverType || !ownerSymbol) return true;
-      const resolved = resolveIndexedConstant(index, receiverType, fromDef) ?? receiverType;
-      if (!index.namespaces.has(resolved)) return true;
-      return resolved === ownerSymbol || ancestorsOf(index, resolved).includes(ownerSymbol) || ownerAncestors.includes(resolved);
+    // The site's receiver type when the index defines it; an unknown or name-only type is undefined.
+    const typeOf = (site: IndexedCallSite): string | undefined => {
+      if (!site.receiverType) return undefined;
+      const resolved = resolveIndexedConstant(index, site.receiverType, site.inDef) ?? site.receiverType;
+      return index.namespaces.has(resolved) ? resolved : undefined;
     };
+    const compatible = (type: string | undefined): boolean => !type || !ownerSymbol
+      || type === ownerSymbol || ancestorsOf(index, type).includes(ownerSymbol) || ownerAncestors.includes(type);
+    let untyped = 0;
     const filtered = sites
       .filter((site) => !(options.exclude && site.path === options.exclude.path && site.line >= options.exclude.startLine && site.line <= options.exclude.endLine))
       .filter((site) => !(options.skipTests && isTestPath(site.path)))
       .filter((site) => !(options.onlyTests && !isTestPath(site.path)))
-      .filter((site) => compatible(site.receiverType, site.inDef))
+      .filter((site) => {
+        const type = typeOf(site);
+        if (options.typedOnly && !type) {
+          untyped += 1;
+          return false;
+        }
+        return compatible(type);
+      })
       .sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path) || a.line - b.line);
     const chosen: typeof filtered = [];
     const seenFiles = new Set<string>();
@@ -1829,19 +1924,34 @@ export class Collector {
     const hits: ReferenceHit[] = [];
     for (const site of chosen) {
       if (hits.length >= options.limit) break;
+      if (options.limit === Infinity && this.budget.exhausted) break;
       const created = await this.node(site.path, site.line, options.depth ?? 1, site.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
-      hits.push({ node: created.node, def: created.def, line: site.line, text: await this.lineText(site.path, site.line), test: isTestPath(site.path) });
+      const exactVia = this.dispatchVia(index, site, typeOf(site), name, options.exclude);
+      hits.push({
+        node: created.node, def: created.def, line: site.line, text: await this.lineText(site.path, site.line), test: isTestPath(site.path),
+        ...(exactVia ? { exactVia } : {}), ...(site.enqueue ? { enqueue: true } : {}),
+      });
     }
-    return { hits, totalFiles: seenFiles.size };
+    return {
+      hits,
+      totalFiles: new Set(filtered.map((site) => site.path)).size,
+      sites: filtered.map((site) => ({ path: site.path, line: site.line, test: isTestPath(site.path) })),
+      exhaustive: untyped === 0,
+    };
   }
 
-  async references(name: string, language: Language, options: { exclude?: SparsityNode; onlyTests?: boolean; skipTests?: boolean; limit: number; depth?: number; perFile?: boolean }, signal?: AbortSignal): Promise<{ hits: ReferenceHit[]; totalFiles: number }> {
-    if (language === "ruby" && this.rubyIndex && !this.rubyIndex.skipped) return this.indexedReferences(name, options);
+  async references(name: string, language: Language, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
+    if (language === "ruby" && this.indexed) return this.indexedReferences(name, options);
     const escaped = escapeRegex(name);
     const tail = /[?!=]$/.test(name) ? "" : "([^\\w?!=]|$)";
     const pattern = `(^|[^\\w:@$.]|\\.)${escaped}${tail}`;
-    const raw = await this.search({ language, testsOnly: options.onlyTests, maxCount: 4, patterns: [pattern], paths: [this.root] }, signal);
+    const maxCount = options.maxCount ?? 4;
+    const status: SearchStatus = { complete: true };
+    const raw = await this.search({ language, testsOnly: options.onlyTests, maxCount, patterns: [pattern], paths: [this.root] }, signal, status);
+    const matchesPerFile = new Map<string, number>();
+    for (const hit of raw) matchesPerFile.set(hit.path, (matchesPerFile.get(hit.path) ?? 0) + 1);
+    const capped = [...matchesPerFile.values()].some((count) => count >= maxCount);
     const filtered = raw
       .filter((hit) => !(options.exclude && hit.path === options.exclude.path && hit.line >= options.exclude.startLine && hit.line <= options.exclude.endLine))
       .filter((hit) => !/^\s*(def|function|const|let|var|class|export|scope|import|require)\b/.test(hit.text))
@@ -1849,10 +1959,8 @@ export class Collector {
       .filter((hit) => !insideStringLiteral(hit.text, name))
       .filter((hit) => !(options.skipTests && isTestPath(hit.path)))
       .filter((hit) => !(options.onlyTests && !isTestPath(hit.path)));
-    const chosen: RgHit[] = [];
-    const seenFiles = new Set<string>();
+    const found: RgHit[] = [];
     for (const hit of filtered) {
-      if (options.perFile !== false && seenFiles.has(hit.path)) continue;
       // A hit counts only when the content this collector serves has the same text on that line.
       const lines = await this.lines(hit.path);
       const served = lines?.[hit.line - 1];
@@ -1862,43 +1970,88 @@ export class Collector {
         const facts = this.tsFacts(hit.path, lines);
         if (facts && !tsAdapter.confirmsReference(facts, hit.line, name)) continue;
       }
+      found.push(hit);
+    }
+    found.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path) || a.line - b.line);
+    const chosen: RgHit[] = [];
+    const seenFiles = new Set<string>();
+    for (const hit of found) {
+      if (options.perFile !== false && seenFiles.has(hit.path)) continue;
       seenFiles.add(hit.path);
       chosen.push(hit);
     }
-    const ranked = chosen.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path) || a.line - b.line);
     const hits: ReferenceHit[] = [];
-    for (const hit of ranked) {
+    for (const hit of chosen) {
       if (hits.length >= options.limit) break;
       const created = await this.node(hit.path, hit.line, options.depth ?? 1, hit.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
       hits.push({ node: created.node, def: created.def, line: hit.line, text: hit.text.trim(), test: isTestPath(hit.path) });
     }
-    return { hits, totalFiles: seenFiles.size };
+    return {
+      hits,
+      totalFiles: seenFiles.size,
+      sites: found.map((hit) => ({ path: hit.path, line: hit.line, test: isTestPath(hit.path) })),
+      exhaustive: status.complete && !capped,
+    };
   }
 
-  async callers(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit = MAX_CALLERS): Promise<ReferenceHit[]> {
+  /** The adapter's call at a caller's line, and the conditions dominating it: the call's own, or the line's when no call matched. */
+  private async callSite(hit: ReferenceHit, name: string): Promise<{ site?: CallSite; guards: Guard[] }> {
+    const lines = await this.lines(hit.node.path);
+    const facts = lines ? this.factsFor(hit.node.language, hit.node.path, lines) : undefined;
+    if (!facts) return { guards: [] };
+    const adapter = hit.node.language === "ruby" ? rubyAdapter : tsAdapter;
+    const site = adapter.calls(facts, hit.def).find((item) => item.line === hit.line && item.name === name);
+    return site ? { site, guards: site.guards ?? [] } : { guards: adapter.guardsAt(facts, hit.def, hit.line) };
+  }
+
+  /** The TypeScript checker resolved the call to `anchor` itself. */
+  private resolvesTo(site: CallSite | undefined, anchor: SparsityNode): boolean {
+    const target = site?.target;
+    if (!target || target.external || target.local) return false;
+    return target.line === anchor.startLine && this.displayRealPath(target.path) === anchor.path;
+  }
+
+  /**
+   * Callers of `anchor`, as `called_by` edges with their call sites' guards. `limit` caps the list and keeps one call
+   * site per file; `all` lists every call site found. A name too common to search is filtered by receiver type when a
+   * Ruby index is present and skipped otherwise. The count covers production call sites; test call sites are tests.
+   */
+  async callers(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = MAX_CALLERS): Promise<CallerSearch> {
     const name = def.name;
-    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return [];
-    if (this.tooCommon(name)) {
+    const none: CallerSearch = { hits: [], count: { total: 0, shown: 0, complete: false } };
+    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return none;
+    const typedOnly = this.tooCommon(name);
+    if (typedOnly && !(anchor.language === "ruby" && this.indexed)) {
       this.notes.push(`callers of ${name} skipped: name too common to search usefully; search a qualified receiver instead.`);
-      return [];
+      return none;
     }
-    const { hits, totalFiles } = await this.references(name, anchor.language, { exclude: anchor, limit }, signal);
+    const all = limit === "all";
+    const search = await this.references(name, anchor.language, { exclude: anchor, limit: all ? Infinity : limit, perFile: !all, typedOnly, maxCount: all ? ALL_MATCHES_PER_FILE : undefined }, signal);
+    const { hits, totalFiles } = search;
+    if (typedOnly && !search.exhaustive) this.notes.push(`callers of ${name}: name too common to search by name alone; only call sites whose receiver type the Ruby index knows are listed.`);
     if (totalFiles > MAX_CALLER_FILES) this.notes.push(`callers of ${name}: ${totalFiles} files reference the name; showing ${hits.length}. Treat this as a high-fanout boundary.`);
     else if (totalFiles > hits.length) this.frontier.push(`callers of ${name}: ${totalFiles - hits.length} more files not expanded`);
 
     for (const hit of hits) {
+      const { site, guards } = await this.callSite(hit, name);
+      hit.guards = guards;
+      if (!hit.exactVia && this.resolvesTo(site, anchor)) hit.exactVia = "checker";
       this.edges.push({
         from: hit.node.id,
         to: anchor.id,
         name,
         relationship: "called_by",
-        resolution: "static_candidate",
+        resolution: hit.exactVia ? "exact" : "static_candidate",
+        ...(hit.exactVia ? { via: hit.exactVia } : {}),
         line: hit.line,
-        note: hit.test ? "test" : undefined,
+        note: hit.test ? "test" : hit.enqueue ? "enqueue" : undefined,
+        ...(hit.guards.length ? { guards: hit.guards } : {}),
       });
     }
-    return hits;
+    const total = search.sites.filter((site) => !site.test).length;
+    const shown = hits.filter((hit) => !hit.test).length;
+    return { hits, count: { total, shown, complete: search.exhaustive && shown === total } };
   }
 
   async definitionExists(name: string, language: Language, signal?: AbortSignal): Promise<boolean> {
@@ -2056,7 +2209,8 @@ export function formatSparsity(result: SparsityResult): string {
     for (const edge of incoming) {
       const caller = byId.get(edge.from);
       if (!caller) continue;
-      out.push(`  ${caller.id} ${caller.symbol} ${caller.path}:${edge.line}${edge.note ? ` (${edge.note})` : ""}`);
+      const exact = edge.resolution === "exact" ? ` [exact${edge.via ? `, ${edge.via}` : ""}]` : "";
+      out.push(`  ${caller.id} ${caller.symbol} ${caller.path}:${edge.line}${exact}${edge.note ? ` (${edge.note})` : ""}${edge.guards?.length ? `  under ${guardText(edge.guards)}` : ""}`);
     }
   }
 

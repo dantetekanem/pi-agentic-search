@@ -21,6 +21,8 @@ export interface ScanInput extends ContextInput {
   anchors?: string[];
   max_anchors?: number;
   inline_budget_kb?: number;
+  /** `all` lists every call site of each anchor instead of six callers, one per file. */
+  callers?: "all";
 }
 export interface ContextRuntime {
   indexCacheDir?: string;
@@ -64,6 +66,7 @@ export function scanContext(params: ScanInput, cwd: string, outputDir: string, r
     budgetMs: clampInt(params.budget_ms, 30_000, 2_000, 120_000),
     outputDir,
     inlineBudgetBytes: clampInt(params.inline_budget_kb, 40, 4, 48) * 1024,
+    allCallers: params.callers === "all",
     ...runtime,
   });
 }

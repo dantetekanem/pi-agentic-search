@@ -9,11 +9,14 @@ import {
   describeUnresolvedReasons,
   EDGE_LABELS,
   findRoot,
+  guardText,
   isTestPath,
   jsDefinitionStart,
   languageFor,
   renderSurroundings,
   unresolvedByReason,
+  type CallerCount,
+  type CallerSearch,
   type Definition,
   type Language,
   type QueueItem,
@@ -47,6 +50,8 @@ export interface ScanOptions {
   indexCacheDir?: string;
   metricsLog?: string;
   signal?: AbortSignal;
+  /** List every call site of each anchor, several per file, instead of six callers with one per file. */
+  allCallers?: boolean;
 }
 
 /** Where a changed file takes effect. `migration` and `config` files with a parser are still anchored like code. */
@@ -107,7 +112,14 @@ export interface AnchorRecord {
   removed: Array<{ oldStart: number; lines: string[] }>;
   vicinity: string;
   boundary: { score: number; tags: string[] };
-  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[] }>;
+  /**
+   * Production call sites, as listed; their `called_by` edges carry the same guards. `resolution` is `exact` when the
+   * Ruby index or the TypeScript checker proves the call reaches this definition. `guards` are the conditions dominating
+   * the call site, outermost first; `enqueue` marks a call that enqueues this definition (a job's `perform`).
+   */
+  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true }>;
+  /** How many production call sites the search found, how many `callers` lists, and whether that is all of them. */
+  callerCount: CallerCount;
   tests: Array<{ id: string; symbol: string; path: string; line: number; text: string }>;
   /** Whether the base revision of this file defines the same symbol. Absent for explicit anchors and when no parser read the base. */
   status?: "added" | "modified";
@@ -772,10 +784,11 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   }));
 
   // Callers and tests, a few anchors at a time
+  const notSearched: CallerSearch = { hits: [], count: { total: 0, shown: 0, complete: false } };
   const lookups = await pool(chosen, SEARCH_CONCURRENCY, async (candidate) => {
-    if (budget.exhausted || signal?.aborted) return { callers: [] as ReferenceHit[], tests: [] as ReferenceHit[] };
+    if (budget.exhausted || signal?.aborted) return { callers: notSearched, tests: [] as ReferenceHit[] };
     const [callers, tests] = await Promise.all([
-      candidate.collector.callers(candidate.node, candidate.def, signal, 6),
+      candidate.collector.callers(candidate.node, candidate.def, signal, options.allCallers ? "all" : 6),
       candidate.collector.tests(candidate.node, candidate.def, signal, 8),
     ]);
     return { callers, tests };
@@ -783,12 +796,17 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
 
   const anchors: AnchorRecord[] = [];
   for (const [index, candidate] of chosen.entries()) {
-    const { callers, tests } = lookups[index]!;
+    const { callers: { hits: callers, count: callerCount }, tests } = lookups[index]!;
     const callerRecords = [];
     for (const hit of callers) {
       const boundary = hit.test ? { score: 0, tags: [] } : boundarySignal(hit.node.path, hit.node.symbol);
       const context = hit.test ? "" : await candidate.collector.contextAround(hit.node.path, hit.line, CALLER_CONTEXT_LINES);
-      callerRecords.push({ id: hit.node.id, symbol: hit.node.symbol, path: hit.node.path, line: hit.line, text: hit.text, context, test: hit.test, changed: anchorIds.has(hit.node.id), boundary: boundary.tags, score: boundary.score });
+      callerRecords.push({
+        id: hit.node.id, symbol: hit.node.symbol, path: hit.node.path, line: hit.line, text: hit.text, context, test: hit.test,
+        changed: anchorIds.has(hit.node.id), boundary: boundary.tags, score: boundary.score,
+        resolution: hit.exactVia ? "exact" as const : "static_candidate" as const, guards: hit.guards ?? [],
+        ...(hit.enqueue ? { enqueue: true as const } : {}),
+      });
     }
     callerRecords.sort((a, b) => Number(b.changed) - Number(a.changed) || b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
     const testRecords = [];
@@ -812,6 +830,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       vicinity: await candidate.collector.surroundings(candidate.node),
       boundary: candidate.boundary,
       callers: callerRecords.filter((record) => !record.test).map(({ score: _score, ...record }) => record),
+      callerCount,
       tests: testRecords,
       ...await baseFacts(candidate),
       ...(runsAtLoad(candidate.def) ? { loadTime: true as const } : {}),
@@ -951,10 +970,7 @@ function describeGuards(entries: AnchorRecord["guards"]): string[] {
     group.lines.push(entry.line);
     groups.set(key, group);
   }
-  return [...groups.values()].map((group) => {
-    const guards = group.guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`);
-    return `  ${compressRanges(group.lines)}: ${guards.join(" › ")}`;
-  });
+  return [...groups.values()].map((group) => `  ${compressRanges(group.lines)}: ${guardText(group.guards)}`);
 }
 
 async function renderSections(result: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, collectors: Collector[], anchorIds: Set<string>): Promise<Array<Omit<Section, "startLine" | "endLine" | "inline">>> {
@@ -1023,14 +1039,19 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     } else {
       out.push("calls: none found");
     }
+    const { total, complete } = anchor.callerCount;
     if (anchor.callers.length) {
-      out.push(`callers (${anchor.callers.length}):`);
+      out.push(`callers (${anchor.callers.length} of ${total}, ${complete ? "complete" : "incomplete"}):`);
+      const calledBy = new Map(result.edges.filter((edge) => edge.to === anchor.id && edge.relationship === "called_by").map((edge) => [`${edge.from}:${edge.line}`, edge]));
       for (const caller of anchor.callers) {
-        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
+        const via = calledBy.get(`${caller.id}:${caller.line}`)?.via;
+        const exact = caller.resolution === "exact" ? ` [exact${via ? `, ${via}` : ""}]` : "";
+        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${exact}${caller.enqueue ? " (enqueues)" : ""}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
+        if (caller.guards.length) out.push(`    under: ${guardText(caller.guards)}`);
         if (caller.context) out.push(caller.context);
       }
     } else {
-      out.push("callers: none found in root (or name too common)");
+      out.push(`callers: none found in root (or name too common)${total ? `; ${total} found, none listed` : ""}${complete ? "" : "; the search may be incomplete"}`);
     }
     if (anchor.tests.length) {
       out.push(`tests (${anchor.tests.length}):`);

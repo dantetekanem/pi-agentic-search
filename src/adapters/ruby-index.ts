@@ -36,6 +36,8 @@ export interface IndexedCallSite {
   receiverType?: string;
   via?: string;
   inDef?: string;
+  /** The call enqueues `receiver#name` (`Job.perform_later` is indexed under `perform`) instead of calling it. */
+  enqueue?: true;
 }
 
 interface FileEntry {
@@ -49,7 +51,7 @@ interface SerializedIndex {
   root: string;
   treeHash: string;
   strings: string[];
-  files: Array<[number, Array<[number, number, number, number, number, number, number, ParamInfo[] | 0, number]>, Array<[number, number, number, number[]]>, Array<[number, number, number, number, number, number]>]>;
+  files: Array<[number, Array<[number, number, number, number, number, number, number, ParamInfo[] | 0, number]>, Array<[number, number, number, number[]]>, Array<[number, number, number, number, number, number, number]>]>;
 }
 
 class Interner {
@@ -75,7 +77,7 @@ function serialize(root: string, treeHash: string, files: Record<string, FileEnt
       strings.id(path),
       entry.definitions.map((def) => [strings.id(def.symbol), strings.id(def.name), strings.id(def.kind), def.startLine, def.endLine, strings.id(def.owner), def.singleton ? 1 : 0, def.params ?? 0, strings.id(def.returns)]),
       entry.namespaces.map((namespace) => [strings.id(namespace.symbol), namespace.kind === "class" ? 0 : 1, strings.id(namespace.superclass), namespace.mixins.map((mixin) => strings.id(mixin))]),
-      entry.callSites.map((site) => [strings.id(site.name), site.line, strings.id(site.receiver), strings.id(site.receiverType), strings.id(site.via), strings.id(site.inDef)]),
+      entry.callSites.map((site) => [strings.id(site.name), site.line, strings.id(site.receiver), strings.id(site.receiverType), strings.id(site.via), strings.id(site.inDef), site.enqueue ? 1 : 0]),
     ]);
   }
   payload.strings = strings.strings;
@@ -108,7 +110,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
         superclass: text(superclass),
         mixins: mixins.map((mixin) => text(mixin)!),
       })),
-      callSites: sites.map(([name, line, receiver, receiverType, via, inDef]) => ({
+      callSites: sites.map(([name, line, receiver, receiverType, via, inDef, enqueue]) => ({
         name: text(name)!,
         path,
         line,
@@ -116,6 +118,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
         receiverType: text(receiverType),
         via: text(via),
         inDef: text(inDef),
+        ...(enqueue === 1 ? { enqueue: true as const } : {}),
       })),
     };
   }
@@ -147,7 +150,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
@@ -214,9 +217,14 @@ function fileEntry(path: string, source: string): FileEntry | undefined {
   const callSites: FileEntry["callSites"] = [];
   for (const def of facts.definitions) {
     if (def.kind === "class" || def.kind === "module" || def.kind === "constant") continue;
+    const called = new Set<string>();
     for (const site of rubyAdapter.calls(facts, def)) {
-      if (site.relationship !== "calls" && site.source !== "constant") continue;
-      callSites.push({ name: site.name, path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol });
+      const enqueue = site.relationship === "enqueues";
+      if (site.relationship !== "calls" && site.source !== "constant" && !enqueue) continue;
+      // A mailer enqueue repeats the action call on its line; a job enqueue is the only site naming `perform`.
+      if (enqueue && called.has(`${site.name}:${site.line}`)) continue;
+      called.add(`${site.name}:${site.line}`);
+      callSites.push({ name: site.name, path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol, ...(enqueue ? { enqueue: true as const } : {}) });
     }
   }
   return { definitions, namespaces, callSites };

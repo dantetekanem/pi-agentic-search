@@ -480,6 +480,87 @@ end
   }
 }));
 
+test("anchors count their callers, say whether the list is complete, and give each call site's guards", () => repo(async ({ cwd, git, write, scan }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "app/services/pricing.rb": "class Pricing\n  def quote(cart)\n    cart.total\n  end\nend\n",
+    "app/models/checkout.rb": `class Checkout
+  def total(cart)
+    pricing = Pricing.new
+    return 0 unless Features.enabled?(:quotes)
+    pricing.quote(cart)
+    if cart.vip?
+      pricing.quote(cart)
+    end
+  end
+end
+`,
+    "app/services/charge.rb": "class Charge\n  def call(order)\n    order\n  end\nend\n",
+    "app/services/shop.rb": "class Shop\n  def buy(order)\n    Charge.new.call(order)\n  end\n\n  def retry_later(order, callback)\n    callback.call(order)\n  end\nend\n",
+    "app/services/other.rb": "class Other\n  def call\n    1\n  end\n\n  def run\n    Other.new.call\n  end\nend\n",
+    "app/jobs/receipt_job.rb": "class ReceiptJob < ApplicationJob\n  def perform(id)\n    id\n  end\nend\n",
+    "app/models/order.rb": "class Order\n  def complete\n    ReceiptJob.perform_later(id) if paid?\n  end\nend\n",
+    "tsconfig.json": '{"compilerOptions":{"strict":true},"include":["src"]}\n',
+    "src/price.ts": "export function price(amount: number) {\n  return amount;\n}\n",
+    "src/use.ts": 'import { price } from "./price";\n\nexport function charge(flag: boolean) {\n  if (flag) {\n    return price(1);\n  }\n  return 0;\n}\n',
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "src/price.ts": "export function price(amount: number) {\n  return amount * 2;\n}\n",
+    // A changed caller is in the TypeScript program, so the checker resolves its call.
+    "src/use.ts": 'import { price } from "./price";\n\nexport function charge(flag: boolean) {\n  if (flag) {\n    return price(1);\n  }\n  return -1;\n}\n',
+    "app/services/pricing.rb": "class Pricing\n  def quote(cart)\n    cart.total * 2\n  end\nend\n",
+    "app/services/charge.rb": "class Charge\n  def call(order)\n    order.id\n  end\nend\n",
+    "app/jobs/receipt_job.rb": "class ReceiptJob < ApplicationJob\n  def perform(id)\n    id.to_s\n  end\nend\n",
+  });
+  git("commit", "-qam", "change");
+
+  type Scanned = Awaited<ReturnType<Repo["scan"]>>;
+  const anchorOf = (result: Scanned, symbol: string) => {
+    const anchor = result.anchors.find((item) => item.symbol === symbol);
+    assert.ok(anchor, `${symbol} in ${result.anchors.map((item) => item.symbol).join(", ")}`);
+    return anchor;
+  };
+  const countOf = (result: Scanned, symbol: string) => anchorOf(result, symbol).callerCount;
+  const callersOf = (result: Scanned, symbol: string) => anchorOf(result, symbol).callers.map((caller) => [caller.symbol, caller.line, caller.resolution, caller.guards]);
+  const calledBy = (result: Scanned, symbol: string) => result.edges
+    .filter((edge) => edge.to === anchorOf(result, symbol).id && edge.relationship === "called_by")
+    .map((edge) => [edge.line, edge.resolution, edge.via, edge.guards, edge.note]);
+  const exit = { line: 4, text: "unless Features.enabled?(:quotes)", branch: "after-return" };
+  const vip = { line: 6, text: "if cart.vip?", branch: "then" };
+
+  // Without the index, callers are found by name: one per file, and common names are not searched.
+  const plain = await scan("HEAD~1..HEAD");
+  assert.deepEqual(countOf(plain, "Pricing#quote"), { total: 2, shown: 1, complete: false }, "the per-file rule cut the second call site");
+  assert.deepEqual(callersOf(plain, "Pricing#quote"), [["Checkout#total", 5, "static_candidate", [exit]]]);
+  assert.deepEqual(calledBy(plain, "Pricing#quote"), [[5, "static_candidate", undefined, [exit], undefined]]);
+  assert.deepEqual(countOf(plain, "Charge#call"), { total: 0, shown: 0, complete: false }, "a common name is not searched without an index");
+  assert.deepEqual(countOf(plain, "ReceiptJob#perform"), { total: 0, shown: 0, complete: false });
+  assert.deepEqual(countOf(plain, "price"), { total: 1, shown: 1, complete: true });
+  assert.deepEqual(calledBy(plain, "price"), [[5, "exact", "checker", [{ line: 4, text: "if (flag)", branch: "then" }], undefined]], "the TypeScript checker resolves the call to the anchor");
+
+  const all = await scan("HEAD~1..HEAD", { allCallers: true });
+  assert.deepEqual(countOf(all, "Pricing#quote"), { total: 2, shown: 2, complete: true });
+  assert.deepEqual(callersOf(all, "Pricing#quote"), [["Checkout#total", 5, "static_candidate", [exit]], ["Checkout#total", 7, "static_candidate", [exit, vip]]]);
+
+  // With the index, a caller whose receiver type dispatches to the anchor is exact, and common names are filtered by receiver type.
+  const indexCacheDir = join(cwd, "..", "index");
+  const indexed = await scan("HEAD~1..HEAD", { indexCacheDir });
+  assert.deepEqual(countOf(indexed, "Pricing#quote"), { total: 2, shown: 1, complete: false });
+  assert.deepEqual(calledBy(indexed, "Pricing#quote"), [[5, "exact", "assigned", [exit], undefined]]);
+  assert.deepEqual(countOf(indexed, "Charge#call"), { total: 1, shown: 1, complete: false }, "callback.call has no known receiver type, so the list may miss a caller; Other.new.call is another class's");
+  assert.deepEqual(callersOf(indexed, "Charge#call"), [["Shop#buy", 3, "exact", []]]);
+  assert.deepEqual(countOf(indexed, "ReceiptJob#perform"), { total: 1, shown: 1, complete: true }, "every perform call site has a known receiver type");
+  assert.deepEqual(calledBy(indexed, "ReceiptJob#perform"), [[3, "exact", "constant", [{ line: 3, text: "if paid?", branch: "then" }], "enqueue"]], "an enqueue calls the job's perform");
+  assert.equal(anchorOf(indexed, "ReceiptJob#perform").callers[0]?.text, "ReceiptJob.perform_later(id) if paid?");
+
+  const indexedAll = await scan("HEAD~1..HEAD", { indexCacheDir, allCallers: true });
+  assert.deepEqual(countOf(indexedAll, "Pricing#quote"), { total: 2, shown: 2, complete: true });
+  assert.deepEqual(calledBy(indexedAll, "Pricing#quote"), [[5, "exact", "assigned", [exit], undefined], [7, "exact", "assigned", [exit, vip], undefined]]);
+  assert.match(await readFile(indexedAll.packPath, "utf8"), /callers \(2 of 2, complete\):\n {2}- n\d+ Checkout#total app\/models\/checkout\.rb:5 \[exact, assigned\]/);
+}));
+
 test("a reference on the first line of a file with a byte order mark still counts", () => repo(async ({ cwd, write }) => {
   await write({
     "package.json": '{"name":"fixture"}\n',

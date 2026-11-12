@@ -55,6 +55,7 @@ const commands: Record<string, { usage: string; options: Record<string, Option> 
     "budget-ms": numberOption("Git/ripgrep budget", 30_000, 2_000, 120_000),
     "output-dir": { type: "string", description: "Pack directory (default: new system temporary directory)" },
     "inline-budget-kb": numberOption("Inline pack size in KiB", 40, 4, 48),
+    callers: { type: "string", description: "all: list every call site of each anchor (default: 6 callers, one per file)" },
   } },
 };
 
@@ -134,6 +135,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const intent = string("intent");
     if (intent !== undefined && !["definition", "references", "tests", "file", "auto"].includes(intent)) throw new UsageError(`Invalid intent: ${intent}`);
     if (values.diff !== undefined && values.anchor !== undefined) throw new UsageError("Use --diff or --anchor, not both");
+    if (values.callers !== undefined && string("callers") !== "all") throw new UsageError(`Invalid --callers: ${String(values.callers)}; expected all`);
     if (values["strict-revision"] && (values.anchor !== undefined || !string("diff")?.trim() || string("diff")?.trim() === "worktree")) {
       throw new UsageError("--strict-revision requires --diff <commit|range>, not worktree or --anchor");
     }
@@ -176,6 +178,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         anchors: Array.isArray(values.anchor) ? values.anchor.filter((value): value is string => typeof value === "string") : undefined,
         max_anchors: number("max-anchors"),
         inline_budget_kb: number("inline-budget-kb"),
+        callers: string("callers") === "all" ? "all" : undefined,
       }, cwd, outputDir, runtime);
       output = { text: inline, details };
     }
