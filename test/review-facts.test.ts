@@ -818,6 +818,114 @@ end
   assert.equal(await entryTests("OrdersController#create", { intent: "auto" }), undefined, "only a tests search looks for life-cycle tests");
 }));
 
+test("with every test listed, each test definition that references an anchor comes with its calls and setup blocks", () => repo(async ({ cwd, git, write, scan }) => {
+  const minitest = (again: string) => `require "test_helper"
+
+class CartTest < ActiveSupport::TestCase
+  setup do
+    Flipper.enable(:new_totals)
+  end
+
+  test "totals" do
+    cart = Cart.new
+    assert_equal 1, cart.total
+    audit(cart)
+  end
+
+  test "totals again" do
+    ${again}
+  end
+
+  test "unrelated" do
+    assert true
+  end
+
+  private
+
+  def audit(cart)
+    cart
+  end
+end
+`;
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "app/models/cart.rb": "class Cart\n  def total\n    1\n  end\nend\n",
+    "test/models/cart_test.rb": minitest("assert Cart.new.total"),
+    "spec/models/cart_spec.rb": `require "rails_helper"
+
+RSpec.describe Cart do
+  before { Flipper.disable(:new_totals) }
+
+  context "with a coupon" do
+    before(:each) do
+      @coupon = 1
+    end
+
+    it "totals" do
+      expect(Cart.new.total).to eq(1)
+    end
+  end
+end
+`,
+    "src/cart.ts": "export function total() {\n  return 1;\n}\n",
+    "src/cart.test.ts": `import { describe, it, beforeEach, expect } from "vitest";
+import { total } from "./cart";
+
+describe("cart", () => {
+  beforeEach(() => {
+    setFlag("totals", true);
+  });
+
+  it("totals", () => {
+    expect(total()).toBe(1);
+  });
+});
+`,
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "app/models/cart.rb": "class Cart\n  def total\n    2\n  end\nend\n",
+    "src/cart.ts": "export function total() {\n  return 2;\n}\n",
+    "test/models/cart_test.rb": minitest("assert_equal 2, Cart.new.total"),
+  });
+  git("commit", "-qam", "change");
+
+  const result = await scan("HEAD~1..HEAD", { indexCacheDir: join(cwd, "..", "index"), allTests: true });
+  const symbolOf = (id?: string) => result.nodes.find((node) => node.id === id)?.symbol;
+  assert.ok(result.testDefinitions);
+  assert.deepEqual(result.testDefinitions.map((test) => ({
+    symbol: test.symbol,
+    path: test.path,
+    anchors: test.anchors.map((anchor) => [symbolOf(anchor.id), anchor.lines]),
+    setup: test.setup.map((block) => [block.startLine, block.endLine]),
+    changed: test.changed,
+  })), [
+    { symbol: 'it "totals"', path: "spec/models/cart_spec.rb", anchors: [["Cart#total", [12]]], setup: [[4, 4], [7, 9]], changed: false },
+    { symbol: 'describe "cart".totals', path: "src/cart.test.ts", anchors: [["total", [10]]], setup: [[5, 7]], changed: false },
+    { symbol: 'CartTest test "totals"', path: "test/models/cart_test.rb", anchors: [["Cart#total", [10]]], setup: [[4, 6]], changed: false },
+    { symbol: 'CartTest test "totals again"', path: "test/models/cart_test.rb", anchors: [["Cart#total", [15]]], setup: [[4, 6]], changed: true },
+  ]);
+  assert.deepEqual(result.testDefinitions[2]!.setup[0]!.lines, ["  setup do", "    Flipper.enable(:new_totals)", "  end"]);
+
+  const calls = (symbol: string) => {
+    const node = result.nodes.find((item) => item.symbol === symbol)!;
+    return result.edges.filter((edge) => edge.from === node.id && edge.relationship === "calls").map((edge) => [edge.name, symbolOf(edge.to)]);
+  };
+  assert.ok(calls('CartTest test "totals"').some(([name, to]) => name === "cart.total" && to === "Cart#total"), JSON.stringify(calls('CartTest test "totals"')));
+  assert.ok(calls('CartTest test "totals"').some(([name, to]) => name === "audit" && to === "CartTest#audit"), "a helper the test calls is followed one hop");
+  assert.ok(calls('it "totals"').some(([, to]) => to === "Cart#total"), "an RSpec example inside RSpec.describe has its calls");
+  assert.ok(calls('describe "cart".totals').some(([name, to]) => name === "total" && to === "total"));
+  assert.equal(calls('CartTest test "totals again"').filter(([, to]) => to === "Cart#total").length, 1, "a changed test is expanded once, as an anchor");
+  assert.match(result.inline, /## tests/);
+  assert.match(await readFile(result.packPath, "utf8"), /CartTest test "totals" test\/models\/cart_test\.rb:8-12 references n\d+:10\n {2}setup 4-6:\n/);
+
+  const plain = await scan("HEAD~1..HEAD");
+  assert.equal(plain.testDefinitions, undefined, "the test list is opt-in");
+  const plainTest = plain.nodes.find((node) => node.symbol === 'CartTest test "totals"');
+  assert.ok(plainTest && !plain.edges.some((edge) => edge.from === plainTest.id && edge.relationship === "calls"), "without it, tests found by name are not expanded");
+}));
+
 test("a reference on the first line of a file with a byte order mark still counts", () => repo(async ({ cwd, write }) => {
   await write({
     "package.json": '{"name":"fixture"}\n',

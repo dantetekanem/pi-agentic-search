@@ -2084,11 +2084,23 @@ export class Collector {
     return hits.length > 0;
   }
 
-  async tests(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit = 10): Promise<ReferenceHit[]> {
+  /** Tests that reference `anchor` by name; `all` lists every one, and filters a name too common to search by receiver type when a Ruby index is present. */
+  async tests(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = 10): Promise<ReferenceHit[]> {
     if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return [];
-    if (this.tooCommon(def.name)) return [];
-    const { hits } = await this.references(def.name, anchor.language, { exclude: anchor, onlyTests: true, limit, perFile: false }, signal);
+    const all = limit === "all";
+    const typedOnly = this.tooCommon(def.name);
+    if (typedOnly && !(all && anchor.language === "ruby" && this.indexed)) return [];
+    const { hits } = await this.references(def.name, anchor.language, { exclude: anchor, onlyTests: true, limit: all ? Infinity : limit, perFile: false, typedOnly, maxCount: all ? ALL_MATCHES_PER_FILE : undefined }, signal);
     return hits;
+  }
+
+  /** The setup blocks that run before the test `def`, outermost first, with their first lines. */
+  async setupOf(node: SparsityNode, def: Definition, maxLines = 60): Promise<Array<{ startLine: number; endLine: number; lines: string[] }>> {
+    const lines = await this.lines(node.path);
+    const facts = lines ? this.factsFor(node.language, node.path, lines) : undefined;
+    if (!lines || !facts) return [];
+    const adapter = node.language === "ruby" ? rubyAdapter : tsAdapter;
+    return adapter.setupBlocks(facts, def).map((block) => ({ ...block, lines: lines.slice(block.startLine - 1, Math.min(block.endLine, block.startLine + maxLines - 1)) }));
   }
 }
 

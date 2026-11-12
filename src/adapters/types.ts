@@ -118,4 +118,6 @@ export interface LanguageAdapter {
   calls(facts: FileFacts, def: Definition): CallSite[];
   /** Conditions dominating the code that starts `line` inside `def`, outermost first. Method and class bodies start with none. */
   guardsAt(facts: FileFacts, def: Definition, line: number): Guard[];
+  /** The setup blocks that run before the test `def`: Ruby `setup`, `before` and `def setup`, JS/TS `beforeEach`, `beforeAll`, `before` and `setup`, in the scopes enclosing it, outermost first. */
+  setupBlocks(facts: FileFacts, def: Definition): Array<{ startLine: number; endLine: number }>;
 }

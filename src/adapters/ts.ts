@@ -228,6 +228,13 @@ function exitGuard(statement: ts.Node, sf: ts.SourceFile): Guard | undefined {
   return ifGuard(statement, sf, "after-return");
 }
 
+const SETUP_CALLS = new Set(["beforeEach", "beforeAll", "before", "setup"]);
+
+/** A `beforeEach(...)`, `beforeAll(...)`, `before(...)` or `setup(...)` statement. */
+function isSetupCall(node: ts.Node): boolean {
+  return ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && SETUP_CALLS.has(node.expression.expression.text);
+}
+
 function holdsStatements(node: ts.Node): boolean {
   return ts.isBlock(node) || ts.isSourceFile(node) || ts.isModuleBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node);
 }
@@ -577,6 +584,28 @@ export class TsAdapter implements LanguageAdapter {
     const collector = new Calls(tsFacts, def, this.cwd, node);
     collector.visit(node);
     return collector.sites;
+  }
+
+  setupBlocks(facts: FileFacts, def: Definition): Array<{ startLine: number; endLine: number }> {
+    const { sourceFile: sf, defNodes } = facts as TsFacts;
+    const target = defNodes.get(def.startLine);
+    if (!target) return [];
+    const blocks: Array<{ startLine: number; endLine: number }> = [];
+    let node: ts.Node = sf;
+    // Walk down to the test, collecting the setup calls beside each block that encloses it.
+    while (node !== target) {
+      const children: ts.Node[] = [];
+      ts.forEachChild(node, (child) => {
+        children.push(child);
+      });
+      const next = children.find((child) => child.getStart(sf) <= target.getStart(sf) && target.getEnd() <= child.getEnd());
+      if (holdsStatements(node)) {
+        for (const child of children) if (child !== next && isSetupCall(child)) blocks.push({ startLine: lineOf(sf, child.getStart(sf)), endLine: lineOf(sf, child.getEnd()) });
+      }
+      if (!next) break;
+      node = next;
+    }
+    return blocks;
   }
 
   guardsAt(facts: FileFacts, def: Definition, line: number): Guard[] {

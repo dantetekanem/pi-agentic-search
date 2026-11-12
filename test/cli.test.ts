@@ -134,7 +134,7 @@ test("CLI rejects invalid arguments before executing", () => fixture(async (cwd)
     ["scan", "--diff", "worktree", "--anchor", "cart.ts:1"],
     ["scan", "--strict-revision"], ["scan", "--strict-revision", "--diff", "worktree"],
     ["scan", "--strict-revision", "--diff", " "], ["scan", "--strict-revision", "--anchor", "cart.ts:1"],
-    ["scan", "--strict-revision=false"], ["scan", "--callers", "some"], ["collect", "cart.ts:1", "--callers", "all"],
+    ["scan", "--strict-revision=false"], ["scan", "--callers", "some"], ["collect", "cart.ts:1", "--callers", "all"], ["scan", "--tests", "some"],
   ]) {
     const result = cli(cwd, args);
     assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);

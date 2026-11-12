@@ -23,6 +23,8 @@ export interface ScanInput extends ContextInput {
   inline_budget_kb?: number;
   /** `all` lists every call site of each anchor instead of six callers, one per file. */
   callers?: "all";
+  /** `all` lists every test definition that references an anchor, with its calls and setup blocks. */
+  tests?: "all";
 }
 export interface ContextRuntime {
   indexCacheDir?: string;
@@ -67,6 +69,7 @@ export function scanContext(params: ScanInput, cwd: string, outputDir: string, r
     outputDir,
     inlineBudgetBytes: clampInt(params.inline_budget_kb, 40, 4, 48) * 1024,
     allCallers: params.callers === "all",
+    allTests: params.tests === "all",
     ...runtime,
   });
 }

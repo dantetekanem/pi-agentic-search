@@ -53,6 +53,23 @@ export interface ScanOptions {
   signal?: AbortSignal;
   /** List every call site of each anchor, several per file, instead of six callers with one per file. */
   allCallers?: boolean;
+  /** List every test definition that references an anchor in `testDefinitions`, with its calls and setup blocks. */
+  allTests?: boolean;
+}
+
+/** A test definition that references an anchor. Its own calls are the `calls` edges from `id`. */
+export interface TestDefinitionRecord {
+  id: string;
+  symbol: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  /** The anchors it references, with the lines that reference each. */
+  anchors: Array<{ id: string; lines: number[] }>;
+  /** The diff changes this test definition. */
+  changed: boolean;
+  /** The setup blocks that run before it (`setup`, `before`, `beforeEach`…), outermost first; `lines` holds up to 60 of each. */
+  setup: Array<{ startLine: number; endLine: number; lines: string[] }>;
 }
 
 /** Where a changed file takes effect. `migration` and `config` files with a parser are still anchored like code. */
@@ -168,6 +185,8 @@ export interface ScanResult {
   fileHunks: FileHunkRecord[];
   anchors: AnchorRecord[];
   testGroups: TestGroupRecord[];
+  /** With `allTests`: every test definition that references an anchor. Absent otherwise. */
+  testDefinitions?: TestDefinitionRecord[];
   skippedAnchors: string[];
   nodes: SparsityNode[];
   edges: SparsityEdge[];
@@ -792,7 +811,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     if (budget.exhausted || signal?.aborted) return { callers: notSearched, tests: [] as ReferenceHit[] };
     const [callers, tests] = await Promise.all([
       candidate.collector.callers(candidate.node, candidate.def, signal, options.allCallers ? "all" : 6),
-      candidate.collector.tests(candidate.node, candidate.def, signal, 8),
+      candidate.collector.tests(candidate.node, candidate.def, signal, options.allTests ? "all" : 8),
     ]);
     return { callers, tests };
   });
@@ -841,6 +860,39 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       effects: (candidate.node.effects ?? []).filter((effect) => candidate.changedLines.includes(effect.line)),
       ...(candidate.node.entry ? { entry: candidate.node.entry } : {}),
     });
+  }
+
+  // Tests as facts of their own: every test definition that references an anchor, its calls one hop out, its setup
+  let testDefinitions: TestDefinitionRecord[] | undefined;
+  if (options.allTests) {
+    const changedIds = new Set(candidates.map((candidate) => candidate.node.id));
+    const found = new Map<string, { hit: ReferenceHit; collector: Collector; anchors: Map<string, number[]> }>();
+    for (const [index, candidate] of chosen.entries()) {
+      const { callers, tests } = lookups[index]!;
+      for (const hit of [...tests, ...callers.hits.filter((item) => item.test)]) {
+        const entry = found.get(hit.node.id) ?? { hit, collector: candidate.collector, anchors: new Map<string, number[]>() };
+        const lines = entry.anchors.get(candidate.node.id) ?? [];
+        if (!lines.includes(hit.line)) lines.push(hit.line);
+        entry.anchors.set(candidate.node.id, lines);
+        found.set(hit.node.id, entry);
+      }
+    }
+    testDefinitions = [];
+    for (const { hit, collector, anchors: referenced } of found.values()) {
+      // An anchor is already expanded; any other test is expanded here, its callees left unexpanded.
+      if (!anchorIds.has(hit.node.id) && !budget.exhausted && !signal?.aborted) await collector.expand(hit.node, hit.def, hit.node.depth, [], [], signal);
+      testDefinitions.push({
+        id: hit.node.id,
+        symbol: hit.node.symbol,
+        path: hit.node.path,
+        startLine: hit.node.startLine,
+        endLine: hit.node.endLine,
+        anchors: [...referenced].map(([id, lines]) => ({ id, lines: lines.sort((a, b) => a - b) })),
+        changed: changedIds.has(hit.node.id),
+        setup: await collector.setupOf(hit.node, hit.def),
+      });
+    }
+    testDefinitions.sort((a, b) => a.path.localeCompare(b.path) || a.startLine - b.startLine);
   }
 
   // Dangling definitions: removed on the old side, callers still present on the new side
@@ -905,6 +957,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     fileHunks,
     anchors,
     testGroups,
+    ...(testDefinitions ? { testDefinitions } : {}),
     skippedAnchors,
     nodes,
     edges,
@@ -1084,6 +1137,24 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     push("depth1", out.join("\n"));
   }
 
+  if (result.testDefinitions?.length) {
+    const out: string[] = ["Test definitions that reference the changed definitions, with the setup blocks that run before them and their own calls."];
+    for (const test of result.testDefinitions) {
+      out.push("");
+      out.push(`${test.id} ${test.symbol} ${test.path}:${test.startLine}-${test.endLine} references ${test.anchors.map((anchor) => `${anchor.id}:${anchor.lines.join(",")}`).join(", ")}${test.changed ? " (changed in this diff)" : ""}`);
+      for (const block of test.setup) {
+        out.push(`  setup ${block.startLine}-${block.endLine}:`);
+        const width = String(block.endLine).length;
+        block.lines.forEach((text, index) => out.push(`  ${String(block.startLine + index).padStart(width)} | ${text}`));
+        if (block.lines.length < block.endLine - block.startLine + 1) out.push(`  ${" ".repeat(width)} | … to line ${block.endLine}`);
+      }
+      const outgoing = result.edges.filter((edge) => edge.from === test.id && edge.relationship !== "called_by");
+      out.push(outgoing.length ? `  calls (${outgoing.length}):` : "  calls: none found");
+      for (const edge of outgoing) out.push(`  ${edgeLine(edge, byId)}`);
+    }
+    push("tests", out.join("\n"));
+  }
+
   const deeper = result.nodes.filter((node) => node.depth >= 2 && !anchorIds.has(node.id));
   if (deeper.length) {
     const out: string[] = ["Definitions reached at depth 2 or more. Signature line only."];
@@ -1198,7 +1269,7 @@ function assemble(rendered: Array<Omit<Section, "startLine" | "endLine" | "inlin
   sections = layout(manifestBody);
 
   let used = 0;
-  const inlineOrder = ["manifest", ...result.anchors.map((anchor) => `anchor:${anchor.id}`), ...result.fileHunks.map((file) => `file:${file.id}`), ...result.testGroups.map((group) => `test-group:${group.id}`), "dangling", "depth1", "recap", "depth2"];
+  const inlineOrder = ["manifest", ...result.anchors.map((anchor) => `anchor:${anchor.id}`), ...result.fileHunks.map((file) => `file:${file.id}`), ...result.testGroups.map((group) => `test-group:${group.id}`), "dangling", "depth1", "tests", "recap", "depth2"];
   for (const id of inlineOrder) {
     const section = sections.find((item) => item.id === id);
     if (!section) continue;

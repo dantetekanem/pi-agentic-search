@@ -742,7 +742,9 @@ class Parser {
   }
 
   private visitClassLevelCall(call: Prism.CallNode, inClassBody: boolean): void {
-    if (call.receiver && kindName(call.receiver) !== "SelfNode") {
+    // `RSpec.describe X do` reads like a bare `describe`; other calls with a receiver define nothing.
+    const rspec = call.receiver && /^(::)?RSpec$/.test(constantPathText(call.receiver) ?? "") && TEST_BLOCKS.has(call.name);
+    if (call.receiver && kindName(call.receiver) !== "SelfNode" && !rspec) {
       if (call.name === "sig") this.captureSig(call);
       return;
     }
@@ -1166,6 +1168,42 @@ export class RubyAdapter implements LanguageAdapter {
       node = step.child;
     }
   }
+
+  setupBlocks(facts: FileFacts, def: Definition): Array<{ startLine: number; endLine: number }> {
+    const ruby = facts as RubyFacts;
+    const offset = firstCodeOffset(ruby, def.startLine);
+    if (offset === undefined) return [];
+    const blocks: Array<{ startLine: number; endLine: number }> = [];
+    let node: Node = ruby.program;
+    // Walk down to the test, collecting the setup statements beside each scope that encloses it.
+    for (;;) {
+      let next: Node | undefined;
+      if (kindName(node) === "StatementsNode") {
+        for (const statement of (node as Prism.StatementsNode).body) {
+          if (containsOffset(statement, offset)) next = statement;
+          else if (isSetup(statement)) blocks.push(this.lineRange(ruby, statement));
+        }
+      } else {
+        next = node.compactChildNodes().find((child) => containsOffset(child, offset));
+      }
+      if (!next || next.location.startOffset === offset) return blocks;
+      node = next;
+    }
+  }
+
+  private lineRange(facts: RubyFacts, node: Node): { startLine: number; endLine: number } {
+    const end = node.location.startOffset + Math.max(0, node.location.length - 1);
+    return { startLine: lineAt(facts.lineStarts, node.location.startOffset), endLine: lineAt(facts.lineStarts, end) };
+  }
+}
+
+const SETUP_CALLS = new Set(["setup", "before", "prepend_before", "append_before"]);
+
+/** `setup do`, `setup :method`, `before do`, `before(:each) do` or `def setup`. */
+function isSetup(statement: Node): boolean {
+  const kind = kindName(statement);
+  if (kind === "DefNode") return (statement as Prism.DefNode).name === "setup";
+  return kind === "CallNode" && !(statement as Prism.CallNode).receiver && SETUP_CALLS.has((statement as Prism.CallNode).name);
 }
 
 export const rubyAdapter = new RubyAdapter();
