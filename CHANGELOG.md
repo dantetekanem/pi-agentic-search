@@ -7,6 +7,7 @@
 - Scan anchors report `status` (`added` or `modified` against the base revision), `whitespaceOnly` (changed lines that `git diff -w` drops, from one extra Git call per scan) and `signatureChanged` (the parameter list differs from the base definition's). Adapter definitions carry their parameter list as `signature`.
 - Unresolved edges carry a `reason` (`operator`, `unknown-receiver`, `dynamic` or `no-definition`), and collect and scan coverage report `unresolvedByReason`. The scan recap and collect coverage text show the counts.
 - Scan anchors that run when their file loads carry `loadTime: true`: top-level statements, declarations, constants and objects, and Ruby class-body calls other than `scope` and `define_method`.
+- Guards: the Ruby and TypeScript adapters report the conditions that dominate a line (`guardsAt`) and a call site (`CallSite.guards`), as written, with the branch `then`, `else` or `after-return`. Scan anchors list `guards` for their changed lines, call edges carry their call site's guards, and the anchor section's text shows them.
 
 ### Changed
 

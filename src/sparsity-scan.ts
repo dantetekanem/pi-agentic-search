@@ -25,7 +25,7 @@ import {
 import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
-import type { AdapterDefinition } from "./adapters/types.ts";
+import type { AdapterDefinition, Guard } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
 import { ensureInsideCwd } from "./sparsity-shared.ts";
 import { boundarySignal, RANKING_EXPLANATION } from "./rank.ts";
@@ -116,6 +116,8 @@ export interface AnchorRecord {
   signatureChanged?: boolean;
   /** Runs when its file loads: a top-level statement, declaration, constant or object, or a class-body call such as `has_many`. Absent otherwise. */
   loadTime?: true;
+  /** The changed lines that have dominating conditions, each with those conditions outermost first. */
+  guards: Array<{ line: number; guards: Guard[] }>;
 }
 
 export interface DanglingRecord {
@@ -717,6 +719,14 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     const known = matches.filter((item) => item.signature !== undefined);
     return { status: "modified", whitespaceOnly: whitespaceOnly ?? [], signatureChanged: signature !== undefined && known.length > 0 && !known.some((item) => item.signature === signature) };
   };
+  const guardsFor = async (candidate: Candidate): Promise<AnchorRecord["guards"]> => {
+    const language = candidate.file.language!;
+    const lines = await candidate.collector.lines(candidate.node.path);
+    const facts = lines ? candidate.collector.factsFor(language, candidate.node.path, lines) : undefined;
+    if (!facts) return [];
+    const adapter = language === "ruby" ? rubyAdapter : tsAdapter;
+    return candidate.changedLines.map((line) => ({ line, guards: adapter.guardsAt(facts, candidate.def, line) })).filter((entry) => entry.guards.length);
+  };
 
   // Expansion
   const queues = new Map<Collector, QueueItem[]>();
@@ -780,6 +790,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       tests: testRecords,
       ...await baseFacts(candidate),
       ...(LOAD_TIME_KINDS.has(candidate.def.kind) || (candidate.def as AdapterDefinition).loadTime ? { loadTime: true as const } : {}),
+      guards: await guardsFor(candidate),
     });
   }
 
@@ -941,6 +952,17 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     out.push(`changed lines (+): ${compressRanges(anchor.changedLines)}`);
     const baseFacts = [anchor.status, anchor.signatureChanged ? "parameters changed" : undefined, anchor.whitespaceOnly?.length ? `whitespace-only changes on ${compressRanges(anchor.whitespaceOnly)}` : undefined].filter(Boolean);
     if (baseFacts.length) out.push(`base: ${baseFacts.join("; ")}`);
+    if (anchor.guards.length) {
+      const byGuards = new Map<string, { lines: number[]; guards: Guard[] }>();
+      for (const entry of anchor.guards) {
+        const key = JSON.stringify(entry.guards);
+        const group = byGuards.get(key) ?? { lines: [], guards: entry.guards };
+        group.lines.push(entry.line);
+        byGuards.set(key, group);
+      }
+      out.push("guards on changed lines:");
+      for (const group of byGuards.values()) out.push(`  ${compressRanges(group.lines)}: ${group.guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`).join(" › ")}`);
+    }
     out.push(node.snippet);
     if (anchor.vicinity) out.push(anchor.vicinity);
     for (const block of anchor.removed) {

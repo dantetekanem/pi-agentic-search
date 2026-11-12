@@ -67,6 +67,19 @@ export interface ResolvedTarget {
   local?: "parameter" | "local";
 }
 
+/**
+ * A condition that dominates code, as written: `if x`, `elsif x`, `unless x` and TypeScript `if (x)` keep their keyword;
+ * a ternary condition or the left side of `&&`/`||` is the expression alone. `then`: inside the branch taken when that
+ * text holds (`unless x` holds when x is falsy; the right side of `||` is the `else` of its left side). `else`: inside the
+ * other branch. `after-return`: after an early exit (return, next, break, raise, throw, continue) taken when it holds.
+ * The scanner does not interpret the condition.
+ */
+export interface Guard {
+  line: number;
+  text: string;
+  branch: "then" | "else" | "after-return";
+}
+
 export interface CallSite {
   name: string;
   line: number;
@@ -80,6 +93,8 @@ export interface CallSite {
   label?: string;
   chain?: string[];
   dynamic?: string;
+  /** Conditions dominating the call inside its definition, outermost first; absent when none. */
+  guards?: Guard[];
 }
 
 export interface LanguageAdapter {
@@ -89,4 +104,6 @@ export interface LanguageAdapter {
   parse(path: string, source: string, detached?: boolean): FileFacts | undefined;
   definitionAt(facts: FileFacts, line: number): AdapterDefinition | undefined;
   calls(facts: FileFacts, def: Definition): CallSite[];
+  /** Conditions dominating the code that starts `line` inside `def`, outermost first. Method and class bodies start with none. */
+  guardsAt(facts: FileFacts, def: Definition, line: number): Guard[];
 }

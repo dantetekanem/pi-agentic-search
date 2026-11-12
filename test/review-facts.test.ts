@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { rubyAdapter } from "../src/adapters/ruby.ts";
+import { tsAdapter } from "../src/adapters/ts.ts";
 import { collectSparsity, formatSparsity } from "../src/sparsity.ts";
 import { scanSparsity, type ScanOptions } from "../src/sparsity-scan.ts";
 
@@ -315,4 +317,109 @@ export function limited(count: number) {
   });
   assert.equal(result.anchors.find((anchor) => anchor.path === "config/initializers/flags.rb")?.loadTime, true);
   assert.match(result.inline, /files 11 \(code 2, tests 0, generated 0, other 0, migration 1, config 3, dependency 3, schema 2\)/);
+}));
+
+const rubyGuards = `class Checkout
+  def total(cart)
+    return 0 unless Feature.enabled?(:checkout)
+    if cart.empty?
+      log_empty
+    elsif cart.gift?
+      wrap(cart)
+    else
+      charge(cart)
+    end
+    discount = cart.vip? ? vip_rate : base_rate
+    cart.ready? && submit(cart)
+    notify(cart) if cart.notify?
+    cart.total
+  end
+end
+`;
+
+test("the Ruby adapter reports the conditions that dominate a line and a call site, as written", async () => {
+  assert.equal(await rubyAdapter.ready(), true);
+  const facts = rubyAdapter.parse("app/checkout.rb", rubyGuards)!;
+  const def = facts.definitions.find((item) => item.symbol === "Checkout#total")!;
+  const exit = { line: 3, text: "unless Feature.enabled?(:checkout)", branch: "after-return" };
+  const at = (line: number) => rubyAdapter.guardsAt(facts, def, line);
+  assert.deepEqual(at(3), [{ line: 3, text: "unless Feature.enabled?(:checkout)", branch: "then" }], "the early return runs on the guard's own branch");
+  assert.deepEqual(at(4), [exit]);
+  assert.deepEqual(at(5), [exit, { line: 4, text: "if cart.empty?", branch: "then" }]);
+  assert.deepEqual(at(6), [exit, { line: 4, text: "if cart.empty?", branch: "else" }]);
+  assert.deepEqual(at(7), [exit, { line: 4, text: "if cart.empty?", branch: "else" }, { line: 6, text: "elsif cart.gift?", branch: "then" }]);
+  assert.deepEqual(at(9), [exit, { line: 4, text: "if cart.empty?", branch: "else" }, { line: 6, text: "elsif cart.gift?", branch: "else" }]);
+  assert.deepEqual(at(11), [exit], "a line that starts outside the ternary is only behind the early return");
+  assert.deepEqual(at(13), [exit, { line: 13, text: "if cart.notify?", branch: "then" }]);
+  assert.deepEqual(at(14), [exit]);
+  assert.deepEqual(at(20), [], "lines outside the definition have no guards");
+
+  const sites = rubyAdapter.calls(facts, def);
+  const guardsOf = (name: string) => sites.find((site) => site.name === name)?.guards;
+  assert.equal(guardsOf("enabled?"), undefined, "a condition is not behind itself");
+  assert.deepEqual(guardsOf("empty?"), [exit]);
+  assert.deepEqual(guardsOf("log_empty"), [exit, { line: 4, text: "if cart.empty?", branch: "then" }]);
+  assert.deepEqual(guardsOf("vip_rate"), [exit, { line: 11, text: "cart.vip?", branch: "then" }]);
+  assert.deepEqual(guardsOf("base_rate"), [exit, { line: 11, text: "cart.vip?", branch: "else" }]);
+  assert.deepEqual(guardsOf("submit"), [exit, { line: 12, text: "cart.ready?", branch: "then" }]);
+});
+
+const tsGuards = `export function total(cart: Cart) {
+  if (!isEnabled("checkout")) return 0;
+  if (cart.empty) {
+    logEmpty();
+  } else if (cart.gift) {
+    wrap(cart);
+  } else {
+    charge(cart);
+  }
+  const rate = cart.vip ? vipRate() : baseRate();
+  cart.ready && submit(cart);
+  return cart.total;
+}
+`;
+
+test("the TypeScript adapter reports the conditions that dominate a line and a call site, as written", () => {
+  const facts = tsAdapter.parse("src/total.ts", tsGuards, true)!;
+  const def = facts.definitions.find((item) => item.symbol === "total")!;
+  const exit = { line: 2, text: 'if (!isEnabled("checkout"))', branch: "after-return" };
+  const at = (line: number) => tsAdapter.guardsAt(facts, def, line);
+  assert.deepEqual(at(2), []);
+  assert.deepEqual(at(3), [exit]);
+  assert.deepEqual(at(4), [exit, { line: 3, text: "if (cart.empty)", branch: "then" }]);
+  assert.deepEqual(at(5), [exit, { line: 3, text: "if (cart.empty)", branch: "else" }], "a leading brace and else are not the line's code");
+  assert.deepEqual(at(6), [exit, { line: 3, text: "if (cart.empty)", branch: "else" }, { line: 5, text: "if (cart.gift)", branch: "then" }]);
+  assert.deepEqual(at(8), [exit, { line: 3, text: "if (cart.empty)", branch: "else" }, { line: 5, text: "if (cart.gift)", branch: "else" }]);
+  assert.deepEqual(at(10), [exit]);
+  assert.deepEqual(at(12), [exit]);
+
+  const sites = tsAdapter.calls(facts, def);
+  const guardsOf = (name: string) => sites.find((site) => site.name === name)?.guards;
+  assert.equal(guardsOf("isEnabled"), undefined);
+  assert.deepEqual(guardsOf("logEmpty"), [exit, { line: 3, text: "if (cart.empty)", branch: "then" }]);
+  assert.deepEqual(guardsOf("vipRate"), [exit, { line: 10, text: "cart.vip", branch: "then" }]);
+  assert.deepEqual(guardsOf("baseRate"), [exit, { line: 10, text: "cart.vip", branch: "else" }]);
+  assert.deepEqual(guardsOf("submit"), [exit, { line: 11, text: "cart.ready", branch: "then" }]);
+});
+
+test("scan anchors carry the guards of their changed lines, and call edges the guards of their call sites", () => repo(async ({ git, write, scan }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "app/checkout.rb": "class Checkout\n  def total(cart)\n    cart.total\n  end\n\n  def notify(cart)\n    cart\n  end\nend\n",
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({ "app/checkout.rb": "class Checkout\n  def total(cart)\n    return 0 unless Feature.enabled?(:checkout)\n    notify(cart) if cart.notify?\n    cart.total\n  end\n\n  def notify(cart)\n    cart\n  end\nend\n" });
+  git("commit", "-qam", "gate");
+
+  const result = await scan("HEAD~1..HEAD");
+  const anchor = result.anchors.find((item) => item.symbol === "Checkout#total")!;
+  const exit = { line: 3, text: "unless Feature.enabled?(:checkout)", branch: "after-return" };
+  assert.deepEqual(anchor.guards, [
+    { line: 3, guards: [{ line: 3, text: "unless Feature.enabled?(:checkout)", branch: "then" }] },
+    { line: 4, guards: [exit, { line: 4, text: "if cart.notify?", branch: "then" }] },
+  ]);
+  const notify = result.edges.find((edge) => edge.from === anchor.id && edge.name === "notify");
+  assert.deepEqual(notify?.guards, [exit, { line: 4, text: "if cart.notify?", branch: "then" }]);
+  assert.deepEqual(result.anchors.find((item) => item.symbol === "Checkout#notify")?.guards ?? [], [], "an unchanged anchor or one without guards carries none");
 }));

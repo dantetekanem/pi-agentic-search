@@ -9,7 +9,7 @@ import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
-import type { CallSite as AdapterCallSite, FileFacts } from "./adapters/types.ts";
+import type { CallSite as AdapterCallSite, FileFacts, Guard } from "./adapters/types.ts";
 import {
   camelToSnake,
   displaySearchRoot,
@@ -54,6 +54,8 @@ export interface SparsityEdge {
   note?: string;
   /** Set on unresolved edges only. */
   reason?: UnresolvedReason;
+  /** Conditions dominating the call site, outermost first; absent when none. */
+  guards?: Guard[];
 }
 
 export interface SparsityCoverage {
@@ -368,6 +370,11 @@ function indentOf(line: string): number {
 
 function fingerprintOf(lines: string[], startLine: number, endLine: number): string {
   return createHash("sha256").update(lines.slice(startLine - 1, endLine).join("\n")).digest("hex").slice(0, 16);
+}
+
+/** The guards a call site carries onto its edges. */
+function siteGuards(site: CallSite): { guards?: Guard[] } {
+  return site.guards?.length ? { guards: site.guards } : {};
 }
 
 /** A Ruby call whose method name is an operator such as `+`, `[]` or `<=>`. */
@@ -1526,7 +1533,7 @@ export class Collector {
     const emitted: Array<{ order: number; edge: SparsityEdge }> = [];
     for (const item of pending.filter((entry) => !entry.resolved.candidates.length)) {
       const reason = item.resolved.resolution === "unresolved" ? this.unresolvedReason(item.site, item.resolved, node.language) : undefined;
-      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note, ...(reason ? { reason } : {}) } });
+      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note, ...(reason ? { reason } : {}), ...siteGuards(item.site) } });
     }
 
     const trust = (resolution: Resolution) => (resolution === "exact" ? 0 : resolution === "static_candidate" ? 1 : 2);
@@ -1557,11 +1564,11 @@ export class Collector {
           newTargets += 1;
         }
         if (!created) {
-          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed`, reason: "no-definition" } });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed`, reason: "no-definition", ...siteGuards(site) } });
           continue;
         }
         if (created.node.id === node.id && candidate.line !== created.def.startLine) {
-          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "local", line: site.line, note: `${label} is defined inside this definition at line ${candidate.line}; a local, not a separate definition.` } });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "local", line: site.line, note: `${label} is defined inside this definition at line ${candidate.line}; a local, not a separate definition.`, ...siteGuards(site) } });
           continue;
         }
         const edge: SparsityEdge = {
@@ -1573,6 +1580,7 @@ export class Collector {
           via: resolved.via,
           line: site.line,
           note: resolved.note,
+          ...siteGuards(site),
         };
         if (resolved.resolution === "ambiguous") edge.candidates = resolved.candidates.slice(0, 8).map((c) => `${c.path}:${c.line}`);
         emitted.push({ order: item.order, edge });

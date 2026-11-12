@@ -26,6 +26,8 @@ Anchors in `pack.json` also carry facts that a review tool can check without re-
 
 Changed files are classed as `code`, `test`, `migration`, `config`, `dependency`, `schema`, `generated` or `other`. Migrations and configuration that Ruby or JS/TS can parse are still anchored; dependency manifests, lockfiles and schema dumps get hunk sections. Anchors that run when their file loads carry `loadTime: true`: top-level statements, declarations, constants and objects, and Ruby class-body calls such as `has_many` or `validates` (a block passed to one is not separated from it). `scope` and `define_method` bodies run when called and are not marked.
 
+An anchor's `guards` lists its changed lines that run under a condition, each with the conditions that dominate it, outermost first. A condition is reported as written: `if x`, `elsif x`, `unless x` and TypeScript `if (x)` keep their keyword; a ternary condition or the left side of `&&` or `||` is the expression alone. Its `branch` is `then` (inside the branch taken when that text holds), `else`, or `after-return` (after an early return, `next`, `break`, `raise` or `throw` taken when it holds). Call edges carry the guards of their call site. Method and class bodies start with no guards, and the tool does not interpret any condition.
+
 ## Installation
 
 You need Node.js 22+ and `rg` ([ripgrep](https://github.com/BurntSushi/ripgrep)) on your `PATH`. Diff context also uses Git. The package includes its Ruby parser and TypeScript dependency. The CLI does not need Pi or a TypeScript loader.
