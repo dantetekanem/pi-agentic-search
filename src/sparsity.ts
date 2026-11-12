@@ -191,6 +191,11 @@ interface SearchSpec {
 
 const TEST_GLOBS = ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"];
 const LOCK_FILE = /(^|\/)(?:[^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
+// The files ripgrep's `-t ruby` and `-t ts -t js` select, for revision files matched in memory.
+const RIPGREP_TYPES: Record<Language, RegExp> = {
+  ruby: /(^|\/)(?:[^/]+\.(?:gemspec|rake|rb|rbw)|\.irbrc|Gemfile|Rakefile|config\.ru)$/,
+  javascript: /\.(?:cjs|js|jsx|mjs|vue|cts|mts|ts|tsx)$/,
+};
 
 interface ConstantResolution {
   candidates: Candidate[];
@@ -383,7 +388,7 @@ function inSearchScope(path: string, spec: SearchSpec): boolean {
     const scope = normalizeRepoRelativePath(entry);
     if (scope === path) return true;
     if (!underRoot(scope, path) || excludedFromSearch(path)) return false;
-    if (spec.language && languageFor(path) !== spec.language) return false;
+    if (spec.language && !RIPGREP_TYPES[spec.language].test(path)) return false;
     return !spec.testsOnly || isTestPath(path) || /_spec\.rb$/.test(path);
   });
 }
