@@ -49,6 +49,8 @@ end
   "bin/tool": '#!/usr/bin/env -S node --no-warnings\nimport { shout } from "../src/shout.js";\n\nconsole.log(shout("hi"));\n',
   "src/shout.js": "export function shout(text) {\n  return text.toUpperCase();\n}\n",
   "bin/setup": "#!/usr/bin/env bash\necho setup\n",
+  "bin/worker": "#!/usr/bin/env ruby\nclass Worker\n  def call\n    Pricing.round(2.5)\n  end\nend\n\nWorker.new.call\n",
+  "bin/cleanup": "#!/usr/bin/env ruby\nrequire \"json\"\n\ndef main\n  puts JSON.generate(done: true)\nend\n\nmain\n",
 };
 
 async function repo(run: (scan: (options: Partial<ScanOptions>) => Promise<ScanResult>, change: (files: Record<string, string>) => Promise<void>) => Promise<void>) {
@@ -115,6 +117,22 @@ test("a changed Ruby script with no file ending is anchored like a .rb file, and
 test("a script is searched for callers like any file of its language", () => repo(async (scan) => {
   const result = await scan({ anchors: ["app/models/pricing.rb:2", "src/shout.js:1"] });
   const callers = (symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)!.callers.map((caller) => [caller.path, caller.symbol]);
-  assert.deepEqual(callers("Pricing.round"), [["bin/report", "Report#total"]]);
+  assert.deepEqual(callers("Pricing.round"), [["bin/report", "Report#total"], ["bin/worker", "Worker#call"]]);
   assert.deepEqual(callers("shout").map(([path]) => path), ["bin/tool"]);
+}));
+
+test("a script's top-level call is a caller of what it calls, and the command line is where its work starts", () => repo(async (scan) => {
+  const result = await scan({ anchors: ["bin/report:5", "bin/worker:3", "bin/cleanup:4", "src/shout.js:1"] });
+  const callers = (symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)!.callers.map((caller) => {
+    const node = result.nodes.find((entry) => entry.id === caller.id)!;
+    return [node.path, node.kind, caller.line, caller.resolution, node.entry];
+  });
+  const command = { kind: "command", exact: true };
+  assert.deepEqual(callers("Report.run"), [["bin/report", "statement", 18, "exact", command]], "exit Report.run(ARGV) if $PROGRAM_NAME == __FILE__");
+  assert.deepEqual(callers("Worker#call"), [["bin/worker", "statement", 8, "exact", command]], "Worker.new.call");
+  assert.deepEqual(callers("main"), [["bin/cleanup", "statement", 8, "exact", command]], "main, at the bottom of the script that defines it");
+  assert.deepEqual(callers("shout"), [["bin/tool", "statement", 4, "exact", command]], "the Node script's top-level call");
+  const statement = result.nodes.find((node) => node.path === "bin/report" && node.kind === "statement")!;
+  assert.equal(statement.symbol, "exit Report.run(ARGV) if $PROGRAM_NAME == __FILE__");
+  assert.ok(!result.nodes.some((node) => node.kind === "statement" && /require/.test(node.symbol)), "a require loads code, and runs none");
 }));

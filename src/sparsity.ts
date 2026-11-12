@@ -11,7 +11,7 @@ import { readRoutes } from "./adapters/ruby-routes.ts";
 import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
-import { scriptFiles, scriptLanguage } from "./scripts.ts";
+import { scriptFiles, scriptLanguage, shebangLanguage, type ScriptEntry } from "./scripts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
@@ -51,9 +51,10 @@ export interface SparsityNode {
   effects?: Effect[];
   /**
    * The framework calls this definition: a job's `perform` or a controller action, which needs a Ruby index; or its
-   * package exposes it: a command's statement, the default export of a module Pi loads, what the package exports.
+   * package exposes it: a command's statement, the default export of a module Pi loads, what the package exports; or
+   * it is a script's top-level statement, which runs from the command line.
    */
-  entry?: Entry | PackageEntry;
+  entry?: Entry | PackageEntry | ScriptEntry;
 }
 
 export interface SparsityEdge {
@@ -1430,7 +1431,9 @@ export class Collector {
       depth,
     };
     const exposed = language === "javascript" ? this.packageEntries() : undefined;
-    const entry = entries?.get(entryKey(display, def.startLine)) ?? exposed?.byName.get(`${display}#${def.name}`) ?? (def.kind === "statement" ? exposed?.commands.get(display) : undefined);
+    // A script's top-level statement runs from the command line, when no package.json names the script a command first.
+    const script: ScriptEntry | undefined = def.kind === "statement" && shebangLanguage(lines[0]) ? { kind: "command", exact: true } : undefined;
+    const entry = entries?.get(entryKey(display, def.startLine)) ?? exposed?.byName.get(`${display}#${def.name}`) ?? (def.kind === "statement" ? exposed?.commands.get(display) : undefined) ?? script;
     if (entry) node.entry = entry;
     this.nodes.push(node);
     this.nodesByKey.set(key, node);
@@ -2003,13 +2006,16 @@ export class Collector {
     const compatible = (type: string | undefined): boolean => !type || !ownerSymbol
       || type === ownerSymbol || ancestorsOf(index, type).includes(ownerSymbol) || ownerAncestors.includes(type);
     let untyped = 0;
+    // A bare call in the file of a top-level `def`, such as `main` at the bottom of a script, can only mean that def.
+    const topLevel = options.exclude !== undefined && !/[#.]/.test(options.exclude.symbol) && options.exclude.kind === "method";
+    const sameFileBareCall = (site: IndexedCallSite) => topLevel && site.receiver === undefined && site.path === options.exclude!.path;
     const filtered = sites
       .filter((site) => !(options.exclude && site.path === options.exclude.path && site.line >= options.exclude.startLine && site.line <= options.exclude.endLine))
       .filter((site) => !(options.skipTests && isTestPath(site.path)))
       .filter((site) => !(options.onlyTests && !isTestPath(site.path)))
       .filter((site) => {
         const type = typeOf(site);
-        if (options.typedOnly && !type) {
+        if (options.typedOnly && !type && !sameFileBareCall(site)) {
           untyped += 1;
           return false;
         }
@@ -2029,7 +2035,7 @@ export class Collector {
       if (options.limit === Infinity && this.budget.exhausted) break;
       const created = await this.node(site.path, site.line, options.depth ?? 1, site.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
-      const exactVia = this.dispatchVia(index, site, typeOf(site), name, options.exclude);
+      const exactVia = this.dispatchVia(index, site, typeOf(site), name, options.exclude) ?? (sameFileBareCall(site) ? "self" : undefined);
       hits.push({
         node: created.node, def: created.def, line: site.line, text: await this.lineText(site.path, site.line), test: isTestPath(site.path),
         ...(exactVia ? { exactVia } : {}), ...(site.enqueue ? { enqueue: true } : {}),
@@ -2105,6 +2111,16 @@ export class Collector {
     const adapter = hit.node.language === "ruby" ? rubyAdapter : tsAdapter;
     const site = adapter.calls(facts, hit.def).find((item) => item.line === hit.line && item.name === name);
     return site ? { site, guards: site.guards ?? [] } : { guards: adapter.guardsAt(facts, hit.def, hit.line) };
+  }
+
+  /** `path` imports `name` from the module at `target`, by a relative import of its own. */
+  private async importsFrom(path: string, name: string, target: string): Promise<boolean> {
+    const lines = await this.lines(path);
+    const binding = lines ? parseJsImports(lines.join("\n")).get(name) : undefined;
+    if (!binding || binding.namespace || binding.imported !== name || !binding.specifier.startsWith(".")) return false;
+    const bare = (file: string) => file.replace(/\.(?:[cm]?[jt]sx?)$/, "");
+    const wanted = bare(this.absolutePath(target));
+    return jsImportCandidatePaths(this.absolutePath(path), binding.specifier).some((candidate) => bare(candidate) === wanted);
   }
 
   /** The TypeScript checker resolved the call to `anchor` itself. */
@@ -2260,6 +2276,8 @@ export class Collector {
       const { site, guards } = hit.node.kind === "template" || hit.convention ? { site: undefined, guards: [] } : await this.callSite(hit, name);
       hit.guards = guards;
       if (!hit.exactVia && this.resolvesTo(site, anchor)) hit.exactVia = "checker";
+      // A file outside the TypeScript programs, such as a Node script with no ending, is still exact by its import.
+      if (!hit.exactVia && anchor.language === "javascript" && await this.importsFrom(hit.node.path, name, anchor.path)) hit.exactVia = "import";
       this.edges.push({
         from: hit.node.id,
         to: anchor.id,

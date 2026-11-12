@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type * as Prism from "@ruby/prism";
 import { excerpt, normalizeSignature } from "../shared.ts";
+import { shebangLanguage } from "../scripts.ts";
 import type {
   AdapterDefinition,
   CallSite,
@@ -52,6 +53,11 @@ const DECLARATION_CALLS = new Set([
 const TEST_BLOCKS = new Set(["test", "it", "describe", "context", "scenario", "specify", "shared_examples", "feature"]);
 const MIXIN_CALLS = new Set(["include", "extend", "prepend"]);
 const CONSTRUCTOR_LIKE = new Set(["new", "find", "find_by", "find_by!", "find_or_create_by", "find_or_create_by!", "find_or_initialize_by", "create", "create!", "build", "first", "last", "take", "instance", "current", "for", "from", "load", "fetch", "lookup", "wrap", "parse", "cast", "must"]);
+
+/** What a script's top level declares rather than runs. */
+const SCRIPT_DECLARATIONS = new Set(["ClassNode", "ModuleNode", "DefNode", "SingletonClassNode", "ConstantWriteNode", "ConstantPathWriteNode"]);
+/** Calls at a script's top level that load code rather than run it. */
+const LOAD_CALLS = new Set(["require", "require_relative", "load", "autoload", "using"]);
 
 export const RELATION_METHODS = new Set([
   "where", "not", "rewhere", "order", "reorder", "limit", "offset", "joins", "left_joins", "left_outer_joins", "includes",
@@ -502,6 +508,8 @@ class Parser {
   private pendingSig: ParamInfo[] | undefined;
   private pendingReturns: string | undefined;
   private readonly comments: Array<{ line: number; text: string }>;
+  /** The source is a script, its first line a Ruby shebang, so its top-level statements are definitions too. */
+  script = false;
 
   constructor(private readonly bytes: Buffer, private readonly lineStarts: Uint32Array, comments: ParseResult["comments"]) {
     this.comments = comments.map((comment) => ({ line: lineAt(lineStarts, comment.location.startOffset), text: sliceSource(bytes, comment.location) }));
@@ -524,7 +532,20 @@ class Parser {
   }
 
   visitProgram(program: Prism.ProgramNode): void {
+    // A script's top-level code runs when the script does: each statement of it is a definition, with its own calls.
+    if (this.script) for (const statement of program.statements.body) this.visitScriptStatement(statement);
     this.visitBody(program.statements, false);
+  }
+
+  /** A statement at a script's top level that runs: not a class, module, method or constant, nor a `require`. */
+  private visitScriptStatement(node: Node): void {
+    if (SCRIPT_DECLARATIONS.has(kindName(node))) return;
+    const call = kindName(node) === "CallNode" ? node as Prism.CallNode : undefined;
+    if (call && !call.receiver && LOAD_CALLS.has(call.name)) return;
+    const [startLine, endLine] = this.range(node);
+    const text = sliceSource(this.bytes, node.location).split("\n")[0]!.trim();
+    this.definitions.push({ name: call?.name ?? text.split(/[\s(]/)[0]!, symbol: excerpt(text, 80), kind: "statement", startLine, endLine, loadTime: true });
+    this.defNodes.set(startLine, node);
   }
 
   private visitBody(node: Node | null, inClassBody: boolean): void {
@@ -1112,6 +1133,7 @@ export class RubyAdapter implements LanguageAdapter {
     const bytes = Buffer.from(source, "utf8");
     const lineStarts = lineStartsOf(bytes);
     const parser = new Parser(bytes, lineStarts, result.comments);
+    parser.script = shebangLanguage(source.split("\n", 1)[0]) === "ruby";
     parser.visitProgram(result.value);
     const facts: RubyFacts = {
       path,
@@ -1149,7 +1171,8 @@ export class RubyAdapter implements LanguageAdapter {
     const collector = new CallCollector(ruby, def, owner, locals, ivars);
     const call = kindName(node) === "CallNode" ? node as Prism.CallNode : undefined;
     const lambda = call ? argumentsOf(call).find((argument) => kindName(argument) === "LambdaNode") as Prism.LambdaNode | undefined : undefined;
-    const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : lambda?.body ?? (call ? firstBlockBody(call) : null);
+    // A script's top-level statement is its own body.
+    const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : def.kind === "statement" ? node : lambda?.body ?? (call ? firstBlockBody(call) : null);
     if (!body && def.kind === "scope") return [{ name: def.name, line: def.startLine, source: "dynamic", relationship: "calls", label: def.symbol, dynamic: "scope body is not a literal lambda or block; its calls cannot be enumerated" }];
     collector.visit(body);
     return collector.sites;

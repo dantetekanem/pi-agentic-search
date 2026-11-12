@@ -13,6 +13,12 @@ const FIRST_BYTES = 256;
 const RUBY = /^(?:ruby|jruby|truffleruby)[\d.]*$/;
 const NODE = /^(?:node|nodejs|tsx|ts-node|bun|deno)$/;
 
+/** A statement at a script's top level: it runs when the script is run from the command line, so work starts there. */
+export interface ScriptEntry {
+  kind: "command";
+  exact: true;
+}
+
 /** A file name with no ending: `production-errors`, not `production_errors.rb` or `.env`. */
 export const hasNoEnding = (path: string): boolean => !basename(path).includes(".");
 

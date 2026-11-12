@@ -30,7 +30,7 @@ import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { Entry } from "./adapters/ruby-entries.ts";
 import type { PackageEntry } from "./adapters/package-entries.ts";
 import { isTemplatePath } from "./adapters/ruby-views.ts";
-import { hasNoEnding, scriptLanguage } from "./scripts.ts";
+import { hasNoEnding, scriptLanguage, type ScriptEntry } from "./scripts.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import type { AdapterDefinition, Effect, Guard } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
@@ -161,7 +161,7 @@ export interface AnchorRecord {
   /** Writes, enqueues and cache calls on changed lines (Ruby), including calls that produce no edge. */
   effects: Effect[];
   /** The framework calls this definition: a job's `perform` or a controller action; `exact` when declared or routed. Needs a Ruby index. */
-  entry?: Entry | PackageEntry;
+  entry?: Entry | PackageEntry | ScriptEntry;
 }
 
 export interface DanglingRecord {

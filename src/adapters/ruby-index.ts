@@ -154,7 +154,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 6;
+const INDEX_VERSION = 7;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
