@@ -58,6 +58,7 @@ agentic-search search 'remaining_value' --intent definition --context 'actual go
 agentic-search search 'calculateTotal' --path src/cart.ts --expand-related
 agentic-search collect app/models/goal.rb:42 --max-depth 3
 agentic-search scan --diff main..HEAD
+agentic-search scan --diff main..HEAD --strict-revision --output-dir /tmp/review-context
 agentic-search scan --diff worktree --output-dir /tmp/review-context
 ```
 
@@ -113,7 +114,15 @@ Call resolution is static. A matching name, especially in Ruby, doesn't prove wh
 
 Context collection defaults to the nearest component root within the working directory. Use `cwd` to select another checkout. For a diff, omitting `root` or passing `.` keeps separate component roots; an explicit path narrows the scan. Files absent from a sparse checkout aren't searchable.
 
-For committed ranges, changed files come from the range's head. Callers, tests, and unchanged files come from the checkout. The manifest records which revisions it used.
+By default, committed-range scans can mix revisions: changed files come from the range's head when it differs from checkout HEAD; callers, tests, and unchanged files come from the checkout. Local edits can affect checkout content. The manifest records which revisions it used.
+
+Use CLI `--strict-revision`, Pi `strict_revision: true`, or `scanSparsity({ ..., strictRevision: true })` to reject mixed-revision input before parsing source or writing a pack. This option requires an explicit commit or range (`base..head` or `base...head`); it rejects worktree scans and explicit anchors. The resolved head commit, including an annotated tag's commit, must equal checkout HEAD.
+
+Strict mode checks the entire repository, even with a narrower `cwd` or `root`. It rejects staged/unstaged changes, deletions and non-ignored untracked files of any type, not just Ruby/JS/TS. It also rejects sparse checkouts, skip-worktree/assume-unchanged index entries, and repositories containing submodules. For a submodule, scan a separate full checkout of its requested commit. Diagnostics identify the mismatch and ask for a clean checkout; the tool never checks out, stashes, fetches or creates a worktree.
+
+Keep strict-mode output directories, index caches and metrics logs outside the repository, including ignored directories. Existing symlinks are resolved when checking destinations. Existing non-ignored packs inside the checkout count as untracked changes; there is no output-directory exemption.
+
+This is a Git checkout preflight, not a snapshot or sandbox. Do not change source, refs or output paths during a scan. Ignored untracked files (including dependencies and generated code), sources outside the repository and dependency reproducibility are not verified. Parsers may still read those files. Strict mode does not change static-resolution labels, traversal limits or coverage disclosures.
 
 Large TypeScript projects can use a lot of memory. Building a compiler program for one recorded 5,800-file import closure took about two seconds and 1 GB. Those numbers describe that workload, not a resource limit.
 

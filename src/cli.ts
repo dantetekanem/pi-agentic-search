@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -47,6 +47,7 @@ const commands: Record<string, { usage: string; options: Record<string, Option> 
   scan: { usage: "scan [--diff <worktree|commit|range>]", options: {
     ...contextOptions,
     diff: { type: "string", description: "Git diff target (default: worktree, including untracked files)" },
+    "strict-revision": { type: "boolean", description: "Require a clean, full checkout at the committed diff head; outputs outside the repository" },
     anchor: { type: "string", multiple: true, description: "path:line instead of a diff; repeat for multiple anchors" },
     "max-depth": numberOption("Call hops", 2, 1, 4),
     "max-nodes": numberOption("Expanded definitions", 120, 2, 300),
@@ -65,6 +66,7 @@ function help(command?: string): string {
   return [
     `Usage: agentic-search ${definition?.usage ?? "<search|collect|scan>"} [options]`,
     ...(definition ? [] : ["search: locate code; collect: trace one definition; scan: collect a diff.", "Run agentic-search <command> --help for command options."]),
+    ...(definition ? [] : ["  --version, -v  Show the installed package version"]),
     ...Object.entries(options).map(([name, option]) => `  --${name}${option.type === "string" ? " <value>" : ""}  ${option.description}`),
     "Exit: 0 result (may have coverage gaps), 1 execution failure, 2 usage error, 130 interrupted.",
     "A complete search with no matches exits 0. Read coverage before drawing conclusions.",
@@ -98,6 +100,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       process.stdout.write(`${help()}\n`);
       return 0;
     }
+    if (command === "--version" || command === "-v") {
+      const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+      process.stdout.write(`${version}\n`);
+      return 0;
+    }
     const definition = Object.hasOwn(commands, command) ? commands[command] : undefined;
     if (!definition) throw new UsageError(`Unknown command: ${command}`);
     const options = { ...common, ...definition.options };
@@ -127,6 +134,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const intent = string("intent");
     if (intent !== undefined && !["definition", "references", "tests", "file", "auto"].includes(intent)) throw new UsageError(`Invalid intent: ${intent}`);
     if (values.diff !== undefined && values.anchor !== undefined) throw new UsageError("Use --diff or --anchor, not both");
+    if (values["strict-revision"] && (values.anchor !== undefined || !string("diff")?.trim() || string("diff")?.trim() === "worktree")) {
+      throw new UsageError("--strict-revision requires --diff <commit|range>, not worktree or --anchor");
+    }
     const cwd = await repositoryCwd(string("cwd"), process.cwd());
     if (command !== "search") indexCacheDir = await mkdtemp(join(tmpdir(), "agentic-search-index-"));
     const runtime = { indexCacheDir, signal: controller.signal };
@@ -162,6 +172,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const { inline, ...details } = await scanContext({
         ...context,
         diff: string("diff"),
+        strict_revision: values["strict-revision"] === true,
         anchors: Array.isArray(values.anchor) ? values.anchor.filter((value): value is string => typeof value === "string") : undefined,
         max_anchors: number("max-anchors"),
         inline_budget_kb: number("inline-budget-kb"),

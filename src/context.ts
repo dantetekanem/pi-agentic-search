@@ -17,6 +17,7 @@ export interface CollectInput extends ContextInput {
 }
 export interface ScanInput extends ContextInput {
   diff?: string;
+  strict_revision?: boolean;
   anchors?: string[];
   max_anchors?: number;
   inline_budget_kb?: number;
@@ -53,6 +54,7 @@ export function scanContext(params: ScanInput, cwd: string, outputDir: string, r
   return scanSparsity({
     cwd,
     diff: typeof params.diff === "string" ? params.diff : "worktree",
+    strictRevision: params.strict_revision ?? false,
     anchors: Array.isArray(params.anchors) && params.anchors.length ? params.anchors.map(String) : undefined,
     maxDepth: clampInt(params.max_depth, 2, 1, 4),
     vicinity: clampInt(params.vicinity_check, 20, 5, 60),

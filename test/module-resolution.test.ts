@@ -57,14 +57,17 @@ test("project paths aliases and inherited config resolve through TypeScript", ()
   assert.equal(target?.path, "src/core/impl.ts");
 }));
 
-test("package imports resolve project-local # specifiers", () => fixture({
-  "package.json": '{"name":"fixture","type":"module","imports":{"#core/*":"./src/core/*.js"}}',
-  "src/main.ts": "import { needle } from '#core/impl';\n",
-  "src/core/impl.ts": "export function needle() {}\n",
-}, async (cwd) => {
-  const { target } = await resolveModule(cwd, "src/main.ts", "#core/impl");
-  assert.equal(target?.path, "src/core/impl.ts");
-}));
+for (const prefix of ["#core", "#"]) {
+  test(`package imports resolve project-local ${prefix}/ specifiers`, () => fixture({
+    "package.json": JSON.stringify({ name: "fixture", type: "module", imports: { [`${prefix}/*`]: "./src/core/*.js" } }),
+    "src/main.ts": `import { needle } from '${prefix}/impl';\n`,
+    "src/core/impl.ts": "export function needle() {}\n",
+  }, async (cwd) => {
+    const { target, skipped } = await resolveModule(cwd, "src/main.ts", `${prefix}/impl`);
+    assert.equal(target?.path, "src/core/impl.ts");
+    assert.deepEqual(skipped, []);
+  }));
+}
 
 const conditionalPackage = {
   "node_modules/conditional/package.json": JSON.stringify({ name: "conditional", exports: {

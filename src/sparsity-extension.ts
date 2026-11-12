@@ -63,6 +63,7 @@ const SparsityParams = Type.Object({
 const ScanParams = Type.Object({
   cwd: Type.Optional(Type.String({ description: "Repository checkout to scan. Default: the session's working directory. Use when the session is not inside the reviewed repository." })),
   diff: Type.Optional(Type.String({ description: "What changed: a git range like base..head or base...head, a single commit, or worktree (default) for uncommitted changes including untracked files." })),
+  strict_revision: Type.Optional(Type.Boolean({ description: "Require a committed diff at checkout HEAD and a clean, full checkout without submodules. Reject before parsing or pack writes. Outputs must be outside the repository. Ignored files/dependencies are not verified. Default false; incompatible with worktree and anchors." })),
   anchors: Type.Optional(Type.Array(Type.String(), { description: "Instead of a diff, index these path:line anchors." })),
   max_depth: Type.Optional(Type.Number({ description: "Call hops to follow from each changed definition. Default 2, max 4." })),
   vicinity_check: Type.Optional(Type.Number({ description: "Lines of context around changed lines inside each changed definition, plus the same number of file lines above and below the definition and around every hunk of a file without a parser. Callers show three lines around the call site. Default 20, max 60." })),

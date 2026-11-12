@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   Budget,
   Collector,
@@ -30,6 +30,7 @@ import { edgeMetrics, indexMetrics, writeMetrics } from "./metrics.ts";
 export interface ScanOptions {
   cwd: string;
   diff: string;
+  strictRevision?: boolean;
   anchors?: string[];
   maxDepth: number;
   vicinity: number;
@@ -285,6 +286,60 @@ async function resolveDiff(diff: string, cwd: string, signal?: AbortSignal): Pro
   return { label: `${trimmed} (${base.slice(0, 12)} → ${head.slice(0, 12)})`, base, head, dirty: false, args: ["diff", "--unified=0", "--no-color", "--no-ext-diff", "-M", base, head], untracked: [] };
 }
 
+async function canonicalOutputPath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    if ((await lstat(path).catch(() => undefined))?.isSymbolicLink()) {
+      throw new Error(`strict revision: output path is a dangling symlink: ${path}`);
+    }
+    return join(await canonicalOutputPath(dirname(path)), basename(path));
+  }
+}
+
+async function guardRevision(options: ScanOptions, head: string): Promise<void> {
+  const { cwd, signal } = options;
+  const checkoutHead = (await git(["rev-parse", "HEAD"], cwd, signal)).trim();
+  const remedy = `Use a clean checkout of requested head ${head}; no checkout or stash was performed.`;
+  const reject = (reason: string): never => {
+    throw new Error(`strict revision: ${reason}. ${remedy}`);
+  };
+  if (checkoutHead !== head) reject(`checkout HEAD ${checkoutHead} differs from requested head ${head}`);
+
+  const repo = await realpath((await git(["rev-parse", "--show-toplevel"], cwd, signal)).trim());
+  const sparse = await git(["config", "--bool", "--default=false", "--get", "core.sparseCheckout"], repo, signal);
+  if (sparse.trim() === "true") reject("sparse checkout is unsupported; use a full checkout");
+
+  const entries = (await git(["ls-files", "-v", "--stage", "-z"], repo, signal)).split("\0").filter(Boolean);
+  const uncheckedEntry = entries.find((entry) => /^[Sa-z] /.test(entry));
+  if (uncheckedEntry) reject(`skip-worktree or assume-unchanged index entry: ${JSON.stringify(uncheckedEntry)}`);
+  if (entries.some((entry) => /^. 160000 /.test(entry))) {
+    reject("submodules are unsupported; scan a standalone checkout of the submodule instead");
+  }
+
+  const status = await git([
+    "--no-optional-locks", "-c", "core.fsmonitor=false",
+    "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none",
+  ], repo, signal);
+  if (status) reject(`tracked or untracked changes: ${JSON.stringify(status.split("\0").filter(Boolean).slice(0, 8))}`);
+
+  const destinations: Array<[string, string | undefined]> = [
+    ["output directory", options.outputDir],
+    ...["pack.md", "pack.json", "metrics.json"].map((name): [string, string] => ["output file", join(options.outputDir, name)]),
+    ["index cache", options.indexCacheDir ? resolve(options.indexCacheDir) : undefined],
+    ["metrics log", options.metricsLog ? resolve(options.metricsLog) : undefined],
+  ];
+  for (const [label, path] of destinations) {
+    if (!path) continue;
+    const destination = await canonicalOutputPath(resolve(cwd, path));
+    const rel = relative(repo, destination);
+    if (rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))) {
+      reject(`${label} must be outside the repository: ${path}`);
+    }
+  }
+}
+
 function removedDefinitionNames(lines: string[], ranges: Array<[number, number]>, language: Language): Array<{ name: string; line: number }> {
   const found: Array<{ name: string; line: number }> = [];
   for (const [start, end] of ranges) {
@@ -344,6 +399,10 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   let base: string | undefined;
   let dirty = false;
 
+  if (options.strictRevision && (options.anchors?.length || !options.diff.trim() || options.diff.trim() === "worktree")) {
+    throw new Error("strict revision requires a committed diff (commit or range), not worktree or explicit anchors.");
+  }
+
   if (options.anchors?.length) {
     label = `explicit anchors (${options.anchors.length})`;
     head = (await git(["rev-parse", "HEAD"], cwd, signal).catch(() => "unknown")).trim();
@@ -362,6 +421,10 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     head = resolved.head;
     base = resolved.base;
     dirty = resolved.dirty;
+    if (options.strictRevision) {
+      head = (await git(["rev-parse", "--verify", `${head}^{commit}`], cwd, signal)).trim();
+      await guardRevision(options, head);
+    }
     files = parseUnifiedDiff(await git(resolved.args, cwd, signal));
     for (const path of resolved.untracked) {
       const normalized = normalizeRepoRelativePath(path);
