@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type ts from "typescript";
 import extension from "../index.ts";
 import { ProjectFiles, RESOLUTION_LIMITS } from "../src/inventory.ts";
@@ -123,7 +123,7 @@ test("search intent selects the package's declaration entry", () => fixture({
   assert.ok(registered);
   const result = await registered.execute("resolution-test", {
     query: "needle", path: "src/main.mts", expand_related: true, intent: "definition",
-  }, undefined, undefined, { cwd } as ExtensionContext);
+  }, undefined, undefined, { cwd } as ExtensionToolContext);
   const details = result.details as SearchDetails;
   assert.equal(details.related?.packageRoots[0]?.entryPath, "node_modules/typed/index.d.ts");
   assert.ok(details.files.some((file) => file.path === "node_modules/typed/index.d.ts"));

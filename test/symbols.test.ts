@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { expandRelatedFiles } from "../src/related.ts";
 import extension from "../index.ts";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { SearchDetails } from "../src/types.ts";
 import { ProjectFiles } from "../src/inventory.ts";
 import { SearchRequest } from "../src/retrieval.ts";
@@ -46,7 +46,7 @@ test("registered search exposes scoped alias evidence", () => fixture({
   };
   extension(adapter as ExtensionAPI);
   assert.ok(registered);
-  const result = await registered.execute("symbol-test", { query: "run", path: "main.ts", intent: "definition", expand_related: true }, undefined, undefined, { cwd } as ExtensionContext);
+  const result = await registered.execute("symbol-test", { query: "run", path: "main.ts", intent: "definition", expand_related: true }, undefined, undefined, { cwd } as ExtensionToolContext);
   const details = result.details as SearchDetails;
   assert.ok(details.related?.symbolSearches?.some((item) => item.path === "impl.ts" && item.symbol === "original" && item.querySymbol === "run"));
   assert.deepEqual(details.related?.resolved[0]?.bindings, [{ local: "run", imported: "original" }]);

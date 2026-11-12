@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension from "../../index.ts";
 import { runSearch } from "../../src/extension.ts";
 import { DEFAULT_EXCLUDES, PACKAGE_SEARCH_EXCLUDES } from "../../src/classifications.ts";
@@ -122,7 +122,7 @@ export async function measure(root: string, pin: SourcePin, input: EvaluationCas
         ...(mode === "no-graph" ? { expand_related: false } : {}),
       };
       const result = mode === "full" || mode === "no-context" || mode === "no-graph"
-        ? await search.execute("evaluation", params, undefined, undefined, { cwd: source.root } as ExtensionContext)
+        ? await search.execute("evaluation", params, undefined, undefined, { cwd: source.root } as ExtensionToolContext)
         : await runSearch(params, source.root, undefined, {
           pathPriors: mode !== "no-path-priors", declarationEvidence: mode !== "no-definition-scoring", guidance: mode !== "no-guidance",
         });

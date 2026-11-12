@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension, { parseRipgrepJsonLines } from "../index.ts";
 import type { SearchDetails } from "../src/types.ts";
 
@@ -13,7 +13,7 @@ const adapter: Pick<ExtensionAPI, "registerTool" | "registerCommand"> = {
 };
 extension(adapter as ExtensionAPI);
 async function search(cwd: string, params: Record<string, unknown>): Promise<SearchDetails> {
-  const result = await registered!.execute("ranking", params, undefined, undefined, { cwd } as ExtensionContext);
+  const result = await registered!.execute("ranking", params, undefined, undefined, { cwd } as ExtensionToolContext);
   return result.details as SearchDetails;
 }
 async function fixture(files: Record<string, string>, run: (cwd: string) => Promise<void>) {

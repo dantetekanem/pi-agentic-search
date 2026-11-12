@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension, { parseRipgrepJsonLines } from "../index.ts";
 import { SearchRequest, RETRIEVAL_LIMITS, runRg } from "../src/retrieval.ts";
 import type { SearchDetails as Details } from "../src/types.ts";
@@ -17,7 +17,7 @@ const adapter: Pick<ExtensionAPI, "registerTool" | "registerCommand"> = {
 extension(adapter as ExtensionAPI);
 const tool = registered!;
 async function search(cwd: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<Details> {
-  const result = await tool.execute("retrieval-test", params, signal, undefined, { cwd } as ExtensionContext);
+  const result = await tool.execute("retrieval-test", params, signal, undefined, { cwd } as ExtensionToolContext);
   return result.details as Details;
 }
 async function fixture(run: (cwd: string) => Promise<void>) {

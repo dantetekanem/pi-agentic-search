@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { assess, benchmarkCases, percentile, summarizeByIntent } from "./benchmark-cases.ts";
 
 interface ObservedDetails {
@@ -75,7 +75,7 @@ try {
     const oracle = oracleOutput.split("\n").filter(Boolean).map((line) => JSON.parse(line))
       .filter((event) => event.type === "match");
     const oracleFiles = new Set(oracle.map((event) => event.data.path.text.replace(/^\.\//, "")));
-    const run = () => search.execute("benchmark", scenario.params, undefined, undefined, { cwd } as ExtensionContext);
+    const run = () => search.execute("benchmark", scenario.params, undefined, undefined, { cwd } as ExtensionToolContext);
     await run();
     const times: number[] = [];
     const processSamples = [];

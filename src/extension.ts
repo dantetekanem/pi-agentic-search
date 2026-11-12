@@ -1,7 +1,6 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -16,7 +15,7 @@ export type { CodeMatch, RankedFileResult, PathMatch } from "./types.ts";
 const SearchParams = Type.Object({
   query: Type.String({ description: "Precise code syntax regex or literal string to search for. For Rails scopes use scope\\s+:." }),
   context: Type.Optional(Type.String({ description: "Optional natural-language disambiguation hint used only for ranking, not as the ripgrep query. Example: actual goal progress" })),
-  intent: Type.Optional(StringEnum(["definition", "references", "tests", "file", "auto"] as const)),
+  intent: Type.Optional(Type.Enum(["definition", "references", "tests", "file", "auto"], { type: "string" })),
   path: Type.Optional(Type.String({ description: "Optional exact path, filename, partial path, or absolute file/directory root." })),
   max_files: Type.Optional(Type.Number({ description: "Maximum ranked files displayed, default 5, max 10. Does not limit searched candidates." })),
   max_matches_per_file: Type.Optional(Type.Number({ description: "Maximum snippets per file, default 10, max 10." })),

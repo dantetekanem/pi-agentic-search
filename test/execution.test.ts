@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension from "../index.ts";
 import { SearchRequest, runRg } from "../src/retrieval.ts";
 import type { SearchDetails } from "../src/types.ts";
@@ -17,7 +17,7 @@ const adapter: Pick<ExtensionAPI, "registerTool" | "registerCommand"> = {
 extension(adapter as ExtensionAPI);
 async function search(cwd: string, params: Record<string, unknown>, signal?: AbortSignal) {
   assert.ok(registered);
-  return (await registered.execute("execution-test", params, signal, undefined, { cwd } as ExtensionContext)).details as SearchDetails;
+  return (await registered.execute("execution-test", params, signal, undefined, { cwd } as ExtensionToolContext)).details as SearchDetails;
 }
 async function fixture(files: Record<string, string>, run: (cwd: string) => Promise<void>) {
   const cwd = await mkdtemp(join(tmpdir(), "search-execution-"));

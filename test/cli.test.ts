@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension from "../index.ts";
 import { formatSparsity, type SparsityResult } from "../src/sparsity.ts";
 import type { ScanResult } from "../src/sparsity-scan.ts";
@@ -44,7 +44,7 @@ function json<T = SearchDetails>(cwd: string, args: string[], executable = bin):
 async function pi(name: string, cwd: string, args: Record<string, unknown>) {
   const tool = tools.get(name);
   assert.ok(tool);
-  return tool.execute("cli-parity", args, undefined, undefined, { cwd } as ExtensionContext);
+  return tool.execute("cli-parity", args, undefined, undefined, { cwd } as ExtensionToolContext);
 }
 
 const graph = (result: SparsityResult) => ({ anchor: result.anchor, nodes: result.nodes, edges: result.edges, frontier: result.coverage.frontier });

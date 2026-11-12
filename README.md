@@ -167,7 +167,7 @@ pi install .
 
 ## Development
 
-This repository uses npm and `package-lock.json` for development, CI, and publishing. Use Node.js 22, as CI does, with `rg` on your `PATH`. Keep dependency changes in `package.json` and `package-lock.json` together; don't maintain a second lockfile.
+This repository uses npm and `package-lock.json` for development, CI, and publishing. Use Node.js 22.19 or newer in the Node 22 line, as CI does, with `rg` on your `PATH`. Keep dependency changes in `package.json` and `package-lock.json` together; don't maintain a second lockfile.
 
 ```bash
 npm ci
