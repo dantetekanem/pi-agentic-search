@@ -479,3 +479,16 @@ end
     assert.deepEqual(result.nodes.find((node) => node.symbol === "ReceiptJob#perform")?.effects, undefined, "a node without effects omits them");
   }
 }));
+
+test("a reference on the first line of a file with a byte order mark still counts", () => repo(async ({ cwd, write }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "src/total.ts": "export function total() {\n  return 1;\n}\n",
+    "src/boot.ts": "\uFEFFtotal();\n",
+  });
+
+  const result = await collectSparsity({ cwd, target: "src/total.ts:1", maxDepth: 1, vicinity: 5, maxNodes: 10, callers: true, budgetMs: 20_000 });
+
+  const callerPaths = result.edges.filter((edge) => edge.relationship === "called_by").map((edge) => result.nodes.find((node) => node.id === edge.from)?.path);
+  assert.deepEqual(callerPaths, ["src/boot.ts"], "ripgrep drops the mark from the line it reports, so the served line is compared without it");
+}));

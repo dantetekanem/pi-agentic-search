@@ -399,12 +399,17 @@ function ripgrepArgs(spec: SearchSpec, paths: string[]): string[] {
   ];
 }
 
+/** A file line as ripgrep reports it: without a UTF-8 byte order mark or a carriage return. */
+function ripgrepText(line: string): string {
+  return line.replace(/^\uFEFF/, "").replace(/\r$/, "");
+}
+
 /** ripgrep's line matching over content held in memory: the first `maxCount` lines that match any pattern. */
 function matchLines(path: string, lines: string[], patterns: RegExp[], maxCount: number): RgHit[] {
   const hits: RgHit[] = [];
   for (const [index, line] of lines.entries()) {
     if (hits.length >= maxCount) break;
-    const text = line.replace(/\r$/, "");
+    const text = ripgrepText(line);
     if (patterns.some((pattern) => pattern.test(text))) hits.push({ path, line: index + 1, text });
   }
   return hits;
@@ -1845,7 +1850,8 @@ export class Collector {
       if (options.perFile !== false && seenFiles.has(hit.path)) continue;
       // A hit counts only when the content this collector serves has the same text on that line.
       const lines = await this.lines(hit.path);
-      if (!lines || lines[hit.line - 1]?.replace(/\r$/, "") !== hit.text) continue;
+      const served = lines?.[hit.line - 1];
+      if (!lines || served === undefined || ripgrepText(served) !== hit.text) continue;
       if (language === "javascript") {
         if (insideJsImport(lines, hit.line)) continue;
         const facts = this.tsFacts(hit.path, lines);
