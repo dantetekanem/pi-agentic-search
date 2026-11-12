@@ -28,6 +28,8 @@ Changed files are classed as `code`, `test`, `migration`, `config`, `dependency`
 
 An anchor's `guards` lists its changed lines that run under a condition, each with the conditions that dominate it, outermost first. A condition is reported as written: `if x`, `elsif x`, `unless x` and TypeScript `if (x)` keep their keyword; a ternary condition or the left side of `&&` or `||` is the expression alone. Its `branch` is `then` (inside the branch taken when that text holds), `else`, or `after-return` (after an early return, `next`, `break`, `raise` or `throw` taken when it holds). Call edges carry the guards of their call site. Method and class bodies start with no guards, and the tool does not interpret any condition.
 
+In Ruby, `Job.perform_later`, `Job.set(...).perform_later` and Sidekiq's `perform_async`, `perform_in`, `perform_at` and `perform_bulk` produce an `enqueues` edge to `Job#perform`, and `Mailer.action(...).deliver_later` one to the mailer action. Expanded Ruby definitions list `effects`: calls named like a write (`save`, `update!`, `destroy`, `update_all`…), an enqueue, or a cache operation on a receiver ending in `cache` (`Rails.cache.fetch`…), each with its line and call text. They are collected before common methods are dropped, so a call that produces no edge still appears. Anchors list the effects on their changed lines.
+
 ## Installation
 
 You need Node.js 22+ and `rg` ([ripgrep](https://github.com/BurntSushi/ripgrep)) on your `PATH`. Diff context also uses Git. The package includes its Ruby parser and TypeScript dependency. The CLI does not need Pi or a TypeScript loader.

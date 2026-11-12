@@ -25,7 +25,7 @@ import {
 import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
-import type { AdapterDefinition, Guard } from "./adapters/types.ts";
+import type { AdapterDefinition, Effect, Guard } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
 import { ensureInsideCwd } from "./sparsity-shared.ts";
 import { boundarySignal, RANKING_EXPLANATION } from "./rank.ts";
@@ -118,6 +118,8 @@ export interface AnchorRecord {
   loadTime?: true;
   /** The changed lines that have dominating conditions, each with those conditions outermost first. */
   guards: Array<{ line: number; guards: Guard[] }>;
+  /** Writes, enqueues and cache calls on changed lines (Ruby), including calls that produce no edge. */
+  effects: Effect[];
 }
 
 export interface DanglingRecord {
@@ -791,6 +793,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       ...await baseFacts(candidate),
       ...(LOAD_TIME_KINDS.has(candidate.def.kind) || (candidate.def as AdapterDefinition).loadTime ? { loadTime: true as const } : {}),
       guards: await guardsFor(candidate),
+      effects: (candidate.node.effects ?? []).filter((effect) => candidate.changedLines.includes(effect.line)),
     });
   }
 
@@ -903,7 +906,7 @@ function edgeLine(edge: SparsityEdge, byId: Map<string, SparsityNode>): string {
   const destination = target ? `${edge.to} ${target.symbol} ${target.path}:${target.startLine}` : "?";
   const extras = [edge.note, edge.candidates ? `candidates: ${edge.candidates.slice(0, 4).join(", ")}${edge.candidates.length > 4 ? ", …" : ""}` : undefined].filter(Boolean).join("; ");
   const label = edge.via ? `${edge.resolution}, ${edge.via}` : edge.resolution;
-  return `  - :${edge.line} \`${edge.name}\` → [${label}] ${destination}${extras ? `  (${extras})` : ""}`;
+  return `  - :${edge.line} \`${edge.name}\`${edge.relationship === "enqueues" ? " enqueues" : ""} → [${label}] ${destination}${extras ? `  (${extras})` : ""}`;
 }
 
 async function renderSections(result: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, collectors: Collector[], anchorIds: Set<string>): Promise<Array<Omit<Section, "startLine" | "endLine" | "inline">>> {
@@ -963,6 +966,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
       out.push("guards on changed lines:");
       for (const group of byGuards.values()) out.push(`  ${compressRanges(group.lines)}: ${group.guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`).join(" › ")}`);
     }
+    if (anchor.effects.length) out.push(`effects on changed lines: ${anchor.effects.map((effect) => `${effect.kind} :${effect.line} \`${effect.text}\``).join("; ")}`);
     out.push(node.snippet);
     if (anchor.vicinity) out.push(anchor.vicinity);
     for (const block of anchor.removed) {

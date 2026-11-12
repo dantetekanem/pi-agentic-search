@@ -56,7 +56,14 @@ export interface FileFacts {
   errors: number;
 }
 
-export type CallSource = "constant_method" | "receiver_method" | "bare" | "constant" | "call" | "member" | "jsx" | "new" | "super" | "symbol_proc" | "dynamic";
+export type CallSource = "constant_method" | "receiver_method" | "bare" | "constant" | "call" | "member" | "jsx" | "new" | "super" | "symbol_proc" | "dynamic" | "enqueue";
+
+/** A call that persists (`write`), enqueues background work (`enqueue`) or touches a cache (`cache`), named by its method; `text` is the call as written, without a block. */
+export interface Effect {
+  kind: "write" | "enqueue" | "cache";
+  line: number;
+  text: string;
+}
 
 export interface ResolvedTarget {
   path: string;
@@ -84,7 +91,8 @@ export interface CallSite {
   name: string;
   line: number;
   receiver?: string;
-  relationship: "calls" | "references";
+  /** `enqueues`: the call schedules `receiver#name` (a job's perform or a mailer action) to run later. */
+  relationship: "calls" | "references" | "enqueues";
   source: CallSource;
   receiverKind?: "implicit" | "self" | "constant" | "local" | "ivar" | "chain" | "other";
   receiverType?: string;
@@ -95,6 +103,8 @@ export interface CallSite {
   dynamic?: string;
   /** Conditions dominating the call inside its definition, outermost first; absent when none. */
   guards?: Guard[];
+  /** Set when the call's method writes, enqueues or uses a cache, whether or not the call is followed. */
+  effect?: Effect;
 }
 
 export interface LanguageAdapter {

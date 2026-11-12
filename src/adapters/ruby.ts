@@ -5,6 +5,7 @@ import type {
   CallSite,
   CollectionKind,
   Definition,
+  Effect,
   FileFacts,
   Guard,
   InferenceVia,
@@ -73,6 +74,20 @@ const PASSTHROUGH_BLOCK = new Set(["connected_to", "transaction", "with_connecti
 const IDENTITY_METHODS = new Set(["tap", "itself", "dup", "clone", "freeze", "presence", "reload", "tap"]);
 const DYNAMIC_DISPATCH = new Set(["send", "public_send", "__send__", "try", "try!"]);
 const DYNAMIC_CONSTANT = new Set(["constantize", "safe_constantize", "const_get"]);
+
+// Effects are named by method; the consumer reads the call text. Array#insert and Hash#delete are left out as too common.
+const WRITE_METHODS = new Set([
+  "save", "save!", "create", "create!", "update", "update!", "update_all", "update_column", "update_columns", "update_attribute",
+  "update_attributes", "update_attributes!", "insert_all", "insert_all!", "upsert", "upsert_all", "delete_all", "delete_by", "destroy",
+  "destroy!", "destroy_all", "destroy_by", "increment!", "decrement!", "toggle!", "touch", "touch_all", "update_counters",
+  "increment_counter", "decrement_counter", "find_or_create_by", "find_or_create_by!", "create_or_find_by", "create_or_find_by!",
+  "first_or_create", "first_or_create!",
+]);
+const JOB_ENQUEUES = new Set(["perform_later", "perform_async", "perform_in", "perform_at", "perform_bulk"]);
+const MAIL_ENQUEUES = new Set(["deliver_later", "deliver_later!"]);
+const ENQUEUE_METHODS = new Set([...JOB_ENQUEUES, ...MAIL_ENQUEUES, "enqueue"]);
+const CACHE_METHODS = new Set(["fetch", "read", "write", "delete", "exist?", "increment", "decrement", "fetch_multi", "read_multi", "write_multi", "delete_multi", "delete_matched", "clear"]);
+const EFFECT_TEXT_LIMIT = 160;
 
 function constructorLike(name: string): boolean {
   return CONSTRUCTOR_LIKE.has(name) || /^(for|from|with|of|build|create|find|new|make|load|fetch|lookup|parse|wrap|instance)(_|$)/.test(name);
@@ -350,6 +365,37 @@ function collapsedReceiver(node: Node, bytes: Buffer): string {
     return receiver ? `${receiver}.${call.name}${suffix}` : `${call.name}${suffix}`;
   }
   return sliceSource(bytes, node.location).replace(/\s+/g, " ").slice(0, 40);
+}
+
+function constantName(node: Node | null | undefined): string | undefined {
+  const text = constantPathText(node);
+  return text && text !== "self" ? text.replace(/^::/, "") : undefined;
+}
+
+/** `X.perform_later`, `X.set(...).perform_later` (and Sidekiq's perform_async/in/at) run `X#perform`; `Mailer.action(...).deliver_later` runs the action. */
+function enqueueTarget(call: Prism.CallNode): { owner: string; method: string } | undefined {
+  const receiver = call.receiver;
+  if (!receiver) return undefined;
+  if (JOB_ENQUEUES.has(call.name)) {
+    const job = kindName(receiver) === "CallNode" && (receiver as Prism.CallNode).name === "set" ? (receiver as Prism.CallNode).receiver : receiver;
+    const owner = constantName(job);
+    return owner ? { owner, method: "perform" } : undefined;
+  }
+  if (!MAIL_ENQUEUES.has(call.name) || kindName(receiver) !== "CallNode") return undefined;
+  const action = receiver as Prism.CallNode;
+  const mailer = kindName(action.receiver) === "CallNode" && (action.receiver as Prism.CallNode).name === "with" ? (action.receiver as Prism.CallNode).receiver : action.receiver;
+  const owner = constantName(mailer);
+  return owner ? { owner, method: action.name } : undefined;
+}
+
+function effectOf(call: Prism.CallNode, source: Source): Effect | undefined {
+  const cache = CACHE_METHODS.has(call.name) && call.receiver && /(^|[.@:])\w*cache$/i.test(collapsedReceiver(call.receiver, source.bytes));
+  const kind = WRITE_METHODS.has(call.name) ? "write" : ENQUEUE_METHODS.has(call.name) ? "enqueue" : cache ? "cache" : undefined;
+  if (!kind) return undefined;
+  const start = call.location.startOffset;
+  const end = kindName(call.block) === "BlockNode" ? call.block!.location.startOffset : start + call.location.length;
+  const text = source.bytes.subarray(start, end).toString("utf8").replace(/\s+/g, " ").trim();
+  return { kind, line: lineAt(source.lineStarts, (call.messageLoc ?? call.location).startOffset), text: text.length > EFFECT_TEXT_LIMIT ? `${text.slice(0, EFFECT_TEXT_LIMIT)}…` : text };
 }
 
 type TypeLookup = (name: string) => LocalType | undefined;
@@ -892,6 +938,12 @@ class CallCollector {
     const receiver = call.receiver;
     const name = call.name;
     this.visitSymbolProc(call, line);
+    const enqueued = enqueueTarget(call);
+    if (enqueued) {
+      this.push({ name: enqueued.method, line, relationship: "enqueues", source: "enqueue", receiver: enqueued.owner, receiverKind: "constant", receiverType: enqueued.owner, label: `${collapsedReceiver(receiver!, this.facts.bytes)}.${name}` });
+    }
+    const effect = effectOf(call, this.facts);
+    const pushCall = (site: CallSite) => this.push(effect ? { ...site, effect } : site);
     if (DYNAMIC_DISPATCH.has(name)) {
       const literal = this.literalMethodName(call);
       const receiverText = receiver ? collapsedReceiver(receiver, this.facts.bytes) : undefined;
@@ -910,12 +962,12 @@ class CallCollector {
       return;
     }
     if (!receiver) {
-      this.push({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
+      pushCall({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
       return;
     }
     const receiverKind = kindName(receiver);
     if (receiverKind === "SelfNode") {
-      this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: "self", receiverKind: "self", receiverType: this.owner });
+      pushCall({ name, line, relationship: "calls", source: "receiver_method", receiver: "self", receiverKind: "self", receiverType: this.owner });
       return;
     }
     if (receiverKind === "ConstantReadNode" || receiverKind === "ConstantPathNode") {
@@ -923,13 +975,13 @@ class CallCollector {
       const constant = (constantPathText(receiver) ?? "").replace(/^::/, "");
       if (constant === "T" || constant.startsWith("T::")) return;
       this.push({ name: constant, line, relationship: "references", source: "constant" });
-      this.push({ name, line, relationship: "calls", source: "constant_method", receiver: constant, receiverKind: "constant", receiverType: constant });
+      pushCall({ name, line, relationship: "calls", source: "constant_method", receiver: constant, receiverKind: "constant", receiverType: constant });
       return;
     }
     const receiverText = collapsedReceiver(receiver, this.facts.bytes);
     const typed = this.typedReceiver(receiver);
     const source = typed.receiverKind === "chain" && typed.via === "chain" && chainOf(receiver) ? "constant_method" : "receiver_method";
-    this.push({ name, line, relationship: "calls", source, receiver: receiverText, ...typed });
+    pushCall({ name, line, relationship: "calls", source, receiver: receiverText, ...typed });
   }
 
   private typedReceiver(receiver: Node): Pick<CallSite, "receiverKind" | "receiverType" | "via" | "chain"> {

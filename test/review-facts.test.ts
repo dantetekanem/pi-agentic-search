@@ -423,3 +423,54 @@ test("scan anchors carry the guards of their changed lines, and call edges the g
   assert.deepEqual(notify?.guards, [exit, { line: 4, text: "if cart.notify?", branch: "then" }]);
   assert.deepEqual(result.anchors.find((item) => item.symbol === "Checkout#notify")?.guards ?? [], [], "an unchanged anchor or one without guards carries none");
 }));
+
+test("enqueues reach the job or mailer action, and writes, enqueues and cache calls are effects", () => repo(async ({ cwd, git, write, scan }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "app/jobs/receipt_job.rb": "class ReceiptJob < ApplicationJob\n  def perform(order_id)\n    Order.find(order_id)\n  end\nend\n",
+    "app/mailers/order_mailer.rb": "class OrderMailer < ApplicationMailer\n  def confirmation(order)\n    mail(to: order.email)\n  end\nend\n",
+    "app/models/checkout.rb": "class Checkout\n  def complete(order)\n    order.total\n  end\nend\n",
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "app/models/checkout.rb": `class Checkout
+  def complete(order)
+    order.update!(status: :complete)
+    ReceiptJob.perform_later(order.id)
+    ReceiptJob.set(wait: 5.minutes).perform_later(order.id)
+    OrderMailer.confirmation(order).deliver_later
+    OrderMailer.with(order: order).confirmation.deliver_later
+    Rails.cache.delete("orders/#{order.id}")
+    order.total
+  end
+end
+`,
+  });
+  git("commit", "-qam", "complete");
+
+  for (const options of [{}, { indexCacheDir: join(cwd, "..", "index") }]) {
+    const result = await scan("HEAD~1..HEAD", options);
+    const anchor = result.anchors.find((item) => item.symbol === "Checkout#complete")!;
+    const symbolOf = (id?: string) => result.nodes.find((node) => node.id === id)?.symbol;
+    const enqueues = result.edges.filter((edge) => edge.from === anchor.id && edge.relationship === "enqueues").map((edge) => [edge.line, edge.name, symbolOf(edge.to), edge.resolution]);
+    assert.deepEqual(enqueues, [
+      [4, "ReceiptJob.perform_later", "ReceiptJob#perform", "exact"],
+      [5, "ReceiptJob.set(...).perform_later", "ReceiptJob#perform", "exact"],
+      [6, "OrderMailer.confirmation(...).deliver_later", "OrderMailer#confirmation", "exact"],
+      [7, "OrderMailer.with(...).confirmation.deliver_later", "OrderMailer#confirmation", "exact"],
+    ], JSON.stringify(options));
+    assert.ok(result.edges.some((edge) => edge.from === anchor.id && edge.name === "ReceiptJob" && edge.relationship === "references"), "the constant reference stays");
+    const effects = [
+      { kind: "write", line: 3, text: "order.update!(status: :complete)" },
+      { kind: "enqueue", line: 4, text: "ReceiptJob.perform_later(order.id)" },
+      { kind: "enqueue", line: 5, text: "ReceiptJob.set(wait: 5.minutes).perform_later(order.id)" },
+      { kind: "enqueue", line: 6, text: "OrderMailer.confirmation(order).deliver_later" },
+      { kind: "enqueue", line: 7, text: "OrderMailer.with(order: order).confirmation.deliver_later" },
+      { kind: "cache", line: 8, text: 'Rails.cache.delete("orders/#{order.id}")' },
+    ];
+    assert.deepEqual(anchor.effects, effects);
+    assert.deepEqual(result.nodes.find((node) => node.id === anchor.id)?.effects, effects);
+    assert.deepEqual(result.nodes.find((node) => node.symbol === "ReceiptJob#perform")?.effects, undefined, "a node without effects omits them");
+  }
+}));

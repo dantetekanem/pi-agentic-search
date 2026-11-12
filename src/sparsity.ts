@@ -9,7 +9,7 @@ import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
-import type { CallSite as AdapterCallSite, FileFacts, Guard } from "./adapters/types.ts";
+import type { CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
 import {
   camelToSnake,
   displaySearchRoot,
@@ -40,13 +40,15 @@ export interface SparsityNode {
   snippet: string;
   vicinity?: string;
   depth: number;
+  /** Writes, enqueues and cache calls inside an expanded Ruby definition, including calls that are not followed. Absent when none. */
+  effects?: Effect[];
 }
 
 export interface SparsityEdge {
   from: string;
   to?: string;
   name: string;
-  relationship: "calls" | "references" | "called_by";
+  relationship: "calls" | "references" | "called_by" | "enqueues";
   resolution: Resolution;
   via?: EdgeVia;
   line: number;
@@ -370,6 +372,10 @@ function indentOf(line: string): number {
 
 function fingerprintOf(lines: string[], startLine: number, endLine: number): string {
   return createHash("sha256").update(lines.slice(startLine - 1, endLine).join("\n")).digest("hex").slice(0, 16);
+}
+
+function indexedCandidates(defs: IndexedDefinition[]): Candidate[] {
+  return defs.map((item) => ({ path: item.path, line: item.startLine, text: item.symbol, symbol: item.symbol }));
 }
 
 /** The guards a call site carries onto its edges. */
@@ -1416,20 +1422,23 @@ export class Collector {
     return { candidates: ranked, resolution: "static_candidate", via: "name_only" };
   }
 
-  private callSites(node: SparsityNode, def: Definition, lines: string[], facts: FileFacts | undefined): CallSite[] {
+  /** The call sites to resolve, and the effects of every call, read before common methods are dropped. */
+  private callSites(node: SparsityNode, def: Definition, lines: string[], facts: FileFacts | undefined): { sites: CallSite[]; effects: Effect[] } {
     if (facts && node.language === "ruby") {
-      return rubyAdapter.calls(facts, def).filter((site) => {
-        if (site.source === "symbol_proc" || site.source === "dynamic") return true;
+      const all = rubyAdapter.calls(facts, def);
+      const sites = all.filter((site) => {
+        if (site.source === "symbol_proc" || site.source === "dynamic" || site.source === "enqueue") return true;
         if (RUBY_KEYWORDS.has(site.name)) return false;
         if (site.source === "constant") return true;
         if (site.name === "new" && site.receiverKind === "constant") return true;
         return !RUBY_COMMON_METHODS.has(site.name);
       });
+      return { sites, effects: all.flatMap((site) => (site.effect ? [site.effect] : [])) };
     }
     if (facts && node.language === "javascript") {
-      return tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name)));
+      return { sites: tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name))), effects: [] };
     }
-    return node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def);
+    return { sites: node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def), effects: [] };
   }
 
   private siteLabel(site: CallSite): string {
@@ -1452,6 +1461,7 @@ export class Collector {
   }
 
   private async resolveRubySite(site: CallSite, node: SparsityNode, def: Definition, signal?: AbortSignal): Promise<SiteResolution> {
+    if (site.source === "enqueue") return this.resolveRubyEnqueue(site, node, signal);
     if (site.source === "symbol_proc" && !site.receiverType) return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: "symbol-to-proc call detected, but the collection element type is unknown" };
     const indexed = this.rubyIndex ? this.resolveViaIndex(site, node, def) : undefined;
     if (indexed) return indexed;
@@ -1473,6 +1483,18 @@ export class Collector {
     // A receiver that is a local, ivar or chained value with no traced (or only a name-guessed) type.
     const untypedReceiver = (site.receiverKind ? !["implicit", "self", "constant"].includes(site.receiverKind) : site.source === "receiver_method") && (!site.receiverType || site.via === "named");
     return untypedReceiver ? { ...resolved, reason: "unknown-receiver" } : resolved;
+  }
+
+  /** An enqueue runs the instance method `site.name` (perform or a mailer action) of the job or mailer constant `site.receiver`. */
+  private async resolveRubyEnqueue(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
+    const owner = site.receiver!;
+    if (!this.rubyIndex) return { ...await this.resolveRubyMethod(site.name, node.path, owner, signal), via: "constant" };
+    const index = this.rubyIndex;
+    const typeSymbol = resolveIndexedConstant(index, owner, node.symbol) ?? (index.namespaces.has(owner) ? owner : undefined);
+    if (!typeSymbol) return { candidates: [], resolution: "external", via: "constant", note: `${owner} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
+    const found = this.lookupMethod(index, typeSymbol, site.name, false);
+    if (found.length) return { candidates: indexedCandidates(found.slice(0, MAX_CANDIDATES_PER_CALL)), resolution: found.length === 1 ? "exact" : "static_candidate", via: "constant" };
+    return { candidates: [], resolution: "unresolved", via: "constant", note: `${typeSymbol} and its ancestors under ${this.rootDisplay} define no ${site.name}; inherited from outside this root or dynamic.` };
   }
 
   private async resolveRubyChainLoosely(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
@@ -1517,7 +1539,9 @@ export class Collector {
     const facts = this.factsFor(node.language, node.path, lines);
     if (facts?.errors) this.frontier.push(`${node.path}: ${facts.errors} parse errors; call detection may be incomplete (parser)`);
     const distance = focus?.length ? (line: number) => Math.min(...focus.map((f) => Math.abs(f - line))) : () => 0;
-    const examined = [...this.callSites(node, def, lines, facts)].sort((a, b) => distance(a.line) - distance(b.line) || a.line - b.line);
+    const { sites, effects } = this.callSites(node, def, lines, facts);
+    if (effects.length) node.effects = effects;
+    const examined = [...sites].sort((a, b) => distance(a.line) - distance(b.line) || a.line - b.line);
     const imports = node.language === "javascript" ? parseJsImports(lines.join("\n")) : new Map<string, JsImport>();
     type Pending = { site: CallSite; label: string; resolved: SiteResolution; order: number };
     const pending: Pending[] = [];
@@ -1589,7 +1613,7 @@ export class Collector {
           this.cycles.push(`${[...ancestry, node.id, created.node.id].join(" → ")}`);
           continue;
         }
-        if (created.created && site.relationship === "calls") {
+        if (created.created && (site.relationship === "calls" || site.relationship === "enqueues")) {
           queue.push({ node: created.node, def: created.def, depth: depth + 1, ancestry: [...ancestry, node.id] });
         }
       }
@@ -1600,7 +1624,7 @@ export class Collector {
 
   private resolveViaIndex(site: CallSite, node: SparsityNode, def: Definition): SiteResolution | undefined {
     const index = this.rubyIndex!;
-    const toCandidates = (defs: IndexedDefinition[]): Candidate[] => defs.map((item) => ({ path: item.path, line: item.startLine, text: item.symbol, symbol: item.symbol }));
+    const toCandidates = indexedCandidates;
 
     if (site.source === "constant") {
       const symbol = resolveIndexedConstant(index, site.name, node.symbol);
