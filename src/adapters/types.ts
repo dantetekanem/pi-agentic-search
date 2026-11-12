@@ -23,6 +23,8 @@ export interface AdapterDefinition extends Definition {
   signature?: string;
   /** A class-body call (such as `has_many` or `validates`) that runs when its file loads. */
   loadTime?: boolean;
+  /** A Ruby method that is not public; absent for public methods and everything else. */
+  visibility?: "private" | "protected";
 }
 
 export interface NamespaceInfo {

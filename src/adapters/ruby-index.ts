@@ -19,6 +19,8 @@ export interface IndexedDefinition {
   singleton?: boolean;
   params?: ParamInfo[];
   returns?: string;
+  /** A method that is not public. */
+  visibility?: "private" | "protected";
 }
 
 export interface IndexedNamespace {
@@ -51,7 +53,7 @@ interface SerializedIndex {
   root: string;
   treeHash: string;
   strings: string[];
-  files: Array<[number, Array<[number, number, number, number, number, number, number, ParamInfo[] | 0, number]>, Array<[number, number, number, number[]]>, Array<[number, number, number, number, number, number, number]>]>;
+  files: Array<[number, Array<[number, number, number, number, number, number, number, ParamInfo[] | 0, number, number]>, Array<[number, number, number, number[]]>, Array<[number, number, number, number, number, number, number]>]>;
 }
 
 class Interner {
@@ -75,7 +77,7 @@ function serialize(root: string, treeHash: string, files: Record<string, FileEnt
   for (const [path, entry] of Object.entries(files)) {
     payload.files.push([
       strings.id(path),
-      entry.definitions.map((def) => [strings.id(def.symbol), strings.id(def.name), strings.id(def.kind), def.startLine, def.endLine, strings.id(def.owner), def.singleton ? 1 : 0, def.params ?? 0, strings.id(def.returns)]),
+      entry.definitions.map((def) => [strings.id(def.symbol), strings.id(def.name), strings.id(def.kind), def.startLine, def.endLine, strings.id(def.owner), def.singleton ? 1 : 0, def.params ?? 0, strings.id(def.returns), strings.id(def.visibility)]),
       entry.namespaces.map((namespace) => [strings.id(namespace.symbol), namespace.kind === "class" ? 0 : 1, strings.id(namespace.superclass), namespace.mixins.map((mixin) => strings.id(mixin))]),
       entry.callSites.map((site) => [strings.id(site.name), site.line, strings.id(site.receiver), strings.id(site.receiverType), strings.id(site.via), strings.id(site.inDef), site.enqueue ? 1 : 0]),
     ]);
@@ -91,7 +93,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
   for (const [pathId, defs, namespaces, sites] of payload.files) {
     const path = text(pathId)!;
     files[path] = {
-      definitions: defs.map(([symbol, name, kind, startLine, endLine, owner, singleton, params, returns]) => ({
+      definitions: defs.map(([symbol, name, kind, startLine, endLine, owner, singleton, params, returns, visibility]) => ({
         symbol: text(symbol)!,
         name: text(name)!,
         kind: text(kind)!,
@@ -102,6 +104,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
         singleton: singleton === 1 ? true : undefined,
         params: params === 0 ? undefined : params,
         returns: text(returns),
+        ...(visibility >= 0 ? { visibility: text(visibility) as IndexedDefinition["visibility"] } : {}),
       })),
       namespaces: namespaces.map(([symbol, kind, superclass, mixins]) => ({
         symbol: text(symbol)!,
@@ -150,7 +153,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
@@ -206,6 +209,7 @@ function fileEntry(path: string, source: string): FileEntry | undefined {
     singleton: def.singleton,
     params: def.params?.some((param) => param.type) ? def.params : undefined,
     returns: def.returns,
+    ...(def.visibility ? { visibility: def.visibility } : {}),
   }));
   const namespaces = facts.namespaces.map((namespace: NamespaceInfo) => ({
     symbol: namespace.symbol,
@@ -398,6 +402,21 @@ export function ancestorsOf(index: RubyIndex, symbol: string, limit = 12): strin
     if (namespace.superclass) queue.push(resolveConstant(index, namespace.superclass, current) ?? namespace.superclass);
   }
   return seen;
+}
+
+/** The definitions `name` dispatches to on `typeSymbol` (`singleton` for a class method), searching its ancestors in order. */
+export function lookupMethod(index: RubyIndex, typeSymbol: string, name: string, singleton: boolean): IndexedDefinition[] {
+  for (const ancestor of ancestorsOf(index, typeSymbol)) {
+    const direct = index.bySymbol.get(`${ancestor}${singleton ? "." : "#"}${name}`) ?? [];
+    if (direct.length) return direct;
+    if (singleton) {
+      const instanceOnModule = index.bySymbol.get(`${ancestor}#${name}`) ?? [];
+      if (instanceOnModule.length && index.namespaces.get(ancestor)?.kind === "module") return instanceOnModule;
+    }
+    const declared = (index.byName.get(name) ?? []).filter((item) => item.owner === ancestor && !["method", "singleton_method", "class", "module", "test"].includes(item.kind));
+    if (declared.length) return declared;
+  }
+  return [];
 }
 
 export function resolveConstant(index: RubyIndex, reference: string, fromSymbol: string | undefined): string | undefined {

@@ -27,6 +27,7 @@ import {
 } from "./sparsity.ts";
 import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
+import type { Entry } from "./adapters/ruby-entries.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import type { AdapterDefinition, Effect, Guard } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
@@ -133,6 +134,8 @@ export interface AnchorRecord {
   guards: Array<{ line: number; guards: Guard[] }>;
   /** Writes, enqueues and cache calls on changed lines (Ruby), including calls that produce no edge. */
   effects: Effect[];
+  /** The framework calls this definition: a job's `perform` or a controller action; `exact` when declared or routed. Needs a Ruby index. */
+  entry?: Entry;
 }
 
 export interface DanglingRecord {
@@ -836,6 +839,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       ...(runsAtLoad(candidate.def) ? { loadTime: true as const } : {}),
       guards: await guardsFor(candidate),
       effects: (candidate.node.effects ?? []).filter((effect) => candidate.changedLines.includes(effect.line)),
+      ...(candidate.node.entry ? { entry: candidate.node.entry } : {}),
     });
   }
 
@@ -1023,6 +1027,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
       anchor.whitespaceOnly?.length ? `whitespace-only changes on ${compressRanges(anchor.whitespaceOnly)}` : undefined,
     ].filter(Boolean);
     if (baseNotes.length) out.push(`base: ${baseNotes.join("; ")}`);
+    if (anchor.entry) out.push(`entry: ${anchor.entry.kind}${anchor.entry.kind === "controller" ? anchor.entry.exact ? ", routed by config/routes.rb" : ", public method; no route read names it" : ""}`);
     if (anchor.guards.length) out.push("guards on changed lines:", ...describeGuards(anchor.guards));
     if (anchor.effects.length) out.push(`effects on changed lines: ${anchor.effects.map((effect) => `${effect.kind} :${effect.line} \`${effect.text}\``).join("; ")}`);
     out.push(node.snippet);

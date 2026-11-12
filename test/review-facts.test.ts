@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { rubyAdapter } from "../src/adapters/ruby.ts";
+import { readRoutes } from "../src/adapters/ruby-routes.ts";
 import { tsAdapter } from "../src/adapters/ts.ts";
 import { collectSparsity, formatSparsity } from "../src/sparsity.ts";
 import { scanSparsity, type ScanOptions } from "../src/sparsity-scan.ts";
@@ -559,6 +560,159 @@ end
   assert.deepEqual(countOf(indexedAll, "Pricing#quote"), { total: 2, shown: 2, complete: true });
   assert.deepEqual(calledBy(indexedAll, "Pricing#quote"), [[5, "exact", "assigned", [exit], undefined], [7, "exact", "assigned", [exit, vip], undefined]]);
   assert.match(await readFile(indexedAll.packPath, "utf8"), /callers \(2 of 2, complete\):\n {2}- n\d+ Checkout#total app\/models\/checkout\.rb:5 \[exact, assigned\]/);
+}));
+
+test("the routes reader lists the controller actions config/routes.rb draws, with verbs, paths and URL helpers", async () => {
+  assert.equal(await rubyAdapter.ready(), true);
+  const table = readRoutes(`Rails.application.routes.draw do
+  root "pages#home"
+  resources :orders, only: [:index, :create, :show] do
+    member do
+      post :pay
+    end
+    get :search, on: :collection
+    resources :items, only: :index
+  end
+  resource :profile, only: [:show, :update]
+  namespace :admin do
+    resources :orders, only: :destroy
+  end
+  post "checkout", to: "checkout#create"
+  get "status" => "health#show", as: :health
+  mount Sidekiq::Web => "/sidekiq"
+  draw :api
+end
+`);
+  assert.ok(table);
+  assert.deepEqual(table.routes.map((route) => `${route.verbs.join("|")} ${route.path} ${route.controller}#${route.action} ${route.helper ?? "-"} :${route.line}`), [
+    "GET / pages#home root :2",
+    "POST /orders/:id/pay orders#pay pay_order :5",
+    "GET /orders/search orders#search search_orders :7",
+    "GET /orders/:order_id/items items#index order_items :8",
+    "GET /orders orders#index orders :3",
+    "POST /orders orders#create orders :3",
+    "GET /orders/:id orders#show order :3",
+    "GET /profile profiles#show profile :10",
+    "PATCH|PUT /profile profiles#update profile :10",
+    "DELETE /admin/orders/:id admin/orders#destroy admin_order :12",
+    "POST /checkout checkout#create checkout :14",
+    "GET /status health#show health :15",
+  ]);
+  assert.deepEqual(table.unread, [{ line: 17, text: "draw :api" }], "a statement the reader does not interpret is listed; a mount routes no action");
+  assert.equal(readRoutes("Rails.application.routes.draw do\n  get 'a' => \n"), undefined, "a file that does not parse has no table");
+});
+
+test("the Ruby adapter records which methods are private or protected", async () => {
+  assert.equal(await rubyAdapter.ready(), true);
+  const facts = rubyAdapter.parse("app/controllers/orders_controller.rb", `class OrdersController < ApplicationController
+  def index; end
+  private def secret; end
+  def create; end
+
+  protected
+
+  def audit; end
+
+  private
+
+  def order_params; end
+  public def show; end
+  def helper; end
+  public :helper
+
+  class << self
+    private
+
+    def build; end
+  end
+
+  def self.find_order; end
+end
+`, true)!;
+  const visibility = Object.fromEntries(facts.definitions.filter((def) => def.kind.endsWith("method")).map((def) => [def.symbol, def.visibility ?? "public"]));
+  assert.deepEqual(visibility, {
+    "OrdersController#index": "public",
+    "OrdersController#secret": "private",
+    "OrdersController#create": "public",
+    "OrdersController#audit": "protected",
+    "OrdersController#order_params": "private",
+    "OrdersController#show": "public",
+    "OrdersController#helper": "public",
+    "OrdersController.build": "private",
+    "OrdersController.find_order": "public",
+  });
+});
+
+test("nodes and anchors that the framework calls say so: jobs, controller actions, and whether a route names them", () => repo(async ({ cwd, git, write, scan }) => {
+  await write({
+    "Gemfile": "source 'https://rubygems.org'\n",
+    "app/controllers/application_controller.rb": "class ApplicationController < ActionController::Base\nend\n",
+    "app/controllers/orders_controller.rb": `class OrdersController < ApplicationController
+  def create
+    Checkout.new.complete(order)
+  end
+
+  def preview
+    order
+  end
+
+  private
+
+  def order
+    Order.find(params[:id])
+  end
+end
+`,
+    "app/controllers/carts_controller.rb": "class CartsController < ApplicationController\n  def show\n    Checkout.new.complete(cart)\n  end\nend\n",
+    "app/jobs/application_job.rb": "class ApplicationJob < ActiveJob::Base\nend\n",
+    "app/jobs/receipt_job.rb": "class ReceiptJob < ApplicationJob\n  def perform(id)\n    id\n  end\nend\n",
+    "app/workers/sync_worker.rb": "class SyncWorker\n  include Sidekiq::Job\n\n  def perform\n    1\n  end\nend\n",
+    "app/models/checkout.rb": "class Checkout\n  def complete(order)\n    order\n  end\nend\n",
+    "config/routes.rb": "Rails.application.routes.draw do\n  resources :orders, only: :create\n  draw :admin\nend\n",
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "app/controllers/orders_controller.rb": `class OrdersController < ApplicationController
+  def create
+    Checkout.new.complete(order) if order
+  end
+
+  def preview
+    order.id
+  end
+
+  private
+
+  def order
+    Order.find_by(id: params[:id])
+  end
+end
+`,
+    "app/jobs/receipt_job.rb": "class ReceiptJob < ApplicationJob\n  def perform(id)\n    id.to_s\n  end\nend\n",
+    "app/workers/sync_worker.rb": "class SyncWorker\n  include Sidekiq::Job\n\n  def perform\n    2\n  end\nend\n",
+    "app/models/checkout.rb": "class Checkout\n  def complete(order)\n    ReceiptJob.perform_later(order.id)\n  end\nend\n",
+  });
+  git("commit", "-qam", "change");
+
+  const result = await scan("HEAD~1..HEAD", { indexCacheDir: join(cwd, "..", "index") });
+  const entries = Object.fromEntries(result.anchors.map((anchor) => [anchor.symbol, anchor.entry]));
+  assert.deepEqual(entries, {
+    "OrdersController#create": { kind: "controller", exact: true },
+    "OrdersController#preview": { kind: "controller", exact: false },
+    "OrdersController#order": undefined,
+    "ReceiptJob#perform": { kind: "job", exact: true },
+    "SyncWorker#perform": { kind: "job", exact: true },
+    "Checkout#complete": undefined,
+  });
+  const nodeEntry = (symbol: string) => result.nodes.find((node) => node.symbol === symbol)?.entry;
+  assert.deepEqual(nodeEntry("CartsController#show"), { kind: "controller", exact: false }, "a caller that is not an anchor carries its entry too");
+  assert.deepEqual(nodeEntry("OrdersController#create"), { kind: "controller", exact: true });
+  assert.ok(result.coverage.notes.some((note) => /config\/routes\.rb: 1 statement not read \(draw :admin\)/.test(note)), result.coverage.notes.join("\n"));
+  assert.match(result.inline, /entry: controller, routed by config\/routes\.rb/);
+
+  const unindexed = await scan("HEAD~1..HEAD");
+  assert.ok(unindexed.anchors.every((anchor) => anchor.entry === undefined) && unindexed.nodes.every((node) => node.entry === undefined), "without the index there is no entry registry");
 }));
 
 test("a reference on the first line of a file with a byte order mark still counts", () => repo(async ({ cwd, write }) => {

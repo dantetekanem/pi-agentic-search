@@ -117,7 +117,7 @@ function lineStartsOf(bytes: Buffer): Uint32Array {
   return Uint32Array.from(starts);
 }
 
-function lineAt(starts: Uint32Array, offset: number): number {
+export function lineAt(starts: Uint32Array, offset: number): number {
   let low = 0;
   let high = starts.length - 1;
   while (low < high) {
@@ -128,11 +128,11 @@ function lineAt(starts: Uint32Array, offset: number): number {
   return low + 1;
 }
 
-function kindName(node: Node | null | undefined): string {
+export function kindName(node: Node | null | undefined): string {
   return node ? node.constructor.name : "";
 }
 
-function sliceSource(bytes: Buffer, loc: Prism.Location | null | undefined): string {
+export function sliceSource(bytes: Buffer, loc: Prism.Location | null | undefined): string {
   if (!loc) return "";
   return bytes.subarray(loc.startOffset, loc.startOffset + loc.length).toString("utf8");
 }
@@ -252,7 +252,7 @@ function firstCodeOffset(source: Source, line: number): number | undefined {
   return offset;
 }
 
-function constantPathText(node: Node | null | undefined): string | undefined {
+export function constantPathText(node: Node | null | undefined): string | undefined {
   if (!node) return undefined;
   const kind = kindName(node);
   if (kind === "ConstantReadNode") return (node as Prism.ConstantReadNode).name;
@@ -304,18 +304,18 @@ function camelize(name: string): string {
   return name.split("_").filter(Boolean).map((part) => part[0]!.toUpperCase() + part.slice(1)).join("");
 }
 
-function symbolValue(node: Node | null | undefined): string | undefined {
+export function symbolValue(node: Node | null | undefined): string | undefined {
   const kind = kindName(node);
   if (kind === "SymbolNode") return (node as Prism.SymbolNode).unescaped?.value;
   if (kind === "StringNode") return (node as Prism.StringNode).unescaped?.value;
   return undefined;
 }
 
-function argumentsOf(call: Prism.CallNode): Node[] {
+export function argumentsOf(call: Prism.CallNode): Node[] {
   return call.arguments_?.arguments_ ?? [];
 }
 
-function firstBlockBody(call: Prism.CallNode): Node | null {
+export function firstBlockBody(call: Prism.CallNode): Node | null {
   const block = call.block;
   if (!block) return null;
   if (kindName(block) === "BlockNode") return (block as Prism.BlockNode).body;
@@ -485,6 +485,9 @@ function inferExpressionType(value: Node | null | undefined, local: TypeLookup, 
   return blockValue();
 }
 
+type Visibility = "public" | "private" | "protected";
+const VISIBILITY_CALLS = new Set(["private", "public", "protected"]);
+
 class Parser {
   readonly definitions: AdapterDefinition[] = [];
   readonly namespaces: NamespaceInfo[] = [];
@@ -493,6 +496,8 @@ class Parser {
   readonly localTypes = new Map<number, Map<string, LocalType>>();
   private readonly stack: NamespaceInfo[] = [];
   private singletonDepth = 0;
+  // The default visibility of each open class, module or `class << self` body, innermost last.
+  private readonly visibility: Visibility[] = [];
   private pendingSig: ParamInfo[] | undefined;
   private pendingReturns: string | undefined;
   private readonly comments: Array<{ line: number; text: string }>;
@@ -547,7 +552,7 @@ class Parser {
         const singleton = node as Prism.SingletonClassNode;
         if (kindName(singleton.expression) === "SelfNode") {
           this.singletonDepth += 1;
-          this.visitBody(singleton.body, true);
+          this.visitScope(singleton.body);
           this.singletonDepth -= 1;
         }
         return;
@@ -576,8 +581,39 @@ class Parser {
     this.definitions.push({ name, symbol: info.symbol, kind: "class", startLine, endLine, owner: this.owner() });
     this.stack.push(info);
     this.pendingSig = undefined;
-    this.visitBody(node.body, true);
+    this.visitScope(node.body);
     this.stack.pop();
+  }
+
+  /** A class, module or `class << self` body: its methods are public until a bare `private` or `protected`. */
+  private visitScope(body: Node | null): void {
+    this.visibility.push("public");
+    this.visitBody(body, true);
+    this.visibility.pop();
+  }
+
+  /** `private`, `protected` or `public` in a class body: bare, around a `def`, or naming methods defined before it. */
+  private visitVisibility(call: Prism.CallNode): void {
+    const visibility = call.name as Visibility;
+    const args = argumentsOf(call);
+    if (!args.length) {
+      if (this.visibility.length) this.visibility[this.visibility.length - 1] = visibility;
+      return;
+    }
+    for (const argument of args) {
+      if (kindName(argument) === "DefNode") {
+        this.visitDef(argument as Prism.DefNode, visibility);
+        continue;
+      }
+      const name = symbolValue(argument);
+      const owner = this.owner();
+      const kind = this.singletonDepth > 0 ? "singleton_method" : "method";
+      for (const def of this.definitions) {
+        if (def.name !== name || def.owner !== owner || def.kind !== kind) continue;
+        if (visibility === "public") delete def.visibility;
+        else def.visibility = visibility;
+      }
+    }
   }
 
   private visitModule(node: Prism.ModuleNode): void {
@@ -588,7 +624,7 @@ class Parser {
     this.definitions.push({ name, symbol: info.symbol, kind: "module", startLine, endLine, owner: this.owner() });
     this.stack.push(info);
     this.pendingSig = undefined;
-    this.visitBody(node.body, true);
+    this.visitScope(node.body);
     this.stack.pop();
   }
 
@@ -642,13 +678,15 @@ class Parser {
     return { params, returns };
   }
 
-  private visitDef(node: Prism.DefNode): void {
+  /** `visibility` is set for `private def`; otherwise a `def self.` method is public and others take the body's default. */
+  private visitDef(node: Prism.DefNode, explicit?: Visibility): void {
     const [startLine, endLine] = this.range(node);
     const singleton = this.singletonDepth > 0 || node.receiver !== null;
     const owner = this.owner();
     const separator = singleton ? "." : "#";
     const params = this.paramInfos(node.parameters);
     const annotated = this.annotationsFor(startLine, params);
+    const visibility = explicit ?? (node.receiver !== null ? "public" : this.visibility[this.visibility.length - 1] ?? "public");
     const definition: AdapterDefinition = {
       name: node.name,
       symbol: owner ? `${owner}${separator}${node.name}` : node.name,
@@ -660,6 +698,7 @@ class Parser {
       params: annotated.params,
       returns: annotated.returns,
       signature: normalizeSignature(sliceSource(this.bytes, node.parameters?.location)),
+      ...(visibility === "public" ? {} : { visibility }),
     };
     this.definitions.push(definition);
     this.defNodes.set(startLine, node);
@@ -732,7 +771,8 @@ class Parser {
       this.definitions.push({ name, symbol: `${owner ?? ""} ${name} ${argumentsOf(call).map((argument) => constantPathText(argument) ?? "").join(", ")}`.trim(), kind: "declaration", startLine, endLine, owner });
       return;
     }
-    if (name === "private" || name === "public" || name === "protected" || name === "module_function" || name === "private_constant") {
+    if (VISIBILITY_CALLS.has(name) && inClassBody) return this.visitVisibility(call);
+    if (VISIBILITY_CALLS.has(name) || name === "module_function" || name === "private_constant") {
       const inner = argumentsOf(call).find((argument) => kindName(argument) === "DefNode");
       if (inner) this.visitDef(inner as Prism.DefNode);
       return;
@@ -1033,6 +1073,18 @@ class CallCollector {
     if (inferred.collection === "relation") return { receiverKind, receiverType: inferred.type, via: "chain", chain: inferred.chain ?? [] };
     if (inferred.collection === "array") return { receiverKind };
     return { receiverKind, receiverType: inferred.type, via: inferred.via };
+  }
+}
+
+/** The syntax tree of `source` with what is needed to read it, or undefined before `ready()` or when Prism fails. */
+export function parseProgram(source: string): { program: Prism.ProgramNode; bytes: Buffer; lineStarts: Uint32Array; errors: number } | undefined {
+  if (!parseFn) return undefined;
+  try {
+    const result = parseFn(source);
+    const bytes = Buffer.from(source, "utf8");
+    return { program: result.value, bytes, lineStarts: lineStartsOf(bytes), errors: result.errors.length };
+  } catch {
+    return undefined;
   }
 }
 

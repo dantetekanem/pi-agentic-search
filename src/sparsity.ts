@@ -6,9 +6,11 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
 import { SKIP_DIRS } from "./classifications.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
+import { entryKey, entryRegistry, type Entry } from "./adapters/ruby-entries.ts";
+import { readRoutes } from "./adapters/ruby-routes.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
-import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
+import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
 import {
   camelToSnake,
@@ -42,6 +44,8 @@ export interface SparsityNode {
   depth: number;
   /** Writes, enqueues and cache calls inside an expanded Ruby definition, including calls that are not followed. Absent when none. */
   effects?: Effect[];
+  /** The framework calls this definition: a job's `perform` or a controller action. Needs a Ruby index; absent otherwise. */
+  entry?: Entry;
 }
 
 export interface SparsityEdge {
@@ -1107,7 +1111,25 @@ export class Collector {
   private readonly rubyIndex?: RubyIndex;
   private readonly rubyReady: boolean;
   private readonly facts = new Map<string, FileFacts | undefined>();
+  private entries?: Promise<Map<string, Entry>>;
   expandedNodes = 0;
+
+  /** The entry registry of this root, built once from the Ruby index and the root's `config/routes.rb`. */
+  private entryRegistry(): Promise<Map<string, Entry>> | undefined {
+    if (!this.indexed) return undefined;
+    this.entries ??= (async () => {
+      const path = this.root === "." ? "config/routes.rb" : `${this.root}/config/routes.rb`;
+      const lines = await this.lines(path);
+      const routes = lines ? readRoutes(lines.join("\n")) : undefined;
+      if (lines && !routes) this.notes.push(`${path} does not parse; controller actions are entries by their class alone, none exact.`);
+      if (routes?.unread.length) {
+        const count = routes.unread.length;
+        this.notes.push(`${path}: ${count} statement${count === 1 ? "" : "s"} not read (${routes.unread.slice(0, 5).map((item) => item.text).join("; ")}${count > 5 ? "; …" : ""}); actions only they route are entries by their class alone, not exact.`);
+      }
+      return entryRegistry(this.rubyIndex!, routes);
+    })();
+    return this.entries;
+  }
 
   rubyFacts(path: string, lines: string[]): FileFacts | undefined {
     if (!this.rubyReady) return undefined;
@@ -1290,6 +1312,8 @@ export class Collector {
     if (!lines) return undefined;
     const language = languageFor(path);
     if (!language) return undefined;
+    // Awaited before the lookup below, so finding or creating the node stays one synchronous step.
+    const entries = language === "ruby" ? await this.entryRegistry() : undefined;
     const display = this.displayPath(this.absolutePath(path));
     const facts = this.factsFor(language, display, lines);
     const hinted = facts && symbolHint ? facts.definitions.find((item) => item.symbol === symbolHint && item.startLine <= line && line <= item.endLine) : undefined;
@@ -1317,6 +1341,8 @@ export class Collector {
       snippet: this.snippet(lines, def, focus ?? def.startLine),
       depth,
     };
+    const entry = entries?.get(entryKey(display, def.startLine));
+    if (entry) node.entry = entry;
     this.nodes.push(node);
     this.nodesByKey.set(key, node);
     this.depthReached = Math.max(this.depthReached, depth);
@@ -1599,7 +1625,7 @@ export class Collector {
     const index = this.rubyIndex;
     const typeSymbol = resolveIndexedConstant(index, owner, node.symbol) ?? (index.namespaces.has(owner) ? owner : undefined);
     if (!typeSymbol) return { candidates: [], resolution: "external", via: "constant", note: `${owner} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
-    const found = this.lookupMethod(index, typeSymbol, site.name, false);
+    const found = lookupMethod(index, typeSymbol, site.name, false);
     if (found.length) return { candidates: indexedCandidates(found.slice(0, MAX_CANDIDATES_PER_CALL)), resolution: found.length === 1 ? "exact" : "static_candidate", via: "constant" };
     return { candidates: [], resolution: "unresolved", via: "constant", note: `${typeSymbol} and its ancestors under ${this.rootDisplay} define no ${site.name}; inherited from outside this root or dynamic.` };
   }
@@ -1744,7 +1770,7 @@ export class Collector {
     if (site.source === "super") {
       const superclass = site.receiverType ? resolveIndexedConstant(index, site.receiverType, node.symbol) ?? site.receiverType : undefined;
       if (!superclass) return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: "super without a known superclass in this root" };
-      const found = this.lookupMethod(index, superclass, def.name, def.kind === "singleton_method");
+      const found = lookupMethod(index, superclass, def.name, def.kind === "singleton_method");
       if (found.length) return { candidates: toCandidates(found), resolution: "exact", via: "superclass" };
       return { candidates: [], resolution: "unresolved", note: `${superclass} and its ancestors under ${this.rootDisplay} define no ${def.name}; the super target is outside this root or dynamic.` };
     }
@@ -1763,13 +1789,13 @@ export class Collector {
       return { candidates: [], resolution: "external", via: site.receiverKind === "constant" ? "constant" : chain ? "chain" : site.via, note: `receiver ${receiverType} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
     }
     if (constructor) {
-      const customNew = this.lookupMethod(index, typeSymbol, "new", true);
+      const customNew = lookupMethod(index, typeSymbol, "new", true);
       if (customNew.length) return { candidates: toCandidates(customNew), resolution: customNew.length === 1 ? "exact" : "static_candidate", via: "constant" };
     }
     const methodName = constructor ? "initialize" : site.name;
     const verdicts = chain || symbolProc ? this.chainVerdicts(index, typeSymbol, site.chain ?? []) : { classMethods: [], unknown: [] };
     if (chain && !this.isModel(index, typeSymbol) && (verdicts.classMethods.length || verdicts.unknown.length)) return undefined;
-    const found = this.lookupMethod(index, typeSymbol, methodName, singleton || (implicit && def.kind === "singleton_method"));
+    const found = lookupMethod(index, typeSymbol, methodName, singleton || (implicit && def.kind === "singleton_method"));
     if (found.length) {
       let resolution: Resolution = site.via === "named" || found.length > 1 ? "static_candidate" : "exact";
       const via: EdgeVia = constructor || site.receiverKind === "constant" ? "constant" : implicit ? "self" : chain ? "chain" : site.via ?? "typed";
@@ -1803,7 +1829,7 @@ export class Collector {
     const unknown: string[] = [];
     for (const step of steps) {
       if (RELATION_METHODS.has(step)) continue;
-      const declared = this.lookupMethod(index, typeSymbol, step, true);
+      const declared = lookupMethod(index, typeSymbol, step, true);
       if (declared.some((item) => item.kind === "scope")) continue;
       if (declared.length) classMethods.push(step);
       else unknown.push(step);
@@ -1847,20 +1873,6 @@ export class Collector {
     return { candidates: [{ path: display, line: target.line, text: target.symbol ?? site.name, symbol: target.symbol }], resolution: "exact", via: "checker", note };
   }
 
-  private lookupMethod(index: RubyIndex, typeSymbol: string, name: string, singleton: boolean): IndexedDefinition[] {
-    for (const ancestor of ancestorsOf(index, typeSymbol)) {
-      const direct = index.bySymbol.get(`${ancestor}${singleton ? "." : "#"}${name}`) ?? [];
-      if (direct.length) return direct;
-      if (singleton) {
-        const instanceOnModule = index.bySymbol.get(`${ancestor}#${name}`) ?? [];
-        if (instanceOnModule.length && index.namespaces.get(ancestor)?.kind === "module") return instanceOnModule;
-      }
-      const declared = (index.byName.get(name) ?? []).filter((item) => item.owner === ancestor && !["method", "singleton_method", "class", "module", "test"].includes(item.kind));
-      if (declared.length) return declared;
-    }
-    return [];
-  }
-
   tooCommon(name: string): boolean {
     return name.length < 4 || RUBY_COMMON_METHODS.has(name) || JS_GLOBALS.has(name) || ["render", "perform", "call", "execute", "run", "handle", "main", "default", "index", "show", "create", "update", "destroy"].includes(name);
   }
@@ -1881,7 +1893,7 @@ export class Collector {
     const constantReceiver = site.receiver !== undefined && site.receiver === site.receiverType;
     const implicit = site.receiver === undefined || site.receiver === "self";
     const onClass = site.enqueue ? false : constantReceiver || (implicit && this.classContext(index, site.inDef));
-    const found = this.lookupMethod(index, type, name, onClass);
+    const found = lookupMethod(index, type, name, onClass);
     if (found.length !== 1 || found[0]!.path !== target.path || found[0]!.startLine !== target.startLine) return undefined;
     if (site.enqueue || constantReceiver) return "constant";
     return implicit ? "self" : (site.via as EdgeVia | undefined) ?? "typed";
