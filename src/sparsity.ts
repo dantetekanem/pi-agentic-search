@@ -2104,11 +2104,19 @@ export class Collector {
 
   /** Whether `pattern` first matches a template's line inside its Ruby, not its markup. */
   private async inTemplateRuby(hit: RgHit, template: TemplateName, pattern: RegExp): Promise<boolean> {
+    return (await this.templateRubyAt(hit, template, pattern)) >= 0;
+  }
+
+  /** The column where `pattern` first matches a template's line inside its Ruby, or -1. */
+  private async templateRubyAt(hit: RgHit, template: TemplateName, pattern: RegExp): Promise<number> {
     if (!this.templateCode.has(hit.path)) this.templateCode.set(hit.path, rubyInTemplate((await this.lines(hit.path)) ?? [], template.handler));
     const code = this.templateCode.get(hit.path)!;
     const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
-    for (const match of hit.text.matchAll(global)) if (code(hit.line, match.index + (match[0].length - match[0].trimStart().length))) return true;
-    return false;
+    for (const match of hit.text.matchAll(global)) {
+      const column = match.index + (match[0].length - match[0].trimStart().length);
+      if (code(hit.line, column)) return column;
+    }
+    return -1;
   }
 
   /** Hits as a reference search keeps them: one per file unless every site is wanted, up to the limit, each a node. */
@@ -2131,7 +2139,8 @@ export class Collector {
 
   /**
    * Templates under the root's `app/views` that call a Ruby method by name, in their Ruby: a helper or a model method a
-   * view uses. A view's receivers have no type here, so every one is a match by name, not proof.
+   * view uses. A view's receivers have no type here, so a call on one is a match by name, not proof. A call with no
+   * receiver runs on the view, which holds the app's helpers, so for a method of `app/helpers` it is exact.
    */
   private async templateUses(name: string, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
     const views = viewsFolder(this.root);
@@ -2139,10 +2148,14 @@ export class Collector {
     const pattern = `(^|[^\\w:@$.]|\\.)${escapeRegex(name)}${tail}`;
     const status: SearchStatus = { complete: true };
     const raw = await this.search({ maxCount: options.maxCount ?? 4, patterns: [pattern], paths: [views] }, signal, status);
-    const found: RgHit[] = [];
+    const helper = options.exclude !== undefined && /(?:^|\/)app\/helpers\//.test(options.exclude.path);
+    const found: Array<RgHit & Partial<ReferenceHit>> = [];
     for (const hit of raw) {
       const template = templateName(hit.path);
-      if (template && await this.inTemplateRuby(hit, template, new RegExp(`(?<![\\w$@:])${escapeRegex(name)}(?![\\w?!=])`))) found.push(hit);
+      const column = template ? await this.templateRubyAt(hit, template, new RegExp(`(?<![\\w$@:])${escapeRegex(name)}(?![\\w?!=])`)) : -1;
+      if (column < 0) continue;
+      const bare = !/(?:\.|&\.)\s*$/.test(hit.text.slice(0, column));
+      found.push(helper && bare ? { ...hit, exactVia: "self" } : hit);
     }
     found.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
     // A template is one definition, so its call sites count once, as the caller it is.

@@ -110,12 +110,12 @@ test("a routed action lists its routes with the lines that draw them, and the ex
 test("a template that calls a helper or a model method is its caller, found by name in the template's Ruby", () => repo(RAILS, async (scan) => {
   const result = await scan({ anchors: ["app/helpers/users_helper.rb:2", "app/models/user.rb:2"] });
   assert.deepEqual(callerOf(result, "UsersHelper#display_name"), [
-    { symbol: "users/show.html.erb", kind: "template", path: "app/views/users/show.html.erb", line: 3, resolution: "static_candidate", name: undefined, convention: undefined, entry: undefined },
-  ], "the heading's text and the comment tag name it too, and are no call");
-  assert.deepEqual(callerOf(result, "User#full_name").map(({ symbol, kind, line }) => [symbol, kind, line]), [
-    ["UsersHelper#display_name", "method", 3],
-    ["users/_badge.html.erb", "template", 2],
-  ]);
+    { symbol: "users/show.html.erb", kind: "template", path: "app/views/users/show.html.erb", line: 3, resolution: "exact", name: undefined, convention: undefined, entry: undefined },
+  ], "a helper called with no receiver runs on the view; the heading's text and the comment tag name it too, and are no call");
+  assert.deepEqual(callerOf(result, "User#full_name").map(({ symbol, kind, line, resolution }) => [symbol, kind, line, resolution]), [
+    ["UsersHelper#display_name", "method", 3, "static_candidate"],
+    ["users/_badge.html.erb", "template", 2, "static_candidate"],
+  ], "a call on a receiver of no known type is a match by name");
   const display = result.anchors.find((anchor) => anchor.symbol === "UsersHelper#display_name")!;
   assert.deepEqual(display.callerCount, { total: 1, shown: 1, complete: true });
 }));
