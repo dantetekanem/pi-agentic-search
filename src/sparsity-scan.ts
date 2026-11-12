@@ -30,6 +30,7 @@ import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { Entry } from "./adapters/ruby-entries.ts";
 import type { PackageEntry } from "./adapters/package-entries.ts";
 import { isTemplatePath } from "./adapters/ruby-views.ts";
+import { hasNoEnding, scriptLanguage } from "./scripts.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import type { AdapterDefinition, Effect, Guard } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
@@ -259,12 +260,11 @@ const SCHEMA_FILE = /(^|\/)db\/(?:[\w-]+_)?(?:schema\.rb|structure\.sql)$|(^|\/)
 const MIGRATION_FILE = /(^|\/)db\/(?:migrate|data)\/|(^|\/)migrations\//;
 const CONFIG_FILE = /(^|\/)config\/|(^|\/)\.env(?:\.[^/]*)?$|\.(?:ya?ml|toml|ini)$|(^|\/)[^/]+\.config\.[cm]?[jt]s$|(^|\/)tsconfig[^/]*\.json$|(^|\/)(?:Dockerfile|Procfile|docker-compose[^/]*)$/;
 
-function classifyFile(path: string, binary: boolean): FileKind {
+function classifyFile(path: string, binary: boolean, language = fileLanguage(path)): FileKind {
   if (binary) return "other";
   if (DEPENDENCY_FILE.test(path)) return "dependency";
   if (SCHEMA_FILE.test(path)) return "schema";
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
-  const language = fileLanguage(path);
   if (isTestPath(path)) return language ? "test" : "other";
   if (MIGRATION_FILE.test(path)) return "migration";
   if (CONFIG_FILE.test(path)) return "config";
@@ -546,9 +546,20 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     indexNotes.push(`checkout HEAD ${checkoutHead.slice(0, 12)} differs from range head ${head.slice(0, 12)}: the ${headContent.size} changed files were read at ${head.slice(0, 12)}, so anchors, snippets and line numbers are the range head's; callers, tests and unchanged files reflect the checkout.`);
   }
 
+  // A script with no file ending is read in the language its first line names, as the range head has it.
+  for (const file of files) {
+    if (file.language || file.binary || file.status === "deleted" || !hasNoEnding(file.path)) continue;
+    const content = headContent.get(file.path) ?? await readFile(resolve(cwd, file.path), "utf8").catch(() => undefined);
+    const language = scriptLanguage(file.path, content?.split("\n")[0]);
+    if (!language) continue;
+    file.language = language;
+    file.kind = classifyFile(file.path, file.binary, language);
+  }
+
   const rubyReady = files.some((file) => file.language === "ruby") ? await rubyAdapter.ready() : false;
   const rubyIndexes = new Map<string, RubyIndex>();
-  const tsFiles = files.filter((file) => file.language === "javascript" && file.status !== "deleted" && anchored(file)).map((file) => resolve(cwd, file.path));
+  // A script with no ending is parsed on its own: the TypeScript programs take files by their endings.
+  const tsFiles = files.filter((file) => file.language === "javascript" && !hasNoEnding(file.path) && file.status !== "deleted" && anchored(file)).map((file) => resolve(cwd, file.path));
   const tsPrograms = tsFiles.length ? new TsPrograms(cwd, headContentAbsolute) : undefined;
   tsPrograms?.prepare(tsFiles, signal);
   indexNotes.push(...(tsPrograms?.describe() ?? []));
@@ -563,10 +574,11 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     if (!collector) {
       let rubyIndex: RubyIndex | undefined;
       const productionRubyChange = files.some((file) => file.language === "ruby" && anchored(file) && file.kind !== "test" && file.status !== "deleted" && (rootDisplay === "." || file.path === rootDisplay || file.path.startsWith(`${rootDisplay}/`)));
-      if (rubyReady && options.indexCacheDir && fileLanguage(path) === "ruby" && !productionRubyChange) {
+      const ruby = (files.find((file) => file.path === normalizeRepoRelativePath(path))?.language ?? fileLanguage(path)) === "ruby";
+      if (rubyReady && options.indexCacheDir && ruby && !productionRubyChange) {
         indexNotes.push(`Ruby index for ${rootDisplay} skipped: only test files changed under it; name-based ripgrep resolution used instead.`);
       }
-      if (rubyReady && options.indexCacheDir && fileLanguage(path) === "ruby" && productionRubyChange) {
+      if (rubyReady && options.indexCacheDir && ruby && productionRubyChange) {
         rubyIndex = await buildRubyIndex({ cwd, root: rootDisplay, cacheDir: options.indexCacheDir, signal, overlay: headContent, log: (message) => indexNotes.push(message) });
         rubyIndexes.set(rootDisplay, rubyIndex);
         const described = describeRubyIndex(rubyIndex);

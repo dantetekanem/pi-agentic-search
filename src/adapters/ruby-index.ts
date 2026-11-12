@@ -6,6 +6,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { normalizeRepoRelativePath } from "../shared.ts";
 import { addRgExcludes, runGit } from "../sparsity-shared.ts";
 import { rubyAdapter } from "./ruby.ts";
+import { scriptFiles, scriptLanguage } from "../scripts.ts";
 import type { AdapterDefinition, NamespaceInfo, ParamInfo } from "./types.ts";
 
 export interface IndexedDefinition {
@@ -153,7 +154,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 5;
+const INDEX_VERSION = 6;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
@@ -283,7 +284,7 @@ async function treeHashFor(cwd: string, root: string, signal?: AbortSignal): Pro
   }
 }
 
-async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal): Promise<{ modified: string[]; deleted: string[]; untracked: string[] }> {
+async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal, scripts: ReadonlySet<string> = new Set()): Promise<{ modified: string[]; deleted: string[]; untracked: string[] }> {
   const result = { modified: [] as string[], deleted: [] as string[], untracked: [] as string[] };
   let output: string;
   try {
@@ -295,7 +296,7 @@ async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal): Prom
     if (!line.trim()) continue;
     const status = line.slice(0, 2);
     const path = normalizeRepoRelativePath(line.slice(3).split(" -> ").pop()!.trim());
-    if (!/\.(rb|rake)$/.test(path)) continue;
+    if (!/\.(rb|rake)$/.test(path) && !scripts.has(path)) continue;
     if (status.includes("?")) result.untracked.push(path);
     else if (status.includes("D")) result.deleted.push(path);
     else result.modified.push(path);
@@ -316,13 +317,15 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
 
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const discovery = await rgFiles(root, options.cwd, maxFiles, options.signal);
-  const files = discovery.files;
   if (discovery.capped) {
     return { ...assemble(root, "none", {}, Date.now() - started, false, 0), skipped: `more than ${maxFiles} Ruby files under ${root} exceed the index cap; discovery stopped at ${maxFiles + 1}` };
   }
+  // Ruby scripts with no file ending, such as bin/production-errors, by their first line.
+  const scripts = new Set([...(await scriptFiles(root, options.cwd, options.signal))].flatMap(([path, language]) => (language === "ruby" ? [path] : [])));
+  const files = [...discovery.files, ...[...scripts].filter((path) => !discovery.files.includes(path))];
 
   const treeHash = (await treeHashFor(options.cwd, root, options.signal)) ?? "worktree";
-  const dirty = await dirtyFiles(options.cwd, root, options.signal);
+  const dirty = await dirtyFiles(options.cwd, root, options.signal, scripts);
   const dirtySet = new Set([...dirty.modified, ...dirty.deleted, ...dirty.untracked]);
   const cachePath = join(options.cacheDir, `${cacheKey(options.cwd, root, treeHash)}.json.gz`);
 
@@ -388,7 +391,8 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
     }
   }
   for (const [path, source] of options.overlay ?? []) {
-    if (!(root === "." || path === root || path.startsWith(`${root}/`)) || !/\.(?:rb|rake)$/.test(path)) continue;
+    const ruby = /\.(?:rb|rake)$/.test(path) || scriptLanguage(path, source.split("\n")[0]) === "ruby";
+    if (!(root === "." || path === root || path.startsWith(`${root}/`)) || !ruby) continue;
     const entry = fileEntry(path, source);
     if (entry) {
       merged[path] = entry;

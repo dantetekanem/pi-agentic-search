@@ -11,6 +11,7 @@ import { readRoutes } from "./adapters/ruby-routes.ts";
 import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
+import { scriptFiles, scriptLanguage } from "./scripts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
@@ -1307,17 +1308,30 @@ export class Collector {
 
     const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
     if (onDisk.length) {
-      const checkoutHits = await rgJson(ripgrepArgs(spec, onDisk), this.options.cwd, this.budget, signal, status);
-      hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path) && (!spec.language || ofLanguage(hit.path, spec.language))));
+      // A script with no file ending is of no ripgrep type: it is searched as a file named on its own.
+      const scripts = spec.language ? await this.scriptsIn(spec, onDisk) : [];
+      const checkoutHits = await rgJson(ripgrepArgs(spec, [...onDisk, ...scripts]), this.options.cwd, this.budget, signal, status);
+      hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path) && (!spec.language || ofLanguage(hit.path, spec.language) || scripts.includes(hit.path))));
     }
 
     const patterns = spec.patterns.map((pattern) => new RegExp(pattern));
     for (const path of this.revisionFiles) {
-      if (!inSearchScope(path, spec)) continue;
       const lines = this.files.get(this.absolutePath(path)) ?? [];
+      const script = spec.language !== undefined && scriptLanguage(path, lines[0]) === spec.language;
+      if (!inSearchScope(path, spec) && !(script && inSearchScope(path, { ...spec, language: undefined }))) continue;
       hits.push(...matchLines(path, lines, patterns, spec.maxCount));
     }
     return hits;
+  }
+
+  private scripts?: Promise<Map<string, Language>>;
+
+  /** This root's scripts of a search's language with no file ending, under its folders, and tests only when it wants tests. */
+  private async scriptsIn(spec: SearchSpec, paths: string[]): Promise<string[]> {
+    this.scripts ??= scriptFiles(this.root, this.options.cwd, this.options.signal);
+    const scopes = paths.map(normalizeRepoRelativePath);
+    return [...(await this.scripts)].flatMap(([path, language]) =>
+      language === spec.language && !scopes.includes(path) && scopes.some((scope) => underRoot(scope, path)) && !excludedFromSearch(path) && (!spec.testsOnly || isTestPath(path)) ? [path] : []);
   }
 
   private async listFiles(glob: string, signal?: AbortSignal): Promise<string[]> {
@@ -1384,7 +1398,7 @@ export class Collector {
     const display = this.displayPath(this.absolutePath(path));
     // A Rails view template is one definition, the whole file: Ruby inside markup no parser here reads.
     const template = templateName(display);
-    const language = template ? "ruby" : languageFor(path);
+    const language = template ? "ruby" : languageFor(path) ?? scriptLanguage(display, lines[0]);
     if (!language) return undefined;
     // Awaited before the lookup below, so finding or creating the node stays one synchronous step.
     const entries = language === "ruby" ? await this.entryRegistry() : undefined;
@@ -2232,7 +2246,8 @@ export class Collector {
       search = await this.references(name, anchor.language, { ...options, typedOnly }, signal);
       if (typedOnly && !search.exhaustive) this.notes.push(`callers of ${name}: name too common to search by name alone; only call sites whose receiver type the Ruby index knows are listed.`);
       // A helper or a model method a view calls: templates hold Ruby the index does not read, so they are found by name.
-      if (anchor.language === "ruby" && !typedOnly && VIEW_CALLABLE_KINDS.has(def.kind)) {
+      // Only what the app defines under app/ is in a view's reach; a script's or a library's method of the same name is not.
+      if (anchor.language === "ruby" && !typedOnly && VIEW_CALLABLE_KINDS.has(def.kind) && /(?:^|\/)app\//.test(anchor.path)) {
         const inViews = await this.templateUses(name, { ...options, limit: options.limit - search.hits.length }, signal);
         search = { hits: [...search.hits, ...inViews.hits], totalFiles: search.totalFiles + inViews.totalFiles, sites: [...search.sites, ...inViews.sites], exhaustive: search.exhaustive && inViews.exhaustive };
       }
