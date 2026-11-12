@@ -1,14 +1,16 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
 import { SKIP_DIRS } from "./classifications.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
-import { entryKey, entryRegistry, type Entry } from "./adapters/ruby-entries.ts";
+import { entryKey, entryRegistry, readExceptionsApps, type Entry } from "./adapters/ruby-entries.ts";
 import { readRoutes } from "./adapters/ruby-routes.ts";
+import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
+import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
@@ -22,9 +24,9 @@ import {
 export type Language = "ruby" | "javascript";
 export type Resolution = "exact" | "static_candidate" | "ambiguous" | "unresolved" | "external" | "local";
 
-export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "self" | "lexical" | "constant" | "chain" | "superclass" | "same_file" | "import" | "name_only";
+export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "self" | "lexical" | "constant" | "chain" | "superclass" | "same_file" | "import" | "render" | "convention" | "name_only";
 
-export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a parameter, callback or variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), chain (a scope or relation chain on a model; each step checked against the index), superclass, same_file, import (followed an import), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
+export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a parameter, callback or variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), chain (a scope or relation chain on a model; each step checked against the index), superclass, same_file, import (followed an import), render (a render call names the template by its path, or by its name in its own folder), convention (Rails renders an action's own template), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
 export type Truncation = "none" | "max_nodes" | "budget" | "rg_timeout";
 /** Why an edge is unresolved: an operator call, a receiver whose type is not known, a runtime-chosen callee, or no definition found. */
 export type UnresolvedReason = "operator" | "unknown-receiver" | "dynamic" | "no-definition";
@@ -46,8 +48,11 @@ export interface SparsityNode {
   depth: number;
   /** Writes, enqueues and cache calls inside an expanded Ruby definition, including calls that are not followed. Absent when none. */
   effects?: Effect[];
-  /** The framework calls this definition: a job's `perform` or a controller action. Needs a Ruby index; absent otherwise. */
-  entry?: Entry;
+  /**
+   * The framework calls this definition: a job's `perform` or a controller action, which needs a Ruby index; or its
+   * package exposes it: a command's statement, the default export of a module Pi loads, what the package exports.
+   */
+  entry?: Entry | PackageEntry;
 }
 
 export interface SparsityEdge {
@@ -173,6 +178,10 @@ export interface ReferenceHit {
   enqueue?: boolean;
   /** Set by `callers`: the conditions dominating the call site, outermost first. */
   guards?: Guard[];
+  /** What the call writes when it is not the searched definition's own name: the path a render call names a template by. */
+  named?: string;
+  /** No call names it: Rails renders the action's own template by convention. */
+  convention?: true;
 }
 
 /** What a reference search found: the hits it shows, and every site that passed its filters. */
@@ -278,6 +287,8 @@ const MAX_CALLER_FILES = 40;
 // Ripgrep's matching lines per file when every caller is wanted.
 const ALL_MATCHES_PER_FILE = 1000;
 
+// Definitions a view template may call by name: helpers, model methods and scopes.
+const VIEW_CALLABLE_KINDS = new Set(["method", "singleton_method", "scope"]);
 const EXPANDABLE_KINDS = new Set(["method", "singleton_method", "scope", "define_method", "class_method", "function", "component", "test", "it", "describe", "context", "scenario"]);
 
 const RUBY_KEYWORDS = new Set([
@@ -383,6 +394,11 @@ export function languageFor(path: string): Language | undefined {
   if (RUBY_EXTENSIONS.has(ext)) return "ruby";
   if (JS_EXTENSIONS.has(ext)) return "javascript";
   return undefined;
+}
+
+/** The language of a file's definitions: a Rails view template's are Ruby's, though no parser here reads its markup. */
+export function fileLanguage(path: string): Language | undefined {
+  return templateName(normalizeRepoRelativePath(path)) ? "ruby" : languageFor(path);
 }
 
 export function renderSurroundings(lines: string[], startLine: number, endLine: number, vicinity: number): string {
@@ -814,6 +830,12 @@ export function findDefinition(language: Language, lines: string[], line: number
   return language === "ruby" ? findRubyDefinition(lines, line) : findJsDefinition(lines, line);
 }
 
+/** A view template as one definition: every line of the file, named by its path under `app/views`. */
+function templateDefinition(template: TemplateName, lines: string[]): Definition {
+  const last = lines.length > 1 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+  return { name: template.file, symbol: template.file, kind: "template", startLine: 1, endLine: Math.max(1, last) };
+}
+
 // Call extraction
 
 function stripRubyNoise(text: string): string {
@@ -1137,9 +1159,10 @@ export class Collector {
   private readonly rubyReady: boolean;
   private readonly facts = new Map<string, FileFacts | undefined>();
   private entries?: Promise<Map<string, Entry>>;
+  private exposed?: PackageEntries;
   expandedNodes = 0;
 
-  /** The entry registry of this root, built once from the Ruby index and the root's `config/routes.rb`. */
+  /** The entry registry of this root, built once from the Ruby index, the root's `config/routes.rb` and its `config/application.rb`. */
   private entryRegistry(): Promise<Map<string, Entry>> | undefined {
     if (!this.indexed) return undefined;
     this.entries ??= (async () => {
@@ -1151,9 +1174,29 @@ export class Collector {
         const count = routes.unread.length;
         this.notes.push(`${path}: ${count} statement${count === 1 ? "" : "s"} not read (${routes.unread.slice(0, 5).map((item) => item.text).join("; ")}${count > 5 ? "; …" : ""}); actions only they route are entries by their class alone, not exact.`);
       }
-      return entryRegistry(this.rubyIndex!, routes);
+      const application = this.root === "." ? "config/application.rb" : `${this.root}/config/application.rb`;
+      const config = await this.lines(application);
+      return entryRegistry(this.rubyIndex!, routes, path, config ? { file: application, apps: readExceptionsApps(config.join("\n")), lines: config } : undefined, lines);
     })();
     return this.entries;
+  }
+
+  /** What this root's package.json exposes, read once; served files are read as the collector serves them. */
+  private packageEntries(): PackageEntries {
+    this.exposed ??= packageEntries(this.root, (path) => {
+      const absolute = this.absolutePath(path);
+      const served = this.files.get(absolute);
+      if (served) return served.join("\n");
+      try {
+        const real = realpathSync(absolute);
+        const inside = relative(realpathSync(this.options.cwd), real);
+        if (inside && !inside.startsWith("..") && !isAbsolute(inside)) return readFileSync(real, "utf8");
+      } catch {
+        // Not there.
+      }
+      return undefined;
+    });
+    return this.exposed;
   }
 
   rubyFacts(path: string, lines: string[]): FileFacts | undefined {
@@ -1172,6 +1215,8 @@ export class Collector {
   }
 
   factsFor(language: Language, path: string, lines: string[]): FileFacts | undefined {
+    // A template's markup is not Ruby: no parser reads it, so no facts are made up from it.
+    if (templateName(path)) return undefined;
     return language === "ruby" ? this.rubyFacts(path, lines) : this.tsFacts(path, lines);
   }
 
@@ -1196,7 +1241,8 @@ export class Collector {
   }
 
   definitionOf(node: SparsityNode): Definition {
-    return { name: node.symbol.split(/[#. ]/).pop() ?? node.symbol, symbol: node.symbol, kind: node.kind, startLine: node.startLine, endLine: node.endLine };
+    const name = node.kind === "template" ? node.symbol : node.symbol.split(/[#. ]/).pop() ?? node.symbol;
+    return { name, symbol: node.symbol, kind: node.kind, startLine: node.startLine, endLine: node.endLine };
   }
 
   async headLines(node: SparsityNode, count: number): Promise<string> {
@@ -1335,15 +1381,17 @@ export class Collector {
   async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string, allowNew = true): Promise<{ node: SparsityNode; created: boolean; def: AdapterDefinition } | undefined> {
     const lines = await this.lines(path);
     if (!lines) return undefined;
-    const language = languageFor(path);
+    const display = this.displayPath(this.absolutePath(path));
+    // A Rails view template is one definition, the whole file: Ruby inside markup no parser here reads.
+    const template = templateName(display);
+    const language = template ? "ruby" : languageFor(path);
     if (!language) return undefined;
     // Awaited before the lookup below, so finding or creating the node stays one synchronous step.
     const entries = language === "ruby" ? await this.entryRegistry() : undefined;
-    const display = this.displayPath(this.absolutePath(path));
-    const facts = this.factsFor(language, display, lines);
+    const facts = template ? undefined : this.factsFor(language, display, lines);
     const hinted = facts && symbolHint ? facts.definitions.find((item) => item.symbol === symbolHint && item.startLine <= line && line <= item.endLine) : undefined;
     const adapterDef = facts ? (language === "ruby" ? rubyAdapter.definitionAt(facts, line) : tsAdapter.definitionAt(facts, line)) : undefined;
-    const def = hinted ?? adapterDef ?? findDefinition(language, lines, line);
+    const def = template ? templateDefinition(template, lines) : hinted ?? adapterDef ?? findDefinition(language, lines, line);
     if (!def) return undefined;
     const key = `${display}:${def.startLine}:${def.symbol}`;
     const existing = this.nodesByKey.get(key);
@@ -1367,7 +1415,8 @@ export class Collector {
       snippet: this.snippet(lines, def, focus ?? def.startLine),
       depth,
     };
-    const entry = entries?.get(entryKey(display, def.startLine));
+    const exposed = language === "javascript" ? this.packageEntries() : undefined;
+    const entry = entries?.get(entryKey(display, def.startLine)) ?? exposed?.byName.get(`${display}#${def.name}`) ?? (def.kind === "statement" ? exposed?.commands.get(display) : undefined);
     if (entry) node.entry = entry;
     this.nodes.push(node);
     this.nodesByKey.set(key, node);
@@ -1692,7 +1741,8 @@ export class Collector {
   }
 
   async expand(node: SparsityNode, def: Definition, depth: number, ancestry: string[], queue: QueueItem[], signal?: AbortSignal, focus?: number[]): Promise<void> {
-    if (depth > 0 && !EXPANDABLE_KINDS.has(def.kind)) return;
+    // A template's calls are Ruby inside markup, which no parser here reads; following them would follow guesses.
+    if ((depth > 0 && !EXPANDABLE_KINDS.has(def.kind)) || def.kind === "template") return;
     const lines = await this.lines(node.path);
     if (!lines) return;
     const facts = this.factsFor(node.language, node.path, lines);
@@ -2050,40 +2100,147 @@ export class Collector {
     return target.line === anchor.startLine && this.displayRealPath(target.path) === anchor.path;
   }
 
+  private readonly templateCode = new Map<string, (line: number, column: number) => boolean>();
+
+  /** Whether `pattern` first matches a template's line inside its Ruby, not its markup. */
+  private async inTemplateRuby(hit: RgHit, template: TemplateName, pattern: RegExp): Promise<boolean> {
+    if (!this.templateCode.has(hit.path)) this.templateCode.set(hit.path, rubyInTemplate((await this.lines(hit.path)) ?? [], template.handler));
+    const code = this.templateCode.get(hit.path)!;
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    for (const match of hit.text.matchAll(global)) if (code(hit.line, match.index + (match[0].length - match[0].trimStart().length))) return true;
+    return false;
+  }
+
+  /** Hits as a reference search keeps them: one per file unless every site is wanted, up to the limit, each a node. */
+  private async referenceHits(found: Array<RgHit & Partial<ReferenceHit>>, options: ReferenceOptions): Promise<ReferenceHit[]> {
+    const hits: ReferenceHit[] = [];
+    const seenFiles = new Set<string>();
+    for (const hit of found) {
+      if (hits.length >= options.limit) break;
+      if (options.perFile !== false && seenFiles.has(hit.path)) continue;
+      seenFiles.add(hit.path);
+      const created = await this.node(hit.path, hit.line, options.depth ?? 1, hit.line, undefined, !this.options.capReferences || !this.atNodeCap);
+      if (!created) continue;
+      hits.push({
+        node: created.node, def: created.def, line: hit.line, text: hit.text.trim(), test: isTestPath(hit.path),
+        ...(hit.exactVia ? { exactVia: hit.exactVia } : {}), ...(hit.named ? { named: hit.named } : {}), ...(hit.convention ? { convention: true as const } : {}),
+      });
+    }
+    return hits;
+  }
+
+  /**
+   * Templates under the root's `app/views` that call a Ruby method by name, in their Ruby: a helper or a model method a
+   * view uses. A view's receivers have no type here, so every one is a match by name, not proof.
+   */
+  private async templateUses(name: string, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
+    const views = viewsFolder(this.root);
+    const tail = /[?!=]$/.test(name) ? "" : "([^\\w?!=]|$)";
+    const pattern = `(^|[^\\w:@$.]|\\.)${escapeRegex(name)}${tail}`;
+    const status: SearchStatus = { complete: true };
+    const raw = await this.search({ maxCount: options.maxCount ?? 4, patterns: [pattern], paths: [views] }, signal, status);
+    const found: RgHit[] = [];
+    for (const hit of raw) {
+      const template = templateName(hit.path);
+      if (template && await this.inTemplateRuby(hit, template, new RegExp(`(?<![\\w$@:])${escapeRegex(name)}(?![\\w?!=])`))) found.push(hit);
+    }
+    found.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+    // A template is one definition, so its call sites count once, as the caller it is.
+    const callers = found.filter((hit, index) => found.findIndex((other) => other.path === hit.path) === index);
+    return {
+      hits: await this.referenceHits(options.perFile === false ? found : callers, options),
+      totalFiles: callers.length,
+      sites: (options.perFile === false ? found : callers).map((hit) => ({ path: hit.path, line: hit.line, test: false })),
+      exhaustive: status.complete,
+    };
+  }
+
+  /**
+   * What renders a template: a line that names it in a render call, in a Ruby file or another template under the root,
+   * and for a template that is no partial, the action of its name in its folder's controller or mailer, which renders
+   * it by convention when it renders nothing else. A partial rendered by its object's model name is a match by name.
+   */
+  private async renderers(anchor: SparsityNode, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
+    const template = templateName(anchor.path)!;
+    const patterns = renderPatterns(template);
+    const [qualified, local, objects] = [patterns.qualified, patterns.local, patterns.objects].map((list) => list.map((source) => new RegExp(source)));
+    const status: SearchStatus = { complete: true };
+    const raw = await this.search({ maxCount: options.maxCount ?? 4, patterns: [...patterns.qualified, ...patterns.local, ...patterns.objects], paths: [this.root] }, signal, status);
+    const found: Array<RgHit & Partial<ReferenceHit>> = [];
+    for (const hit of raw) {
+      const own = templateName(hit.path);
+      if (hit.path === anchor.path || !(own || ofLanguage(hit.path, "ruby")) || /^\s*#/.test(hit.text)) continue;
+      if (own && !(await this.inTemplateRuby(hit, own, /\b(?:render|partial)\b/))) continue;
+      const named = qualified.some((pattern) => pattern.test(hit.text)) || (inTemplateFolder(hit.path, template) && local.some((pattern) => pattern.test(hit.text)));
+      if (named) found.push({ ...hit, exactVia: "render", named: renderedName(hit.text, template) });
+      else if (objects.some((pattern) => pattern.test(hit.text))) found.push({ ...hit, named: renderedName(hit.text, template) });
+    }
+    // Rails renders an action's own template after the action, when it renders or redirects nowhere else.
+    if (!template.partial) {
+      for (const path of conventionalRenderers(template)) {
+        const lines = await this.lines(path);
+        const facts = lines ? this.rubyFacts(path, lines) : undefined;
+        for (const action of facts?.definitions.filter((item) => item.kind === "method" && item.name === template.name && !item.visibility) ?? []) {
+          if (!found.some((hit) => hit.path === path && action.startLine <= hit.line && hit.line <= action.endLine)) {
+            found.push({ path, line: action.startLine, text: lines![action.startLine - 1] ?? "", exactVia: "convention", convention: true });
+          }
+        }
+      }
+    }
+    found.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || Number(!a.exactVia) - Number(!b.exactVia) || a.path.localeCompare(b.path) || a.line - b.line);
+    return {
+      hits: await this.referenceHits(found, options),
+      totalFiles: new Set(found.map((hit) => hit.path)).size,
+      sites: found.map((hit) => ({ path: hit.path, line: hit.line, test: isTestPath(hit.path) })),
+      exhaustive: status.complete,
+    };
+  }
+
   /**
    * Callers of `anchor`, as `called_by` edges with their call sites' guards. `limit` caps the list and keeps one call
    * site per file; `all` lists every call site found. A name too common to search is filtered by receiver type when a
    * Ruby index is present and skipped otherwise. The count covers production call sites; test call sites are tests.
+   * A Ruby method's callers include the view templates that call it, and a template's are what renders it.
    */
   async callers(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = MAX_CALLERS): Promise<CallerSearch> {
     const name = def.name;
     const none: CallerSearch = { hits: [], count: { total: 0, shown: 0, complete: false } };
     if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return none;
-    const typedOnly = this.tooCommon(name);
-    if (typedOnly && !(anchor.language === "ruby" && this.indexed)) {
-      this.notes.push(`callers of ${name} skipped: name too common to search usefully; search a qualified receiver instead.`);
-      return none;
-    }
     const all = limit === "all";
-    const search = await this.references(name, anchor.language, { exclude: anchor, limit: all ? Infinity : limit, perFile: !all, typedOnly, maxCount: all ? ALL_MATCHES_PER_FILE : undefined }, signal);
+    const options: ReferenceOptions = { exclude: anchor, limit: all ? Infinity : limit, perFile: !all, maxCount: all ? ALL_MATCHES_PER_FILE : undefined };
+    let search: ReferenceSearch;
+    if (def.kind === "template") search = await this.renderers(anchor, options, signal);
+    else {
+      const typedOnly = this.tooCommon(name);
+      if (typedOnly && !(anchor.language === "ruby" && this.indexed)) {
+        this.notes.push(`callers of ${name} skipped: name too common to search usefully; search a qualified receiver instead.`);
+        return none;
+      }
+      search = await this.references(name, anchor.language, { ...options, typedOnly }, signal);
+      if (typedOnly && !search.exhaustive) this.notes.push(`callers of ${name}: name too common to search by name alone; only call sites whose receiver type the Ruby index knows are listed.`);
+      // A helper or a model method a view calls: templates hold Ruby the index does not read, so they are found by name.
+      if (anchor.language === "ruby" && !typedOnly && VIEW_CALLABLE_KINDS.has(def.kind)) {
+        const inViews = await this.templateUses(name, { ...options, limit: options.limit - search.hits.length }, signal);
+        search = { hits: [...search.hits, ...inViews.hits], totalFiles: search.totalFiles + inViews.totalFiles, sites: [...search.sites, ...inViews.sites], exhaustive: search.exhaustive && inViews.exhaustive };
+      }
+    }
     const { hits, totalFiles } = search;
-    if (typedOnly && !search.exhaustive) this.notes.push(`callers of ${name}: name too common to search by name alone; only call sites whose receiver type the Ruby index knows are listed.`);
     if (totalFiles > MAX_CALLER_FILES) this.notes.push(`callers of ${name}: ${totalFiles} files reference the name; showing ${hits.length}. Treat this as a high-fanout boundary.`);
     else if (totalFiles > hits.length) this.frontier.push(`callers of ${name}: ${totalFiles - hits.length} more files not expanded`);
 
     for (const hit of hits) {
-      const { site, guards } = await this.callSite(hit, name);
+      const { site, guards } = hit.node.kind === "template" || hit.convention ? { site: undefined, guards: [] } : await this.callSite(hit, name);
       hit.guards = guards;
       if (!hit.exactVia && this.resolvesTo(site, anchor)) hit.exactVia = "checker";
       this.edges.push({
         from: hit.node.id,
         to: anchor.id,
-        name,
+        name: hit.named ?? name,
         relationship: "called_by",
         resolution: hit.exactVia ? "exact" : "static_candidate",
         ...(hit.exactVia ? { via: hit.exactVia } : {}),
         line: hit.line,
-        note: hit.test ? "test" : hit.enqueue ? "enqueue" : undefined,
+        note: hit.test ? "test" : hit.enqueue ? "enqueue" : hit.convention ? "renders its template by convention" : undefined,
         ...(hit.guards.length ? { guards: hit.guards } : {}),
       });
     }
@@ -2104,7 +2261,7 @@ export class Collector {
 
   /** Tests that reference `anchor` by name; `all` lists every one, and filters a name too common to search by receiver type when a Ruby index is present. */
   async tests(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = 10): Promise<ReferenceHit[]> {
-    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return [];
+    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant" || def.kind === "template") return [];
     const all = limit === "all";
     const typedOnly = this.tooCommon(def.name);
     if (typedOnly && !(all && anchor.language === "ruby" && this.indexed)) return [];

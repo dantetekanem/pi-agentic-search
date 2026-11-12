@@ -717,8 +717,9 @@ end
 
   const result = await scan("HEAD~1..HEAD", { indexCacheDir: join(cwd, "..", "index") });
   const entries = Object.fromEntries(result.anchors.map((anchor) => [anchor.symbol, anchor.entry]));
+  const routed = { kind: "controller", exact: true, routes: [{ verbs: ["POST"], path: "/orders", file: "config/routes.rb", line: 2, text: "resources :orders, only: :create" }] };
   assert.deepEqual(entries, {
-    "OrdersController#create": { kind: "controller", exact: true },
+    "OrdersController#create": routed,
     "OrdersController#preview": { kind: "controller", exact: false },
     "OrdersController#order": undefined,
     "ReceiptJob#perform": { kind: "job", exact: true },
@@ -727,7 +728,7 @@ end
   });
   const nodeEntry = (symbol: string) => result.nodes.find((node) => node.symbol === symbol)?.entry;
   assert.deepEqual(nodeEntry("CartsController#show"), { kind: "controller", exact: false }, "a caller that is not an anchor carries its entry too");
-  assert.deepEqual(nodeEntry("OrdersController#create"), { kind: "controller", exact: true });
+  assert.deepEqual(nodeEntry("OrdersController#create"), routed);
   assert.ok(result.coverage.notes.some((note) => /config\/routes\.rb: 1 statement not read \(draw :admin\)/.test(note)), result.coverage.notes.join("\n"));
   assert.match(result.inline, /entry: controller, routed by config\/routes\.rb/);
 

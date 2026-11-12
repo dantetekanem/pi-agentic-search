@@ -8,11 +8,11 @@ import {
   describeRubyIndex,
   describeUnresolvedReasons,
   EDGE_LABELS,
+  fileLanguage,
   findRoot,
   guardText,
   isTestPath,
   jsDefinitionStart,
-  languageFor,
   renderSurroundings,
   unresolvedByReason,
   type CallerCount,
@@ -28,6 +28,8 @@ import {
 import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { Entry } from "./adapters/ruby-entries.ts";
+import type { PackageEntry } from "./adapters/package-entries.ts";
+import { isTemplatePath } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import type { AdapterDefinition, Effect, Guard } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
@@ -135,10 +137,13 @@ export interface AnchorRecord {
   boundary: { score: number; tags: string[] };
   /**
    * Production call sites, as listed; their `called_by` edges carry the same guards. `resolution` is `exact` when the
-   * Ruby index or the TypeScript checker proves the call reaches this definition. `guards` are the conditions dominating
-   * the call site, outermost first; `enqueue` marks a call that enqueues this definition (a job's `perform`).
+   * Ruby index or the TypeScript checker proves the call reaches this definition, or a render call names a template by
+   * its path. `guards` are the conditions dominating the call site, outermost first; `enqueue` marks a call that
+   * enqueues this definition (a job's `perform`). `name` is what the line writes when it is not the definition's own
+   * name, such as the path `render` names a template by; `convention` marks an action that renders its own template,
+   * with no call to name it, at the action's first line.
    */
-  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true }>;
+  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true; name?: string; convention?: true }>;
   /** How many production call sites the search found, how many `callers` lists, and whether that is all of them. */
   callerCount: CallerCount;
   tests: Array<{ id: string; symbol: string; path: string; line: number; text: string }>;
@@ -155,7 +160,7 @@ export interface AnchorRecord {
   /** Writes, enqueues and cache calls on changed lines (Ruby), including calls that produce no edge. */
   effects: Effect[];
   /** The framework calls this definition: a job's `perform` or a controller action; `exact` when declared or routed. Needs a Ruby index. */
-  entry?: Entry;
+  entry?: Entry | PackageEntry;
 }
 
 export interface DanglingRecord {
@@ -259,7 +264,7 @@ function classifyFile(path: string, binary: boolean): FileKind {
   if (DEPENDENCY_FILE.test(path)) return "dependency";
   if (SCHEMA_FILE.test(path)) return "schema";
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
-  const language = languageFor(path);
+  const language = fileLanguage(path);
   if (isTestPath(path)) return language ? "test" : "other";
   if (MIGRATION_FILE.test(path)) return "migration";
   if (CONFIG_FILE.test(path)) return "config";
@@ -345,7 +350,7 @@ export function parseUnifiedDiff(text: string): ChangedFile[] {
   for (const file of files) {
     if (file.status === "deleted" && file.oldPath === undefined) file.oldPath = file.path;
     file.kind = classifyFile(file.status === "deleted" ? file.oldPath ?? file.path : file.path, file.binary);
-    file.language = languageFor(file.status === "deleted" ? file.oldPath ?? file.path : file.path);
+    file.language = fileLanguage(file.status === "deleted" ? file.oldPath ?? file.path : file.path);
   }
   return files;
 }
@@ -503,7 +508,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       const line = Number(match[2]);
       const existing = files.find((file) => file.path === path);
       if (existing) existing.newRanges.push([line, line]);
-      else files.push({ path, status: "modified", hunks: [], newRanges: [[line, line]], oldRanges: [], kind: classifyFile(path, false), language: languageFor(path), additions: 0, deletions: 0, binary: false });
+      else files.push({ path, status: "modified", hunks: [], newRanges: [[line, line]], oldRanges: [], kind: classifyFile(path, false), language: fileLanguage(path), additions: 0, deletions: 0, binary: false });
     }
   } else {
     const resolved = await resolveDiff(options.diff, cwd, signal);
@@ -522,7 +527,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     for (const path of resolved.untracked) {
       const normalized = normalizeRepoRelativePath(path);
       if (files.some((file) => file.path === normalized)) continue;
-      files.push({ path: normalized, status: "added", hunks: [], newRanges: [[1, Number.MAX_SAFE_INTEGER]], oldRanges: [], kind: classifyFile(normalized, false), language: languageFor(normalized), additions: 0, deletions: 0, binary: false });
+      files.push({ path: normalized, status: "added", hunks: [], newRanges: [[1, Number.MAX_SAFE_INTEGER]], oldRanges: [], kind: classifyFile(normalized, false), language: fileLanguage(normalized), additions: 0, deletions: 0, binary: false });
     }
   }
 
@@ -558,10 +563,10 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     if (!collector) {
       let rubyIndex: RubyIndex | undefined;
       const productionRubyChange = files.some((file) => file.language === "ruby" && anchored(file) && file.kind !== "test" && file.status !== "deleted" && (rootDisplay === "." || file.path === rootDisplay || file.path.startsWith(`${rootDisplay}/`)));
-      if (rubyReady && options.indexCacheDir && languageFor(path) === "ruby" && !productionRubyChange) {
+      if (rubyReady && options.indexCacheDir && fileLanguage(path) === "ruby" && !productionRubyChange) {
         indexNotes.push(`Ruby index for ${rootDisplay} skipped: only test files changed under it; name-based ripgrep resolution used instead.`);
       }
-      if (rubyReady && options.indexCacheDir && languageFor(path) === "ruby" && productionRubyChange) {
+      if (rubyReady && options.indexCacheDir && fileLanguage(path) === "ruby" && productionRubyChange) {
         rubyIndex = await buildRubyIndex({ cwd, root: rootDisplay, cacheDir: options.indexCacheDir, signal, overlay: headContent, log: (message) => indexNotes.push(message) });
         rubyIndexes.set(rootDisplay, rubyIndex);
         const described = describeRubyIndex(rubyIndex);
@@ -757,7 +762,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     if (!baseDefinitions.has(path)) {
       const lines = await oldLines(path);
       const adapter = file.language === "ruby" ? rubyAdapter : tsAdapter;
-      baseDefinitions.set(path, lines ? adapter.parse(path, lines.join("\n"), true)?.definitions : []);
+      // A template is one definition no parser reads.
+      baseDefinitions.set(path, isTemplatePath(path) ? undefined : lines ? adapter.parse(path, lines.join("\n"), true)?.definitions : []);
     }
     return baseDefinitions.get(path);
   };
@@ -832,6 +838,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
         changed: anchorIds.has(hit.node.id), boundary: boundary.tags, score: boundary.score,
         resolution: hit.exactVia ? "exact" as const : "static_candidate" as const, guards: hit.guards ?? [],
         ...(hit.enqueue ? { enqueue: true as const } : {}),
+        ...(hit.named ? { name: hit.named } : {}),
+        ...(hit.convention ? { convention: true as const } : {}),
       });
     }
     callerRecords.sort((a, b) => Number(b.changed) - Number(a.changed) || b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
