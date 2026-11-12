@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `scan` of a committed range no longer fails with `Cannot read properties of undefined (reading 'trim')` when the checkout's copy of a changed file is longer than the range head's. Searches read changed files at the range head, so a caller inside one is reported at the head's line, and a hit whose line text differs from the content the scan reads is dropped.
+
 ## 0.7.1 (2026-10-26)
 
 ### Fixed

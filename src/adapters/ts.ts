@@ -426,6 +426,7 @@ export class TsAdapter implements LanguageAdapter {
 
   confirmsReference(facts: FileFacts, line: number, name: string): boolean {
     const sf = (facts as TsFacts).sourceFile;
+    if (line < 1 || line > sf.getLineStarts().length) return false;
     const lineStart = sf.getPositionOfLineAndCharacter(line - 1, 0);
     const lineEnd = line < sf.getLineStarts().length ? sf.getPositionOfLineAndCharacter(line, 0) : sf.getEnd();
     let found = false;

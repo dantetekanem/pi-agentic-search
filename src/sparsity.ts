@@ -4,6 +4,7 @@ import { realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
+import { SKIP_DIRS } from "./classifications.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
@@ -146,6 +147,18 @@ interface RgHit {
   line: number;
   text: string;
 }
+
+/** One ripgrep search: `paths` lists files (searched as given) and directories (filtered by language, tests and excludes). */
+interface SearchSpec {
+  patterns: string[];
+  paths: string[];
+  maxCount: number;
+  language?: Language;
+  testsOnly?: boolean;
+}
+
+const TEST_GLOBS = ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"];
+const LOCK_FILE = /(^|\/)(?:[^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
 
 interface ConstantResolution {
   candidates: Candidate[];
@@ -302,6 +315,34 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** The `**`/`*`/`{a,b}` globs this module passes to `rg --files`, as a path regex. */
+function globRegex(glob: string): RegExp {
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    if (glob.startsWith("**/", i)) {
+      source += "(?:.*/)?";
+      i += 2;
+    } else if (glob[i] === "*") {
+      source += "[^/]*";
+    } else if (glob[i] === "{" && glob.indexOf("}", i) > i) {
+      const end = glob.indexOf("}", i);
+      source += `(?:${glob.slice(i + 1, end).split(",").map(escapeRegex).join("|")})`;
+      i = end;
+    } else {
+      source += escapeRegex(glob[i]!);
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function underRoot(root: string, path: string): boolean {
+  return root === "." || path === root || path.startsWith(`${root}/`);
+}
+
+function excludedFromSearch(path: string): boolean {
+  return path.split("/").some((segment) => SKIP_DIRS.has(segment)) || LOCK_FILE.test(path);
+}
+
 function indentOf(line: string): number {
   return line.length - line.trimStart().length;
 }
@@ -325,6 +366,7 @@ function insideStringLiteral(text: string, name: string): boolean {
 }
 
 function insideJsImport(lines: string[], line: number): boolean {
+  if (line < 1 || line > lines.length) return false;
   for (let i = line - 1; i >= Math.max(0, line - 30); i -= 1) {
     const text = lines[i]!.trim();
     if (/^import\b/.test(text)) return true;
@@ -898,6 +940,7 @@ async function rgFiles(glob: string, root: string, cwd: string, budget: Budget, 
 
 export class Collector {
   private readonly files = new Map<string, string[]>();
+  private readonly revisionFiles = new Set<string>();
   private readonly nodesByKey = new Map<string, SparsityNode>();
   readonly nodes: SparsityNode[] = [];
   readonly edges: SparsityEdge[] = [];
@@ -1003,8 +1046,51 @@ export class Collector {
     return isAbsolute(path) ? path : resolve(this.options.cwd, path);
   }
 
+  /** Serves `path` from a revision instead of the checkout. Searches then read that content too, so hit lines match it. */
   preload(path: string, content: string): void {
-    this.files.set(this.absolutePath(path), content.split("\n"));
+    const absolute = this.absolutePath(path);
+    this.files.set(absolute, content.split("\n"));
+    this.revisionFiles.add(this.displayPath(absolute));
+  }
+
+  private inSearch(path: string, spec: SearchSpec): boolean {
+    return spec.paths.some((entry) => {
+      const scope = normalizeRepoRelativePath(entry);
+      if (scope === path) return true;
+      if (!underRoot(scope, path) || excludedFromSearch(path)) return false;
+      return (!spec.language || languageFor(path) === spec.language) && (!spec.testsOnly || isTestPath(path) || /_spec\.rb$/.test(path));
+    });
+  }
+
+  /** Ripgrep over the checkout, except that files served from a revision are matched against that revision's lines. */
+  private async search(spec: SearchSpec, signal?: AbortSignal): Promise<RgHit[]> {
+    if (this.budget.exhausted) return [];
+    const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
+    const hits: RgHit[] = [];
+    if (onDisk.length) {
+      const types = spec.language === "ruby" ? ["-t", "ruby"] : spec.language === "javascript" ? ["-t", "ts", "-t", "js"] : [];
+      const args = [...types, ...(spec.testsOnly ? TEST_GLOBS : []), "--max-count", String(spec.maxCount), ...spec.patterns.flatMap((pattern) => ["-e", pattern]), ...onDisk];
+      for (const hit of await rgJson(args, this.options.cwd, this.budget, signal)) if (!this.revisionFiles.has(hit.path)) hits.push(hit);
+    }
+    const patterns = spec.patterns.map((pattern) => new RegExp(pattern));
+    for (const path of this.revisionFiles) {
+      if (!this.inSearch(path, spec)) continue;
+      const lines = this.files.get(this.absolutePath(path)) ?? [];
+      let count = 0;
+      for (let index = 0; index < lines.length && count < spec.maxCount; index += 1) {
+        const text = lines[index]!.replace(/\r$/, "");
+        if (!patterns.some((pattern) => pattern.test(text))) continue;
+        hits.push({ path, line: index + 1, text });
+        count += 1;
+      }
+    }
+    return hits;
+  }
+
+  private async listFiles(glob: string, signal?: AbortSignal): Promise<string[]> {
+    const matcher = globRegex(glob);
+    const revision = [...this.revisionFiles].filter((path) => underRoot(this.root, path) && !excludedFromSearch(path) && matcher.test(path));
+    return uniqueValues([...(await rgFiles(glob, this.root, this.options.cwd, this.budget, signal)), ...revision]);
   }
 
   async lines(path: string): Promise<string[] | undefined> {
@@ -1126,9 +1212,9 @@ export class Collector {
   private async namespaceUnderRoot(namespace: string, signal?: AbortSignal): Promise<boolean> {
     const cached = this.constantCache.get(namespace);
     if (cached) return cached.candidates.length > 0;
-    const files = await rgFiles(`**/${camelToSnake(namespace)}{.rb,}`, this.root, this.options.cwd, this.budget, signal);
+    const files = await this.listFiles(`**/${camelToSnake(namespace)}{.rb,}`, signal);
     if (files.length) return true;
-    const hits = await rgJson(["-t", "ruby", "--max-count", "1", "-e", `^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(namespace)}([^\\w]|$)`, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "ruby", maxCount: 1, patterns: [`^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(namespace)}([^\\w]|$)`], paths: [this.root] }, signal);
     return hits.length > 0;
   }
 
@@ -1137,17 +1223,17 @@ export class Collector {
     const last = segments[segments.length - 1]!;
     if (/^[A-Z][A-Z0-9_]*$/.test(last) && last.length > 1) {
       const assignment = `^\\s*(\\w+::)*${escapeRegex(last)}\\s*=[^=~>]`;
-      const sameFile = await rgJson(["--max-count", "2", "-e", assignment, fromPath], this.options.cwd, this.budget, signal);
+      const sameFile = await this.search({ maxCount: 2, patterns: [assignment], paths: [fromPath] }, signal);
       if (sameFile.length) return { candidates: this.rankCandidates(sameFile, fromPath) };
       if (segments.length >= 2) {
         const owners = await this.resolveRubyConstant(segments.slice(0, -1).join("::"), fromPath, signal);
         const files = uniqueValues(owners.candidates.map((owner) => owner.path));
         if (files.length) {
-          const inOwner = await rgJson(["--max-count", "2", "-e", assignment, ...files], this.options.cwd, this.budget, signal);
+          const inOwner = await this.search({ maxCount: 2, patterns: [assignment], paths: files }, signal);
           if (inOwner.length) return { candidates: this.rankCandidates(inOwner, fromPath, constant) };
         }
       }
-      const anywhere = await rgJson(["-t", "ruby", "--max-count", "1", "-e", assignment, this.root], this.options.cwd, this.budget, signal);
+      const anywhere = await this.search({ language: "ruby", maxCount: 1, patterns: [assignment], paths: [this.root] }, signal);
       if (anywhere.length) {
         const ranked = this.rankCandidates(anywhere, fromPath, segments.length >= 2 ? segments.slice(0, -1).join("::") : undefined);
         return ranked.length > MAX_CANDIDATES_PER_CALL
@@ -1157,7 +1243,7 @@ export class Collector {
       return { candidates: [], note: `${constant} is not assigned under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
     }
     const pathGuess = `${segments.map(camelToSnake).join("/")}.rb`;
-    const files = await rgFiles(`**/${pathGuess}`, this.root, this.options.cwd, this.budget, signal);
+    const files = await this.listFiles(`**/${pathGuess}`, signal);
     const hits: RgHit[] = [];
     for (const file of files.slice(0, MAX_CANDIDATES_PER_CALL)) {
       const lines = await this.lines(file);
@@ -1172,7 +1258,7 @@ export class Collector {
     }
 
     const pattern = `^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(last)}([^\\w]|$)`;
-    const found = await rgJson(["-t", "ruby", "--max-count", "1", "-e", pattern, this.root], this.options.cwd, this.budget, signal);
+    const found = await this.search({ language: "ruby", maxCount: 1, patterns: [pattern], paths: [this.root] }, signal);
     if (found.length) {
       const parentPath = segments.slice(0, -1).map(camelToSnake).join("/");
       const inNamespace = parentPath ? found.filter((hit) => hit.path.includes(`/${parentPath}/`) || hit.path.includes(`/${parentPath}.rb`)) : found;
@@ -1208,14 +1294,13 @@ export class Collector {
 
   private async resolveRubyMethod(name: string, fromPath: string, receiverConstant?: string, signal?: AbortSignal): Promise<SiteResolution & { ownerFallback?: boolean }> {
     const patterns = this.rubyMethodPattern(name);
-    const patternArgs = patterns.flatMap((pattern) => ["-e", pattern]);
 
     if (receiverConstant) {
       const resolved = await this.resolveRubyConstant(receiverConstant, fromPath, signal);
       const owners = resolved.candidates;
       if (owners.length) {
         const files = uniqueValues(owners.map((owner) => owner.path));
-        const hits = await rgJson(["-t", "ruby", "--max-count", "3", ...patternArgs, ...files], this.options.cwd, this.budget, signal);
+        const hits = await this.search({ language: "ruby", maxCount: 3, patterns, paths: files }, signal);
         if (hits.length) {
           const ranked = this.rankCandidates(hits, fromPath, receiverConstant);
           return { candidates: ranked, resolution: ranked.length === 1 ? "exact" : "static_candidate", via: "constant" };
@@ -1225,10 +1310,10 @@ export class Collector {
       return { candidates: [], resolution: resolved.note && /comes from the platform, a gem or another component/.test(resolved.note) ? "external" : "unresolved", via: "constant", note: resolved.note ?? `receiver ${receiverConstant} was not found under ${this.rootDisplay}; it is probably defined outside this root.` };
     }
 
-    const sameFile = await rgJson(["--max-count", "3", ...patternArgs, fromPath], this.options.cwd, this.budget, signal);
+    const sameFile = await this.search({ maxCount: 3, patterns, paths: [fromPath] }, signal);
     if (sameFile.length) return { candidates: sameFile, resolution: sameFile.length === 1 ? "exact" : "static_candidate", via: "same_file" };
 
-    const hits = await rgJson(["-t", "ruby", "--max-count", "2", ...patternArgs, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "ruby", maxCount: 2, patterns, paths: [this.root] }, signal);
     if (!hits.length) return { candidates: [], resolution: "unresolved" };
     const ranked = this.rankCandidates(hits, fromPath);
     if (ranked.length > MAX_CANDIDATES_PER_CALL) return { candidates: ranked, resolution: "ambiguous", via: "name_only", note: `${ranked.length} definitions named ${name} under ${this.rootDisplay}; receiver type unknown.` };
@@ -1244,8 +1329,7 @@ export class Collector {
           `^\\s*export\\s*\\{[^}]*\\b${escaped}\\b`,
           `^\\s*(async\\s+)?(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`,
         ];
-    const hits = await rgJson(["--max-count", "3", ...patterns.flatMap((pattern) => ["-e", pattern]), ...files], this.options.cwd, this.budget, signal);
-    return hits;
+    return this.search({ maxCount: 3, patterns, paths: files }, signal);
   }
 
   private async resolveJsImportFile(fromPath: string, specifier: string): Promise<string | undefined> {
@@ -1291,10 +1375,10 @@ export class Collector {
       }
       return { candidates: local.filter((hit) => !values.includes(hit)), resolution: "exact", via: "same_file" };
     }
-    const methodHits = await rgJson(["--max-count", "2", "-e", `^\\s*((public|private|protected|static|async|override)\\s+)*${escapeRegex(site.name)}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`, fromPath], this.options.cwd, this.budget, signal);
+    const methodHits = await this.search({ maxCount: 2, patterns: [`^\\s*((public|private|protected|static|async|override)\\s+)*${escapeRegex(site.name)}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`], paths: [fromPath] }, signal);
     if (methodHits.length) return { candidates: methodHits, resolution: "exact", via: "same_file" };
 
-    const hits = await rgJson(["-t", "ts", "-t", "js", "--max-count", "2", "-e", `\\b(function\\s*\\*?|const|let|var|class)\\s+${escapeRegex(site.name)}([^\\w$]|$)`, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "javascript", maxCount: 2, patterns: [`\\b(function\\s*\\*?|const|let|var|class)\\s+${escapeRegex(site.name)}([^\\w$]|$)`], paths: [this.root] }, signal);
     if (!hits.length) return { candidates: [], resolution: "unresolved" };
     const ranked = this.rankCandidates(hits, fromPath);
     if (ranked.length > MAX_CANDIDATES_PER_CALL) return { candidates: ranked, resolution: "ambiguous", via: "name_only", note: `${ranked.length} definitions named ${site.name} under ${this.rootDisplay}; not imported here.` };
@@ -1379,7 +1463,7 @@ export class Collector {
     const owners = (await this.resolveRubyConstant(constant, fromPath, signal)).candidates;
     if (!owners.length) return { candidates: [], resolution: "external", via: "constant", note: `${constant} is outside ${this.rootDisplay}; its constructor is not inspected` };
     const files = uniqueValues(owners.map((owner) => owner.path));
-    const hits = await rgJson(["-t", "ruby", "--max-count", "2", "-e", "^\\s*def\\s+initialize([^\\w?!=]|$)", ...files], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "ruby", maxCount: 2, patterns: ["^\\s*def\\s+initialize([^\\w?!=]|$)"], paths: files }, signal);
     if (!hits.length) return { candidates: [], resolution: "unresolved", via: "constant", note: `no initialize definition found in ${constant}; inherited or dynamic construction is not traced` };
     const ranked = this.rankCandidates(hits, fromPath, constant);
     return { candidates: ranked, resolution: ranked.length === 1 ? "exact" : "static_candidate", via: "constant", note: "new dispatches to initialize" };
@@ -1646,11 +1730,7 @@ export class Collector {
     const escaped = escapeRegex(name);
     const tail = /[?!=]$/.test(name) ? "" : "([^\\w?!=]|$)";
     const pattern = `(^|[^\\w:@$.]|\\.)${escaped}${tail}`;
-    const typeArgs = language === "ruby" ? ["-t", "ruby"] : ["-t", "ts", "-t", "js"];
-    const globArgs = options.onlyTests
-      ? ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"]
-      : [];
-    const raw = await rgJson([...typeArgs, ...globArgs, "--max-count", "4", "-e", pattern, this.root], this.options.cwd, this.budget, signal);
+    const raw = await this.search({ language, testsOnly: options.onlyTests, maxCount: 4, patterns: [pattern], paths: [this.root] }, signal);
     const filtered = raw
       .filter((hit) => !(options.exclude && hit.path === options.exclude.path && hit.line >= options.exclude.startLine && hit.line <= options.exclude.endLine))
       .filter((hit) => !/^\s*(def|function|const|let|var|class|export|scope|import|require)\b/.test(hit.text))
@@ -1662,10 +1742,12 @@ export class Collector {
     const seenFiles = new Set<string>();
     for (const hit of filtered) {
       if (options.perFile !== false && seenFiles.has(hit.path)) continue;
+      // A hit counts only when the content this collector serves has the same text on that line.
+      const lines = await this.lines(hit.path);
+      if (!lines || lines[hit.line - 1]?.replace(/\r$/, "") !== hit.text) continue;
       if (language === "javascript") {
-        const lines = await this.lines(hit.path);
-        if (lines && insideJsImport(lines, hit.line)) continue;
-        const facts = lines ? this.tsFacts(hit.path, lines) : undefined;
+        if (insideJsImport(lines, hit.line)) continue;
+        const facts = this.tsFacts(hit.path, lines);
         if (facts && !tsAdapter.confirmsReference(facts, hit.line, name)) continue;
       }
       seenFiles.add(hit.path);
@@ -1709,11 +1791,11 @@ export class Collector {
 
   async definitionExists(name: string, language: Language, signal?: AbortSignal): Promise<boolean> {
     if (language === "ruby") {
-      const hits = await rgJson(["-t", "ruby", "--max-count", "1", ...this.rubyMethodPattern(name).flatMap((pattern) => ["-e", pattern]), this.root], this.options.cwd, this.budget, signal);
+      const hits = await this.search({ language, maxCount: 1, patterns: this.rubyMethodPattern(name), paths: [this.root] }, signal);
       return hits.length > 0;
     }
     const escaped = escapeRegex(name);
-    const hits = await rgJson(["-t", "ts", "-t", "js", "--max-count", "1", "-e", `\\b(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`, "-e", `^\\s*((public|private|protected|static|async|override)\\s+)*${escaped}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language, maxCount: 1, patterns: [`\\b(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`, `^\\s*((public|private|protected|static|async|override)\\s+)*${escaped}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`], paths: [this.root] }, signal);
     return hits.length > 0;
   }
 
