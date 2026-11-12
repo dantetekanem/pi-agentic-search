@@ -120,4 +120,6 @@ export interface LanguageAdapter {
   guardsAt(facts: FileFacts, def: Definition, line: number): Guard[];
   /** The setup blocks that run before the test `def`: Ruby `setup`, `before` and `def setup`, JS/TS `beforeEach`, `beforeAll`, `before` and `setup`, in the scopes enclosing it, outermost first. */
   setupBlocks(facts: FileFacts, def: Definition): Array<{ startLine: number; endLine: number }>;
+  /** A hash of the syntax nodes on `def`'s lines without comments or layout (16 hex characters); undefined when no node is there. */
+  semanticFingerprint(facts: FileFacts, def: Definition): string | undefined;
 }

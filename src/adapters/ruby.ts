@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type * as Prism from "@ruby/prism";
 import { excerpt, normalizeSignature } from "../shared.ts";
 import type {
@@ -1195,6 +1196,37 @@ export class RubyAdapter implements LanguageAdapter {
     const end = node.location.startOffset + Math.max(0, node.location.length - 1);
     return { startLine: lineAt(facts.lineStarts, node.location.startOffset), endLine: lineAt(facts.lineStarts, end) };
   }
+
+  semanticFingerprint(facts: FileFacts, def: Definition): string | undefined {
+    const ruby = facts as RubyFacts;
+    const start = ruby.lineStarts[def.startLine - 1];
+    if (start === undefined) return undefined;
+    const end = ruby.lineStarts[def.endLine] ?? ruby.bytes.length;
+    // The outermost nodes on the definition's lines; comments are not nodes.
+    const parts: string[] = [];
+    const visit = (node: Node) => {
+      const from = node.location.startOffset;
+      const to = from + node.location.length;
+      if (to <= start || from >= end) return;
+      if (from >= start && to <= end) {
+        parts.push(JSON.stringify(node.toJSON(), withoutLayout));
+        return;
+      }
+      for (const child of node.compactChildNodes()) visit(child);
+    };
+    visit(ruby.program);
+    return parts.length ? createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16) : undefined;
+  }
+}
+
+// Prism's flag for a node that starts a new line, which a line break alone sets or clears.
+const NEWLINE_FLAG = 1;
+
+/** Prism's JSON of a node without where it is: its locations, and the flag a line break sets. */
+function withoutLayout(key: string, value: unknown): unknown {
+  if (key === "location" || key.endsWith("Loc")) return undefined;
+  if (key === "flags" && typeof value === "number") return value & ~NEWLINE_FLAG;
+  return typeof value === "bigint" ? value.toString() : value;
 }
 
 const SETUP_CALLS = new Set(["setup", "before", "prepend_before", "append_before"]);

@@ -926,6 +926,47 @@ describe("cart", () => {
   assert.ok(plainTest && !plain.edges.some((edge) => edge.from === plainTest.id && edge.relationship === "calls"), "without it, tests found by name are not expanded");
 }));
 
+test("a semantic fingerprint ignores comments and layout, and changes with the code", async () => {
+  assert.equal(await rubyAdapter.ready(), true);
+  const ruby = (source: string) => {
+    const facts = rubyAdapter.parse("app/models/cart.rb", source, true)!;
+    return rubyAdapter.semanticFingerprint(facts, facts.definitions.find((def) => def.symbol === "Cart#total")!);
+  };
+  const base = ruby("class Cart\n  def total(items)\n    items.sum { |item| item.price } # the sum\n  end\nend\n");
+  assert.match(base ?? "", /^[0-9a-f]{16}$/);
+  assert.equal(ruby("class Cart\n  # Totals the cart.\n  def total( items )\n      # each price\n      items.sum { |item|\n        item.price\n      }\n  end\nend\n"), base, "comments, indentation and line breaks are not code");
+  assert.notEqual(ruby("class Cart\n  def total(items)\n    items.sum { |item| item.cost }\n  end\nend\n"), base);
+  assert.notEqual(ruby('class Cart\n  def total(items)\n    "a  b"\n  end\nend\n'), ruby('class Cart\n  def total(items)\n    "a b"\n  end\nend\n'), "spaces inside a string are part of it");
+
+  const ts = (source: string) => {
+    const facts = tsAdapter.parse("src/cart.ts", source, true)!;
+    return tsAdapter.semanticFingerprint(facts, facts.definitions.find((def) => def.symbol === "total")!);
+  };
+  const tsBase = ts("export function total(items: number[]) {\n  return items.reduce((sum, item) => sum + item, 0); // sum\n}\n");
+  assert.match(tsBase ?? "", /^[0-9a-f]{16}$/);
+  assert.equal(ts("/** Totals. */\nexport function total(items: number[]) {\n  // add them up\n  return items.reduce(\n    (sum, item) => sum + item,\n    0,\n  );\n}\n"), tsBase);
+  assert.notEqual(ts("export function total(items: number[]) {\n  return items.reduce((sum, item) => sum - item, 0);\n}\n"), tsBase);
+  assert.notEqual(ts('export function total() {\n  return "a  b";\n}\n'), ts('export function total() {\n  return "a b";\n}\n'));
+});
+
+test("nodes and anchors carry the semantic fingerprint beside the raw one", () => repo(async ({ cwd, git, write, scan }) => {
+  await write({ "package.json": '{"name":"fixture"}\n', "app/models/cart.rb": "class Cart\n  def total(items)\n    items.sum\n  end\nend\n" });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  const collect = () => collectSparsity({ cwd, target: "app/models/cart.rb:3", maxDepth: 1, vicinity: 5, maxNodes: 10, callers: false, budgetMs: 20_000 });
+  const before = (await collect()).anchor;
+  await write({ "app/models/cart.rb": "class Cart\n  def total(items)\n    # every item\n      items.sum\n  end\nend\n" });
+  const commented = (await collect()).anchor;
+  assert.notEqual(commented.fingerprint, before.fingerprint, "the raw fingerprint says the text changed");
+  assert.equal(commented.semanticFingerprint, before.semanticFingerprint, "the semantic one says the code did not");
+
+  await write({ "app/models/cart.rb": "class Cart\n  def total(items)\n    items.sum * 2\n  end\nend\n" });
+  git("commit", "-qam", "double");
+  const anchor = (await scan("HEAD~1..HEAD")).anchors.find((item) => item.symbol === "Cart#total");
+  assert.match(anchor?.semanticFingerprint ?? "", /^[0-9a-f]{16}$/);
+  assert.notEqual(anchor?.semanticFingerprint, before.semanticFingerprint);
+}));
+
 test("a reference on the first line of a file with a byte order mark still counts", () => repo(async ({ cwd, write }) => {
   await write({
     "package.json": '{"name":"fixture"}\n',

@@ -115,7 +115,7 @@ export interface FileHunkRecord {
 export interface TestGroupRecord {
   id: string;
   path: string;
-  entries: Array<{ symbol: string; startLine: number; endLine: number; fingerprint: string; snippet: string }>;
+  entries: Array<{ symbol: string; startLine: number; endLine: number; fingerprint: string; semanticFingerprint?: string; snippet: string }>;
 }
 
 export interface AnchorRecord {
@@ -125,7 +125,10 @@ export interface AnchorRecord {
   path: string;
   startLine: number;
   endLine: number;
+  /** A hash of the definition's lines as written. */
   fingerprint: string;
+  /** A hash of its syntax tree without comments or layout; absent when no parser read it. */
+  semanticFingerprint?: string;
   changedLines: number[];
   removed: Array<{ oldStart: number; lines: string[] }>;
   vicinity: string;
@@ -673,6 +676,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
         startLine: candidate.def.startLine,
         endLine: candidate.def.endLine,
         fingerprint: candidate.node.fingerprint,
+        ...(candidate.node.semanticFingerprint ? { semanticFingerprint: candidate.node.semanticFingerprint } : {}),
         snippet: candidate.collector.snippet(lines, candidate.def, candidate.changedLines, new Set(candidate.changedLines)),
       });
     }
@@ -847,6 +851,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       startLine: candidate.node.startLine,
       endLine: candidate.node.endLine,
       fingerprint: candidate.node.fingerprint,
+      ...(candidate.node.semanticFingerprint ? { semanticFingerprint: candidate.node.semanticFingerprint } : {}),
       changedLines: candidate.changedLines,
       removed: await removedFor(candidate),
       vicinity: await candidate.collector.surroundings(candidate.node),

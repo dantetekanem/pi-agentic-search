@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { excerpt, normalizeSignature } from "../shared.ts";
 import type { AdapterDefinition, CallSite, Definition, FileFacts, Guard, LanguageAdapter, ResolvedTarget } from "./types.ts";
@@ -226,6 +227,31 @@ function exits(statement: ts.Statement | undefined): boolean {
 function exitGuard(statement: ts.Node, sf: ts.SourceFile): Guard | undefined {
   if (!ts.isIfStatement(statement) || statement.elseStatement || !exits(statement.thenStatement)) return undefined;
   return ifGuard(statement, sf, "after-return");
+}
+
+/** The text a literal or name node holds; JSX text with its whitespace collapsed, as JSX renders it. */
+function literalText(node: ts.Node): string | undefined {
+  if (ts.isJsxText(node)) return node.text.replace(/\s+/g, " ").trim();
+  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node) || ts.isBigIntLiteral(node)
+    || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node) || ts.isRegularExpressionLiteral(node)) return node.text;
+  return undefined;
+}
+
+/** A node as the kinds and literal texts of its tree, depth first; trivia such as comments and layout are not in it. */
+function syntaxText(node: ts.Node): string {
+  const out: string[] = [];
+  const walk = (current: ts.Node) => {
+    out.push(ts.SyntaxKind[current.kind] ?? String(current.kind));
+    const literal = literalText(current);
+    if (literal !== undefined) out.push(JSON.stringify(literal));
+    // `let`, `const` and `using` live in the declaration list's flags, not in a child node.
+    if (ts.isVariableDeclarationList(current)) out.push(String(current.flags & ts.NodeFlags.BlockScoped));
+    out.push("(");
+    ts.forEachChild(current, walk);
+    out.push(")");
+  };
+  walk(node);
+  return out.join(" ");
 }
 
 const SETUP_CALLS = new Set(["beforeEach", "beforeAll", "before", "setup"]);
@@ -606,6 +632,28 @@ export class TsAdapter implements LanguageAdapter {
       node = next;
     }
     return blocks;
+  }
+
+  semanticFingerprint(facts: FileFacts, def: Definition): string | undefined {
+    const sf = (facts as TsFacts).sourceFile;
+    const starts = sf.getLineStarts();
+    const start = starts[def.startLine - 1];
+    if (start === undefined) return undefined;
+    const end = starts[def.endLine] ?? sf.text.length;
+    // The outermost nodes on the definition's lines; comments are trivia, not nodes.
+    const parts: string[] = [];
+    const visit = (node: ts.Node) => {
+      const from = node.getStart(sf);
+      const to = node.getEnd();
+      if (to <= start || from >= end) return;
+      if (from >= start && to <= end) {
+        parts.push(syntaxText(node));
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sf, visit);
+    return parts.length ? createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16) : undefined;
   }
 
   guardsAt(facts: FileFacts, def: Definition, line: number): Guard[] {

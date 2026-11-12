@@ -39,6 +39,8 @@ export interface SparsityNode {
   startLine: number;
   endLine: number;
   fingerprint: string;
+  /** The definition's syntax tree hashed without comments or layout, so it holds across a comment edit or re-indentation. Absent when no parser read it. */
+  semanticFingerprint?: string;
   snippet: string;
   vicinity?: string;
   depth: number;
@@ -482,6 +484,12 @@ function indentOf(line: string): number {
 
 function fingerprintOf(lines: string[], startLine: number, endLine: number): string {
   return createHash("sha256").update(lines.slice(startLine - 1, endLine).join("\n")).digest("hex").slice(0, 16);
+}
+
+/** `{ semanticFingerprint }` from the parser's syntax tree, or nothing when no parser read the file. */
+function semanticFingerprintOf(language: Language, facts: FileFacts | undefined, def: Definition): { semanticFingerprint?: string } {
+  const semanticFingerprint = facts ? (language === "ruby" ? rubyAdapter : tsAdapter).semanticFingerprint(facts, def) : undefined;
+  return semanticFingerprint ? { semanticFingerprint } : {};
 }
 
 function indexedCandidates(defs: IndexedDefinition[]): Candidate[] {
@@ -1346,6 +1354,7 @@ export class Collector {
       startLine: def.startLine,
       endLine: def.endLine,
       fingerprint: fingerprintOf(lines, def.startLine, def.endLine),
+      ...semanticFingerprintOf(language, facts, def),
       snippet: this.snippet(lines, def, focus ?? def.startLine),
       depth,
     };

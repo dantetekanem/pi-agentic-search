@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -89,6 +89,17 @@ test("CLI scan writes a readable pack and preserves Pi anchors", () => fixture(a
   assert.ok(anchored.details.anchors.some((anchor) => anchor.symbol === "ruby_total"));
 }));
 
+test("CLI keeps the Ruby index in --cache-dir between collect and scan runs", () => fixture(async (cwd) => {
+  const cache = await mkdtemp(join(tmpdir(), "agentic-cli-cache-"));
+  try {
+    const notes = (details: { coverage: { notes: string[] } }) => details.coverage.notes.join("\n");
+    assert.match(notes(json<SparsityResult>(cwd, ["collect", "cart.rb:2", "--cache-dir", cache]).details), /Ruby index for \.: .*built cold/);
+    assert.ok((await readdir(cache)).some((name) => name.endsWith(".json.gz")), "the index stays after the command");
+    assert.match(notes(json<SparsityResult>(cwd, ["collect", "cart.rb:2", "--cache-dir", cache]).details), /Ruby index for \.: .*cache hit/);
+    assert.match(notes(json<ScanResult>(cwd, ["scan", "--cache-dir", cache, "--output-dir", join(cache, "pack")]).details), /Ruby index for \.: .*cache hit/);
+  } finally { await rm(cache, { recursive: true, force: true }); }
+}));
+
 test("strict CLI and Pi scans reject mixed revisions before writing packs", () => fixture(async (cwd) => {
   const output = await mkdtemp(join(tmpdir(), "strict-cli-packs-"));
   const git = (args: string[]) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd, encoding: "utf8" });
@@ -135,6 +146,7 @@ test("CLI rejects invalid arguments before executing", () => fixture(async (cwd)
     ["scan", "--strict-revision"], ["scan", "--strict-revision", "--diff", "worktree"],
     ["scan", "--strict-revision", "--diff", " "], ["scan", "--strict-revision", "--anchor", "cart.ts:1"],
     ["scan", "--strict-revision=false"], ["scan", "--callers", "some"], ["collect", "cart.ts:1", "--callers", "all"], ["scan", "--tests", "some"],
+    ["collect", "cart.ts:1", "--cache-dir", " "], ["search", "total", "--cache-dir", "index"],
   ]) {
     const result = cli(cwd, args);
     assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
