@@ -154,7 +154,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 7;
+const INDEX_VERSION = 8;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
@@ -230,6 +230,8 @@ function fileEntry(path: string, source: string): FileEntry | undefined {
       if (enqueue && called.has(`${site.name}:${site.line}`)) continue;
       called.add(`${site.name}:${site.line}`);
       callSites.push({ name: site.name, path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol, ...(enqueue ? { enqueue: true as const } : {}) });
+      // `new` runs the class's `initialize`, so it is a call site of that too.
+      if (site.name === "new" && !enqueue) callSites.push({ name: "initialize", path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol });
     }
   }
   return { definitions, namespaces, callSites };

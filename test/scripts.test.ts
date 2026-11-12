@@ -122,13 +122,14 @@ test("a script is searched for callers like any file of its language", () => rep
 }));
 
 test("a script's top-level call is a caller of what it calls, and the command line is where its work starts", () => repo(async (scan) => {
-  const result = await scan({ anchors: ["bin/report:5", "bin/worker:3", "bin/cleanup:4", "src/shout.js:1"] });
+  const result = await scan({ anchors: ["bin/report:5", "bin/report:9", "bin/worker:3", "bin/cleanup:4", "src/shout.js:1"] });
   const callers = (symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)!.callers.map((caller) => {
     const node = result.nodes.find((entry) => entry.id === caller.id)!;
     return [node.path, node.kind, caller.line, caller.resolution, node.entry];
   });
   const command = { kind: "command", exact: true };
   assert.deepEqual(callers("Report.run"), [["bin/report", "statement", 18, "exact", command]], "exit Report.run(ARGV) if $PROGRAM_NAME == __FILE__");
+  assert.deepEqual(callers("Report#initialize").map(([path, kind, line]) => [path, kind, line]), [["bin/report", "singleton_method", 6]], "new(args) runs initialize");
   assert.deepEqual(callers("Worker#call"), [["bin/worker", "statement", 8, "exact", command]], "Worker.new.call");
   assert.deepEqual(callers("main"), [["bin/cleanup", "statement", 8, "exact", command]], "main, at the bottom of the script that defines it");
   assert.deepEqual(callers("shout"), [["bin/tool", "statement", 4, "exact", command]], "the Node script's top-level call");
