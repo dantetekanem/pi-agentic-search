@@ -6,18 +6,21 @@ import {
   Budget,
   Collector,
   describeRubyIndex,
+  describeUnresolvedReasons,
   EDGE_LABELS,
   findRoot,
   isTestPath,
   jsDefinitionStart,
   languageFor,
   renderSurroundings,
+  unresolvedByReason,
   type Definition,
   type Language,
   type QueueItem,
   type ReferenceHit,
   type SparsityEdge,
   type SparsityNode,
+  type UnresolvedReason,
 } from "./sparsity.ts";
 import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
@@ -146,6 +149,7 @@ export interface ScanResult {
     depthReached: number;
     vicinity: number;
     unresolved: number;
+    unresolvedByReason: Record<UnresolvedReason, number>;
     truncatedBy: string;
     frontier: string[];
     cycles: string[];
@@ -796,6 +800,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     depthReached: Math.max(0, ...all.map((collector) => collector.depthReached)),
     vicinity: options.vicinity,
     unresolved: edges.filter((edge) => edge.resolution === "unresolved").length,
+    unresolvedByReason: unresolvedByReason(edges),
     truncatedBy: budget.truncatedBy,
     frontier: [...new Set(all.flatMap((collector) => collector.frontier))],
     cycles: [...new Set(all.flatMap((collector) => collector.cycles))],
@@ -982,12 +987,12 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
   const recap: string[] = [];
   const unresolved = result.edges.filter((edge) => edge.resolution === "unresolved");
   if (unresolved.length) {
-    recap.push(`unresolved edges (${unresolved.length}):`);
+    recap.push(`unresolved edges (${unresolved.length}; ${describeUnresolvedReasons(result.coverage.unresolvedByReason)}):`);
     const grouped = new Map<string, SparsityEdge[]>();
     for (const edge of unresolved) grouped.set(edge.name, [...(grouped.get(edge.name) ?? []), edge]);
     for (const [name, group] of [...grouped.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 40)) {
       const first = group[0]!;
-      recap.push(`  - \`${name}\` ×${group.length} from ${first.from}:${first.line}${first.note ? `  (${first.note})` : ""}`);
+      recap.push(`  - \`${name}\` ×${group.length} from ${first.from}:${first.line} [${first.reason ?? "no-definition"}]${first.note ? `  (${first.note})` : ""}`);
     }
   }
   const external = result.edges.filter((edge) => edge.resolution === "external");

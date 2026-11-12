@@ -5,6 +5,7 @@
 ### Added
 
 - Scan anchors report `status` (`added` or `modified` against the base revision), `whitespaceOnly` (changed lines that `git diff -w` drops, from one extra Git call per scan) and `signatureChanged` (the parameter list differs from the base definition's). Adapter definitions carry their parameter list as `signature`.
+- Unresolved edges carry a `reason` (`operator`, `unknown-receiver`, `dynamic` or `no-definition`), and collect and scan coverage report `unresolvedByReason`. The scan recap and collect coverage text show the counts.
 
 ### Fixed
 

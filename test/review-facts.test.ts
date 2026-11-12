@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { collectSparsity, formatSparsity } from "../src/sparsity.ts";
 import { scanSparsity, type ScanOptions } from "../src/sparsity-scan.ts";
 
 interface Repo {
@@ -168,4 +169,70 @@ export function discount(amount: number) {
   assert.deepEqual(worktree.anchors.find((item) => item.symbol === "fresh")?.whitespaceOnly, []);
   const explicit = await scan("", { anchors: ["src/price.ts:2"] });
   assert.deepEqual([explicit.anchors[0]?.status, explicit.anchors[0]?.whitespaceOnly, explicit.anchors[0]?.signatureChanged], [undefined, undefined, undefined]);
+}));
+
+test("unresolved edges say why, and coverage counts them by reason", () => repo(async ({ cwd, git, write, scan }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "app/models/billing/invoice.rb": "module Billing\n  class Invoice\n    def total(amount)\n      amount\n    end\n  end\nend\n",
+    "src/gone.ts": "export function useGone(input: any) {\n  return input;\n}\n",
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "app/models/billing/invoice.rb": `module Billing
+  class Invoice
+    def total(amount, name)
+      sum = amount + 1
+      region = @cart.region
+      public_send(name)
+      Billing::Ghost.run_it
+      sum
+    end
+
+    #: (Money) -> Money
+    def add(money)
+      money + 1
+    end
+  end
+end
+`,
+    "app/models/money.rb": "class Money\nend\n",
+    "src/gone.ts": `import { gone } from "./missing";
+
+export function useGone(input: any) {
+  input.doThing();
+  return gone();
+}
+`,
+  });
+  git("commit", "-qam", "change");
+
+  const expected = {
+    "amount.+": "operator",
+    "money.+": "operator",
+    "@cart.region": "unknown-receiver",
+    "public_send(...)": "dynamic",
+    "Billing::Ghost": "no-definition",
+    "Billing::Ghost.run_it": "no-definition",
+    "input.doThing": "unknown-receiver",
+    gone: "no-definition",
+  };
+  const result = await scan("HEAD~1..HEAD");
+  const reasons = Object.fromEntries(result.edges.filter((edge) => edge.resolution === "unresolved").map((edge) => [edge.name, edge.reason]));
+  assert.deepEqual(reasons, expected);
+  assert.ok(result.edges.every((edge) => (edge.resolution === "unresolved") === (edge.reason !== undefined)), "only unresolved edges carry a reason");
+  assert.deepEqual(result.coverage.unresolvedByReason, { operator: 2, "unknown-receiver": 2, dynamic: 1, "no-definition": 3 });
+  assert.match(result.inline, /unresolved edges \(8; 3 no-definition, 2 operator, 2 unknown-receiver, 1 dynamic\):\n  - `[^`]+` ×1 from n\d+:\d+ \[[a-z-]+\]/);
+
+  // With a Ruby index a typed receiver is looked up first; an operator it lacks is still an operator, and a missing receiver constant is external.
+  const indexed = await scan("HEAD~1..HEAD", { indexCacheDir: join(cwd, "..", "index") });
+  const { "Billing::Ghost.run_it": _external, ...indexedExpected } = expected;
+  assert.deepEqual(Object.fromEntries(indexed.edges.filter((edge) => edge.resolution === "unresolved").map((edge) => [edge.name, edge.reason])), indexedExpected);
+  assert.equal(indexed.edges.find((edge) => edge.name === "Billing::Ghost.run_it")?.resolution, "external");
+  assert.match(indexed.edges.find((edge) => edge.name === "money.+")?.note ?? "", /Money and its ancestors .* define no \+/, "the index looked the operator up on Money");
+
+  const collected = await collectSparsity({ cwd, target: "app/models/billing/invoice.rb:4", maxDepth: 1, vicinity: 5, maxNodes: 10, callers: false, budgetMs: 20_000 });
+  assert.deepEqual(collected.coverage.unresolvedByReason, { operator: 1, "unknown-receiver": 1, dynamic: 1, "no-definition": 2 });
+  assert.match(formatSparsity(collected), /unresolved 5 \(2 no-definition, 1 dynamic, 1 operator, 1 unknown-receiver\)/);
 }));

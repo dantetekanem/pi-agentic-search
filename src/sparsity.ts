@@ -24,6 +24,9 @@ export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "sel
 
 export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a parameter, callback or variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), chain (a scope or relation chain on a model; each step checked against the index), superclass, same_file, import (followed an import), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
 export type Truncation = "none" | "max_nodes" | "budget" | "rg_timeout";
+/** Why an edge is unresolved: an operator call, a receiver whose type is not known, a runtime-chosen callee, or no definition found. */
+export type UnresolvedReason = "operator" | "unknown-receiver" | "dynamic" | "no-definition";
+export const UNRESOLVED_REASONS: UnresolvedReason[] = ["operator", "unknown-receiver", "dynamic", "no-definition"];
 
 export interface SparsityNode {
   id: string;
@@ -49,6 +52,8 @@ export interface SparsityEdge {
   line: number;
   candidates?: string[];
   note?: string;
+  /** Set on unresolved edges only. */
+  reason?: UnresolvedReason;
 }
 
 export interface SparsityCoverage {
@@ -59,6 +64,7 @@ export interface SparsityCoverage {
   nodes: number;
   edges: number;
   unresolved: number;
+  unresolvedByReason: Record<UnresolvedReason, number>;
   truncatedBy: Truncation;
   frontier: string[];
   cycles: string[];
@@ -88,6 +94,17 @@ export interface SparsityOptions {
   indexCacheDir?: string;
   metricsLog?: string;
   signal?: AbortSignal;
+}
+
+export function unresolvedByReason(edges: SparsityEdge[]): Record<UnresolvedReason, number> {
+  const counts = Object.fromEntries(UNRESOLVED_REASONS.map((reason) => [reason, 0])) as Record<UnresolvedReason, number>;
+  for (const edge of edges) if (edge.resolution === "unresolved") counts[edge.reason ?? "no-definition"] += 1;
+  return counts;
+}
+
+/** `3 no-definition, 1 operator`: the non-zero counts, largest first. */
+export function describeUnresolvedReasons(counts: Record<UnresolvedReason, number>): string {
+  return UNRESOLVED_REASONS.filter((reason) => counts[reason]).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b)).map((reason) => `${counts[reason]} ${reason}`).join(", ");
 }
 
 export function describeRubyIndex(index: RubyIndex | undefined): string | undefined {
@@ -170,6 +187,8 @@ interface SiteResolution {
   resolution: Resolution;
   note?: string;
   via?: EdgeVia;
+  /** For an unresolved result whose cause is not an operator, dynamic dispatch or a missing definition. */
+  reason?: UnresolvedReason;
 }
 
 const RUBY_EXTENSIONS = new Set([".rb", ".rake"]);
@@ -349,6 +368,11 @@ function indentOf(line: string): number {
 
 function fingerprintOf(lines: string[], startLine: number, endLine: number): string {
   return createHash("sha256").update(lines.slice(startLine - 1, endLine).join("\n")).digest("hex").slice(0, 16);
+}
+
+/** A Ruby call whose method name is an operator such as `+`, `[]` or `<=>`. */
+function isOperatorCall(site: CallSite): boolean {
+  return site.source !== "constant" && !/^[A-Za-z_]/.test(site.name);
 }
 
 function insideStringLiteral(text: string, name: string): boolean {
@@ -1339,12 +1363,12 @@ export class Collector {
     return undefined;
   }
 
-  private async resolveJs(site: CallSite, fromPath: string, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<{ candidates: Candidate[]; resolution: Resolution; note?: string; via?: EdgeVia }> {
+  private async resolveJs(site: CallSite, fromPath: string, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<SiteResolution> {
     const lookup = site.receiver && site.receiver !== "this" ? imports.get(site.receiver) : imports.get(site.name);
     if (site.receiver && site.receiver !== "this" && !lookup) {
       const local = await this.resolveJsInFiles(site.name, [fromPath], false, signal);
       if (local.length) return { candidates: local, resolution: "static_candidate", via: "same_file", note: `receiver ${site.receiver} is not an import; matched a same-file definition by name.` };
-      return { candidates: [], resolution: "unresolved", note: `receiver ${site.receiver} is a local value; its type is not traced statically.` };
+      return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: `receiver ${site.receiver} is a local value; its type is not traced statically.` };
     }
 
     if (lookup) {
@@ -1405,8 +1429,15 @@ export class Collector {
     return site.label ?? (site.receiver ? `${site.receiver}.${site.name}` : site.name);
   }
 
+  /** Operator and dynamic calls keep that reason wherever their lookup failed; other failures say what the resolver found. */
+  private unresolvedReason(site: CallSite, resolved: SiteResolution, language: Language): UnresolvedReason {
+    if (site.source === "dynamic") return "dynamic";
+    if (language === "ruby" && isOperatorCall(site)) return "operator";
+    return resolved.reason ?? "no-definition";
+  }
+
   private async resolveSite(site: CallSite, node: SparsityNode, def: Definition, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<SiteResolution> {
-    if (site.source === "dynamic") return { candidates: [], resolution: "unresolved", note: site.dynamic ?? "dynamic dispatch; the callee is a runtime value" };
+    if (site.source === "dynamic") return { candidates: [], resolution: "unresolved", reason: "dynamic", note: site.dynamic ?? "dynamic dispatch; the callee is a runtime value" };
     if (node.language !== "ruby") return site.target ? this.resolveFromTarget(site) : this.resolveJs(site, node.path, imports, signal);
     const resolved = await this.resolveRubySite(site, node, def, signal);
     if (!site.dynamic) return resolved;
@@ -1414,10 +1445,10 @@ export class Collector {
   }
 
   private async resolveRubySite(site: CallSite, node: SparsityNode, def: Definition, signal?: AbortSignal): Promise<SiteResolution> {
-    if (site.source === "symbol_proc" && !site.receiverType) return { candidates: [], resolution: "unresolved", note: "symbol-to-proc call detected, but the collection element type is unknown" };
+    if (site.source === "symbol_proc" && !site.receiverType) return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: "symbol-to-proc call detected, but the collection element type is unknown" };
     const indexed = this.rubyIndex ? this.resolveViaIndex(site, node, def) : undefined;
     if (indexed) return indexed;
-    if (!/^[A-Za-z_]/.test(site.name) && site.source !== "constant") return { candidates: [], resolution: "unresolved", note: "operator call detected, but its receiver type is unknown; name-only operator lookup is omitted" };
+    if (isOperatorCall(site)) return { candidates: [], resolution: "unresolved", reason: "operator", note: "operator call detected, but its receiver type is unknown; name-only operator lookup is omitted" };
     if (site.source === "constant") {
       const { candidates, note } = await this.resolveRubyConstant(site.name, node.path, signal);
       const outside = !candidates.length && /comes from the platform, a gem or another component/.test(note ?? "");
@@ -1431,7 +1462,10 @@ export class Collector {
       resolved.via = site.via;
       return resolved;
     }
-    return this.resolveRubyMethod(site.name, node.path, site.receiverKind === "constant" ? site.receiver : undefined, signal);
+    const resolved = await this.resolveRubyMethod(site.name, node.path, site.receiverKind === "constant" ? site.receiver : undefined, signal);
+    // A receiver that is a local, ivar or chained value with no traced (or only a name-guessed) type.
+    const untypedReceiver = (site.receiverKind ? !["implicit", "self", "constant"].includes(site.receiverKind) : site.source === "receiver_method") && (!site.receiverType || site.via === "named");
+    return untypedReceiver ? { ...resolved, reason: "unknown-receiver" } : resolved;
   }
 
   private async resolveRubyChainLoosely(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
@@ -1444,7 +1478,7 @@ export class Collector {
       return { ...typed, via: "chain", resolution: typed.resolution === "exact" ? "static_candidate" : typed.resolution, note: [typed.note, `relation of ${receiverType}${steps} assumed; ${reason}`].filter(Boolean).join("; ") };
     }
     const loose = await this.resolveRubyMethod(site.name, node.path, undefined, signal);
-    return { ...loose, note: [loose.note, `receiver ${site.receiver ?? receiverType} is a chained value whose type was not traced; ${receiverType} declares no ${site.name}`].filter(Boolean).join("; ") };
+    return { ...loose, reason: "unknown-receiver", note: [loose.note, `receiver ${site.receiver ?? receiverType} is a chained value whose type was not traced; ${receiverType} declares no ${site.name}`].filter(Boolean).join("; ") };
   }
 
   private readonly modelCache = new Map<string, boolean>();
@@ -1491,7 +1525,8 @@ export class Collector {
 
     const emitted: Array<{ order: number; edge: SparsityEdge }> = [];
     for (const item of pending.filter((entry) => !entry.resolved.candidates.length)) {
-      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note } });
+      const reason = item.resolved.resolution === "unresolved" ? this.unresolvedReason(item.site, item.resolved, node.language) : undefined;
+      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note, ...(reason ? { reason } : {}) } });
     }
 
     const trust = (resolution: Resolution) => (resolution === "exact" ? 0 : resolution === "static_candidate" ? 1 : 2);
@@ -1522,7 +1557,7 @@ export class Collector {
           newTargets += 1;
         }
         if (!created) {
-          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed` } });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed`, reason: "no-definition" } });
           continue;
         }
         if (created.node.id === node.id && candidate.line !== created.def.startLine) {
@@ -1569,7 +1604,7 @@ export class Collector {
 
     if (site.source === "super") {
       const superclass = site.receiverType ? resolveIndexedConstant(index, site.receiverType, node.symbol) ?? site.receiverType : undefined;
-      if (!superclass) return { candidates: [], resolution: "unresolved", note: "super without a known superclass in this root" };
+      if (!superclass) return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: "super without a known superclass in this root" };
       const found = this.lookupMethod(index, superclass, def.name, def.kind === "singleton_method");
       if (found.length) return { candidates: toCandidates(found), resolution: "exact", via: "superclass" };
       return { candidates: [], resolution: "unresolved", note: `${superclass} and its ancestors under ${this.rootDisplay} define no ${def.name}; the super target is outside this root or dynamic.` };
@@ -1867,6 +1902,7 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
       nodes: collector.nodes.length,
       edges: collector.edges.length,
       unresolved: collector.edges.filter((edge) => edge.resolution === "unresolved").length,
+      unresolvedByReason: unresolvedByReason(collector.edges),
       truncatedBy: collector.budget.truncatedBy,
       frontier: uniqueValues(collector.frontier),
       cycles: uniqueValues(collector.cycles),
@@ -1962,7 +1998,7 @@ export function formatSparsity(result: SparsityResult): string {
   const byResolution = new Map<string, number>();
   for (const edge of result.edges) byResolution.set(edge.resolution, (byResolution.get(edge.resolution) ?? 0) + 1);
   const resolutionSummary = [...byResolution.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([resolution, count]) => `${count} ${resolution}`).join(", ");
-  out.push(`  nodes ${coverage.nodes}, edges ${coverage.edges}${resolutionSummary ? ` (${resolutionSummary})` : ""}, unresolved ${coverage.unresolved}, rg calls ${coverage.rgCalls}, truncated: ${coverage.truncatedBy}`);
+  out.push(`  nodes ${coverage.nodes}, edges ${coverage.edges}${resolutionSummary ? ` (${resolutionSummary})` : ""}, unresolved ${coverage.unresolved}${coverage.unresolved ? ` (${describeUnresolvedReasons(coverage.unresolvedByReason)})` : ""}, rg calls ${coverage.rgCalls}, truncated: ${coverage.truncatedBy}`);
   out.push(`  time: ${coverage.elapsedMs} ms wall (setup ${coverage.setupMs} ms for parser, index and program preparation; traversal ${Math.max(0, coverage.elapsedMs - coverage.setupMs)} ms)`);
   out.push(`  depth ${coverage.depthReached}/${coverage.maxDepth} reached; ${describeCoverageBoundary(coverage)}`);
   if (coverage.cycles.length) out.push(`  cycles: ${coverage.cycles.join("; ")}`);
