@@ -19,6 +19,8 @@ export interface AdapterDefinition extends Definition {
   singleton?: boolean;
   params?: ParamInfo[];
   returns?: string;
+  /** The parameter list as written, whitespace removed; absent for definitions that take no parameter list. */
+  signature?: string;
 }
 
 export interface NamespaceInfo {
@@ -81,7 +83,8 @@ export interface CallSite {
 export interface LanguageAdapter {
   readonly language: Language;
   ready(): Promise<boolean>;
-  parse(path: string, source: string): FileFacts | undefined;
+  /** `detached` parses text that is not the checkout's file, such as another revision, without caches or compiler programs. */
+  parse(path: string, source: string, detached?: boolean): FileFacts | undefined;
   definitionAt(facts: FileFacts, line: number): AdapterDefinition | undefined;
   calls(facts: FileFacts, def: Definition): CallSite[];
 }

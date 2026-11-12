@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { normalizeSignature } from "../shared.ts";
 import type { AdapterDefinition, CallSite, Definition, FileFacts, LanguageAdapter, ResolvedTarget } from "./types.ts";
 
 interface TsFacts extends FileFacts {
@@ -153,7 +154,7 @@ function nameText(node: ts.Node | undefined, sf: ts.SourceFile): string | undefi
   return node.getText(sf);
 }
 
-function isFunctionLike(node: ts.Node | undefined): boolean {
+function isFunctionLike(node: ts.Node | undefined): node is ts.ArrowFunction | ts.FunctionExpression {
   return Boolean(node && (ts.isArrowFunction(node) || ts.isFunctionExpression(node)));
 }
 
@@ -186,10 +187,11 @@ class Extractor {
 
   constructor(private readonly sf: ts.SourceFile) {}
 
-  private push(node: ts.Node, name: string, kind: string, owner?: string): void {
+  private push(node: ts.Node, name: string, kind: string, owner?: string, callable?: ts.SignatureDeclarationBase): void {
     const [startLine, endLine] = rangeOf(this.sf, node);
     const symbol = owner ? `${owner}.${name}` : name;
-    this.definitions.push({ name, symbol, kind, startLine, endLine, owner });
+    const signature = callable ? normalizeSignature(this.sf.text.slice(callable.parameters.pos, callable.parameters.end)) : undefined;
+    this.definitions.push({ name, symbol, kind, startLine, endLine, owner, signature });
     if (!this.defNodes.has(startLine)) this.defNodes.set(startLine, node);
   }
 
@@ -200,7 +202,7 @@ class Extractor {
   private visitStatement(node: ts.Node, owner: string | undefined, topLevel: boolean): void {
     if (ts.isFunctionDeclaration(node)) {
       const name = node.name?.text ?? "default";
-      this.push(node, name, kindForName(name, true), owner);
+      this.push(node, name, kindForName(name, true), owner, node);
       this.visitTestsInside(node.body, owner);
       return;
     }
@@ -214,10 +216,10 @@ class Extractor {
         }
         const init = declaration.initializer;
         if (isFunctionLike(init)) {
-          this.push(node, name, kindForName(name, true), owner);
-          this.visitTestsInside((init as ts.ArrowFunction).body, owner);
+          this.push(node, name, kindForName(name, true), owner, init);
+          this.visitTestsInside(init.body, owner);
         } else if (ts.isCallExpression(init) && COMPONENT_WRAPPERS.test(init.expression.getText(this.sf))) {
-          this.push(node, name, kindForName(name, true), owner);
+          this.push(node, name, kindForName(name, true), owner, init.arguments.find(isFunctionLike));
         } else if (ts.isObjectLiteralExpression(init) || ts.isArrayLiteralExpression(init)) {
           this.push(node, name, "object", owner);
         } else if (topLevel) {
@@ -233,9 +235,9 @@ class Extractor {
         const memberName = member.name ? nameText(member.name, this.sf) : ts.isConstructorDeclaration(member) ? "constructor" : undefined;
         if (!memberName) continue;
         if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member) || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
-          this.push(member, memberName, "method", name);
+          this.push(member, memberName, "method", name, member);
         } else if (ts.isPropertyDeclaration(member) && isFunctionLike(member.initializer)) {
-          this.push(member, memberName, "method", name);
+          this.push(member, memberName, "method", name, member.initializer);
         }
       }
       return;
@@ -250,7 +252,7 @@ class Extractor {
       return;
     }
     if (ts.isExportAssignment(node) && isFunctionLike(node.expression)) {
-      this.push(node, "default", "function", owner);
+      this.push(node, "default", "function", owner, node.expression);
       return;
     }
     if (ts.isExpressionStatement(node)) {
@@ -266,7 +268,8 @@ class Extractor {
         return;
       }
       if (topLevel && ts.isBinaryExpression(expression) && /^(module\.exports|exports\.[\w$]+)$/.test(expression.left.getText(this.sf))) {
-        this.push(node, expression.left.getText(this.sf), isFunctionLike(expression.right) ? "function" : "constant", owner);
+        const callable = isFunctionLike(expression.right) ? expression.right : undefined;
+        this.push(node, expression.left.getText(this.sf), callable ? "function" : "constant", owner, callable);
       }
     }
   }
@@ -393,9 +396,9 @@ export class TsAdapter implements LanguageAdapter {
     return Promise.resolve(true);
   }
 
-  parse(path: string, source: string): FileFacts | undefined {
+  parse(path: string, source: string, detached = false): FileFacts | undefined {
     const absolute = isAbsolute(path) ? path : resolve(this.cwd || process.cwd(), path);
-    const found = this.programs?.sourceFileFor(absolute);
+    const found = detached ? undefined : this.programs?.sourceFileFor(absolute);
     const handle = found?.handle;
     const fromProgram = found?.sourceFile;
     const sourceFile = fromProgram && fromProgram.text === source

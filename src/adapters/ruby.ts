@@ -1,4 +1,5 @@
 import type * as Prism from "@ruby/prism";
+import { normalizeSignature } from "../shared.ts";
 import type {
   AdapterDefinition,
   CallSite,
@@ -200,6 +201,13 @@ function lastExpression(body: Node | null): Node | null {
   if (kind === "BeginNode") return lastExpression((body as Prism.BeginNode).statements);
   if (kind === "ParenthesesNode") return lastExpression((body as Prism.ParenthesesNode).body);
   return body;
+}
+
+/** The parameters of a scope lambda or a define_method block, as written without their `()` or `||`. */
+function callableSignature(call: Prism.CallNode, bytes: Buffer): string {
+  const lambda = argumentsOf(call).find((argument) => kindName(argument) === "LambdaNode") as Prism.LambdaNode | undefined;
+  const parameters = lambda?.parameters ?? (kindName(call.block) === "BlockNode" ? (call.block as Prism.BlockNode).parameters : null);
+  return normalizeSignature(sliceSource(bytes, parameters?.location)).replace(/^[(|]|[)|]$/g, "");
 }
 
 function blockParameterNames(call: Prism.CallNode): string[] {
@@ -479,6 +487,7 @@ class Parser {
       singleton,
       params: annotated.params,
       returns: annotated.returns,
+      signature: normalizeSignature(sliceSource(this.bytes, node.parameters?.location)),
     };
     this.definitions.push(definition);
     this.defNodes.set(startLine, node);
@@ -559,10 +568,11 @@ class Parser {
     if (inClassBody && (argumentsOf(call).length > 0 || call.block)) {
       const declared = argumentsOf(call).map(symbolValue).filter((value): value is string => Boolean(value));
       const kind = DECLARATION_CALLS.has(name) || declared.length ? name : "declaration";
+      const signature = name === "scope" || name === "define_method" ? callableSignature(call, this.bytes) : undefined;
       if (declared.length) {
         for (const value of declared) {
           const label = `${name} :${value}`;
-          this.definitions.push({ name: value, symbol: owner ? `${owner} ${label}` : label, kind, startLine, endLine, owner });
+          this.definitions.push({ name: value, symbol: owner ? `${owner} ${label}` : label, kind, startLine, endLine, owner, signature });
         }
       } else {
         this.definitions.push({ name, symbol: owner ? `${owner} ${name}` : name, kind, startLine, endLine, owner });
@@ -817,9 +827,9 @@ export class RubyAdapter implements LanguageAdapter {
     return loadParser();
   }
 
-  parse(path: string, source: string): FileFacts | undefined {
+  parse(path: string, source: string, detached = false): FileFacts | undefined {
     if (!parseFn) return undefined;
-    const cached = this.cache.get(path);
+    const cached = detached ? undefined : this.cache.get(path);
     if (cached && cached.bytes.equals(Buffer.from(source, "utf8"))) return cached;
     let result: ParseResult;
     try {
@@ -844,7 +854,7 @@ export class RubyAdapter implements LanguageAdapter {
       defNodes: parser.defNodes,
       localTypes: parser.localTypes,
     };
-    this.cache.set(path, facts);
+    if (!detached) this.cache.set(path, facts);
     return facts;
   }
 

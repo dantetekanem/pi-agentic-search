@@ -22,6 +22,11 @@ export function displaySearchRoot(cwd: string, resolved: string): string {
   return normalizeRepoRelativePath(resolved);
 }
 
+/** A parameter list as written, without whitespace, so re-wrapping or re-spacing it is not a change. */
+export function normalizeSignature(text: string): string {
+  return text.replace(/\s+/g, "");
+}
+
 export function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(value ?? fallback)));

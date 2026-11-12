@@ -22,6 +22,8 @@ The context tools collect definitions, calls, callers, and related tests for Rub
 
 A manifest lists the pack's contents and points to sections in `pack.md`. The agent can read the section it needs without loading the whole pack into the conversation. Each changed definition comes with its vicinity (the file lines above and below it) and three lines around every caller's call site. Schemas, configuration, and files without a parser include their changed hunks and the surrounding file lines without call expansion, with a note that callers, tests and sibling definitions must be read by hand. Additional test definitions are grouped by file.
 
+Anchors in `pack.json` also carry facts that a review tool can check without re-reading the diff. `status` is `added` or `modified`: whether the base revision of the file defines the same symbol. Statements and declarations are identified by their text, so an edited one reads as added. `whitespaceOnly` lists the changed lines that `git diff -w` does not report, and `signatureChanged` says the base defines the symbol with a different parameter list. Explicit `--anchor` scans have no base and omit these fields.
+
 ## Installation
 
 You need Node.js 22+ and `rg` ([ripgrep](https://github.com/BurntSushi/ripgrep)) on your `PATH`. Diff context also uses Git. The package includes its Ruby parser and TypeScript dependency. The CLI does not need Pi or a TypeScript loader.

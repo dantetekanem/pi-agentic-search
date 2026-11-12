@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Scan anchors report `status` (`added` or `modified` against the base revision), `whitespaceOnly` (changed lines that `git diff -w` drops, from one extra Git call per scan) and `signatureChanged` (the parameter list differs from the base definition's). Adapter definitions carry their parameter list as `signature`.
+
 ### Fixed
 
 - `scan` of a committed range no longer fails with `Cannot read properties of undefined (reading 'trim')` when the checkout's copy of a changed file is longer than the range head's. Searches read changed files at the range head, so a caller inside one is reported at the head's line, and a hit whose line text differs from the content the scan reads is dropped.

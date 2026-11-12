@@ -21,7 +21,8 @@ import {
 } from "./sparsity.ts";
 import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
-import { TsPrograms } from "./adapters/ts.ts";
+import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
+import type { AdapterDefinition } from "./adapters/types.ts";
 import { displaySearchRoot, normalizeRepoRelativePath } from "./shared.ts";
 import { ensureInsideCwd } from "./sparsity-shared.ts";
 import { boundarySignal, RANKING_EXPLANATION } from "./rank.ts";
@@ -98,6 +99,12 @@ export interface AnchorRecord {
   boundary: { score: number; tags: string[] };
   callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[] }>;
   tests: Array<{ id: string; symbol: string; path: string; line: number; text: string }>;
+  /** Whether the base revision of this file defines the same symbol. Absent for explicit anchors and when no parser read the base. */
+  status?: "added" | "modified";
+  /** Changed lines that `git diff -w` does not report. Absent for explicit anchors. */
+  whitespaceOnly?: number[];
+  /** The base defines this symbol with a different parameter list. Present with `status`. */
+  signatureChanged?: boolean;
 }
 
 export interface DanglingRecord {
@@ -398,6 +405,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   let head: string;
   let base: string | undefined;
   let dirty = false;
+  // New-side ranges of the same diff under `git diff -w`, for the files git diffed (not untracked or explicit anchors).
+  let whitespaceRanges: Map<string, Array<[number, number]>> | undefined;
 
   if (options.strictRevision && (options.anchors?.length || !options.diff.trim() || options.diff.trim() === "worktree")) {
     throw new Error("strict revision requires a committed diff (commit or range), not worktree or explicit anchors.");
@@ -426,6 +435,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       await guardRevision(options, head);
     }
     files = parseUnifiedDiff(await git(resolved.args, cwd, signal));
+    const ignoringWhitespace = new Map(parseUnifiedDiff(await git(["diff", "-w", ...resolved.args.slice(1)], cwd, signal)).map((file) => [file.path, file.newRanges]));
+    whitespaceRanges = new Map(files.map((file) => [file.path, ignoringWhitespace.get(file.path) ?? []]));
     for (const path of resolved.untracked) {
       const normalized = normalizeRepoRelativePath(path);
       if (files.some((file) => file.path === normalized)) continue;
@@ -654,6 +665,31 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     return removed;
   };
 
+  const baseDefinitions = new Map<string, AdapterDefinition[] | undefined>();
+  const definitionsAtBase = async (file: ChangedFile): Promise<AdapterDefinition[] | undefined> => {
+    if (!base) return undefined;
+    if (file.status === "added") return [];
+    const path = file.oldPath ?? file.path;
+    if (baseDefinitions.has(path)) return baseDefinitions.get(path);
+    const lines = await oldLines(path);
+    const source = lines?.join("\n");
+    const facts = source === undefined ? undefined : file.language === "ruby" ? rubyAdapter.parse(path, source, true) : tsAdapter.parse(path, source, true);
+    const definitions = source === undefined ? [] : facts?.definitions;
+    baseDefinitions.set(path, definitions);
+    return definitions;
+  };
+  const baseFacts = async (candidate: Candidate): Promise<Pick<AnchorRecord, "status" | "whitespaceOnly" | "signatureChanged">> => {
+    const ranges = whitespaceRanges?.get(candidate.file.path);
+    const whitespaceOnly = !whitespaceRanges ? undefined : !ranges ? [] : candidate.changedLines.filter((line) => !ranges.some(([start, end]) => start <= line && line <= end));
+    const definitions = await definitionsAtBase(candidate.file);
+    if (!definitions) return whitespaceOnly ? { whitespaceOnly } : {};
+    const matches = definitions.filter((item) => item.symbol === candidate.def.symbol);
+    if (!matches.length) return { status: "added", whitespaceOnly: whitespaceOnly ?? [], signatureChanged: false };
+    const signature = (candidate.def as AdapterDefinition).signature;
+    const known = matches.filter((item) => item.signature !== undefined);
+    return { status: "modified", whitespaceOnly: whitespaceOnly ?? [], signatureChanged: signature !== undefined && known.length > 0 && !known.some((item) => item.signature === signature) };
+  };
+
   // Expansion
   const queues = new Map<Collector, QueueItem[]>();
   for (const candidate of chosen) {
@@ -714,6 +750,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       boundary: candidate.boundary,
       callers: callerRecords.filter((record) => !record.test).map(({ score: _score, ...record }) => record),
       tests: testRecords,
+      ...await baseFacts(candidate),
     });
   }
 
@@ -872,6 +909,8 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     const out: string[] = [];
     out.push(`${anchor.id} ${anchor.symbol} [${anchor.kind}] ${anchor.path}:${anchor.startLine}-${anchor.endLine} fp ${anchor.fingerprint}`);
     out.push(`changed lines (+): ${compressRanges(anchor.changedLines)}`);
+    const baseFacts = [anchor.status, anchor.signatureChanged ? "parameters changed" : undefined, anchor.whitespaceOnly?.length ? `whitespace-only changes on ${compressRanges(anchor.whitespaceOnly)}` : undefined].filter(Boolean);
+    if (baseFacts.length) out.push(`base: ${baseFacts.join("; ")}`);
     out.push(node.snippet);
     if (anchor.vicinity) out.push(anchor.vicinity);
     for (const block of anchor.removed) {
