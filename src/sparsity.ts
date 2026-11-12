@@ -2015,6 +2015,8 @@ export class Collector {
       .filter((site) => !(options.onlyTests && !isTestPath(site.path)))
       .filter((site) => {
         const type = typeOf(site);
+        // `initialize` runs from a `new` on its class: one on a class the index does not hold builds something else.
+        if (name === "initialize" && !type) return false;
         if (options.typedOnly && !type && !sameFileBareCall(site)) {
           untyped += 1;
           return false;

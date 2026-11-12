@@ -230,8 +230,10 @@ function fileEntry(path: string, source: string): FileEntry | undefined {
       if (enqueue && called.has(`${site.name}:${site.line}`)) continue;
       called.add(`${site.name}:${site.line}`);
       callSites.push({ name: site.name, path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol, ...(enqueue ? { enqueue: true as const } : {}) });
-      // `new` runs the class's `initialize`, so it is a call site of that too.
-      if (site.name === "new" && !enqueue) callSites.push({ name: "initialize", path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol });
+      // `new` runs the class's `initialize`, so it is a call site of that too, when the class is known: a constant
+      // receiver, or a bare `new` inside the class's own methods.
+      const built = site.receiverType ?? (site.receiver === undefined || site.receiver === "self" ? def.owner : undefined);
+      if (site.name === "new" && !enqueue && built) callSites.push({ name: "initialize", path, line: site.line, receiver: site.receiver, receiverType: built, via: site.via, inDef: def.symbol });
     }
   }
   return { definitions, namespaces, callSites };
