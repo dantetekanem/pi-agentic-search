@@ -236,3 +236,83 @@ export function useGone(input: any) {
   assert.deepEqual(collected.coverage.unresolvedByReason, { operator: 1, "unknown-receiver": 1, dynamic: 1, "no-definition": 2 });
   assert.match(formatSparsity(collected), /unresolved 5 \(2 no-definition, 1 dynamic, 1 operator, 1 unknown-receiver\)/);
 }));
+
+test("files are classed by where they take effect, and load-time anchors say so", () => repo(async ({ git, write, scan }) => {
+  await write({ "README.md": "fixture\n" });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "package.json": '{"name":"fixture","dependencies":{"left-pad":"1.0.0"}}\n',
+    "Gemfile": "source 'https://rubygems.org'\ngem 'rails'\n",
+    "Gemfile.lock": "GEM\n  specs:\n    rails (8.0.0)\n",
+    "db/migrate/20260101000000_add_total.rb": "class AddTotal < ActiveRecord::Migration[8.0]\n  def change\n    add_column :orders, :total, :integer\n  end\nend\n",
+    "db/schema.rb": "ActiveRecord::Schema[8.0].define(version: 2026_01_01_000000) do\n  create_table :orders do |t|\n    t.integer :total\n  end\nend\n",
+    "prisma/schema.prisma": "model Order {\n  id Int @id\n}\n",
+    "config/settings.yml": "registration: true\n",
+    "config/initializers/flags.rb": "Rails.application.config.x.checkout = true\n",
+    "vite.config.ts": "export default { plugins: [] };\n",
+    "app/models/order.rb": `class Order < ApplicationRecord
+  TAX = 0.2
+  has_many :items
+  validates :total, presence: true
+  scope :recent, -> { where(recent: true) }
+
+  def total
+    items.sum(:price) * (1 + TAX)
+  end
+end
+`,
+    "src/flags.ts": `export const LIMIT = 3;
+export const ROUTES = { checkout: "/checkout" };
+
+function registerPlugin(name: string) {
+  return name;
+}
+
+registerPlugin("audit");
+
+export function limited(count: number) {
+  return count > LIMIT;
+}
+`,
+  });
+  git("add", ".");
+  git("commit", "-qm", "change");
+
+  const result = await scan("HEAD~1..HEAD");
+  assert.deepEqual(Object.fromEntries(result.files.map((file) => [file.path, file.kind])), {
+    "Gemfile": "dependency",
+    "Gemfile.lock": "dependency",
+    "app/models/order.rb": "code",
+    "config/initializers/flags.rb": "config",
+    "config/settings.yml": "config",
+    "db/migrate/20260101000000_add_total.rb": "migration",
+    "db/schema.rb": "schema",
+    "package.json": "dependency",
+    "prisma/schema.prisma": "schema",
+    "src/flags.ts": "code",
+    "vite.config.ts": "config",
+  });
+  assert.deepEqual(result.fileHunks.map((file) => [file.path, file.kind]).sort(), [
+    ["Gemfile", "dependency"], ["Gemfile.lock", "dependency"], ["config/settings.yml", "config"],
+    ["db/schema.rb", "schema"], ["package.json", "dependency"], ["prisma/schema.prisma", "schema"],
+  ], "files without a parser, and schema dumps, keep hunk sections");
+  assert.ok(result.anchors.some((anchor) => anchor.symbol === "AddTotal#change"), "a migration's definitions are still anchors");
+  assert.ok(result.anchors.some((anchor) => anchor.path === "config/initializers/flags.rb"), "parsed configuration code is still anchored");
+
+  const loadTime = Object.fromEntries(result.anchors.filter((anchor) => anchor.path === "app/models/order.rb" || anchor.path === "src/flags.ts").map((anchor) => [anchor.symbol, anchor.loadTime]));
+  assert.deepEqual(loadTime, {
+    "Order::TAX": true,
+    "Order has_many :items": true,
+    "Order validates :total": true,
+    "Order scope :recent": undefined,
+    "Order#total": undefined,
+    LIMIT: true,
+    ROUTES: true,
+    'registerPlugin("audit")': true,
+    registerPlugin: undefined,
+    limited: undefined,
+  });
+  assert.equal(result.anchors.find((anchor) => anchor.path === "config/initializers/flags.rb")?.loadTime, true);
+  assert.match(result.inline, /files 11 \(code 2, tests 0, generated 0, other 0, migration 1, config 3, dependency 3, schema 2\)/);
+}));

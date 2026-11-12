@@ -6,6 +6,11 @@
 
 - Scan anchors report `status` (`added` or `modified` against the base revision), `whitespaceOnly` (changed lines that `git diff -w` drops, from one extra Git call per scan) and `signatureChanged` (the parameter list differs from the base definition's). Adapter definitions carry their parameter list as `signature`.
 - Unresolved edges carry a `reason` (`operator`, `unknown-receiver`, `dynamic` or `no-definition`), and collect and scan coverage report `unresolvedByReason`. The scan recap and collect coverage text show the counts.
+- Scan anchors that run when their file loads carry `loadTime: true`: top-level statements, declarations, constants and objects, and Ruby class-body calls other than `scope` and `define_method`.
+
+### Changed
+
+- Scan file kinds add `migration`, `config`, `dependency` and `schema`. Lockfiles and `db/schema.rb`-style dumps were `generated`; `Gemfile`, `package.json` and YAML configuration were `other`; migrations and Ruby or JS/TS configuration were `code`, and they are still anchored. Metrics and the manifest count the new kinds.
 
 ### Fixed
 

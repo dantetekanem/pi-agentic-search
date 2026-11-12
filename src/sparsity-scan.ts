@@ -49,7 +49,13 @@ export interface ScanOptions {
   signal?: AbortSignal;
 }
 
-export type FileKind = "code" | "test" | "generated" | "other";
+/** Where a changed file takes effect. `migration` and `config` files with a parser are still anchored like code. */
+export type FileKind = "code" | "test" | "generated" | "other" | "migration" | "config" | "dependency" | "schema";
+
+const FILE_KINDS: FileKind[] = ["code", "test", "generated", "other", "migration", "config", "dependency", "schema"];
+const ANCHORED_KINDS = new Set<FileKind>(["code", "test", "migration", "config"]);
+// Top-level code that runs when its file loads; Ruby class-body calls are marked by the adapter.
+const LOAD_TIME_KINDS = new Set(["statement", "declaration", "constant", "object"]);
 
 export interface Hunk {
   oldStart: number;
@@ -75,7 +81,7 @@ export interface ChangedFile {
 export interface FileHunkRecord {
   id: string;
   path: string;
-  kind: "generated" | "other";
+  kind: Exclude<FileKind, "code" | "test">;
   status: ChangedFile["status"];
   hunks: Array<{ oldStart: number; oldLines: string[]; newStart: number; newLines: string[]; vicinity: string }>;
   omittedLines: number;
@@ -108,6 +114,8 @@ export interface AnchorRecord {
   whitespaceOnly?: number[];
   /** The base defines this symbol with a different parameter list. Present with `status`. */
   signatureChanged?: boolean;
+  /** Runs when its file loads: a top-level statement, declaration, constant or object, or a class-body call such as `has_many`. Absent otherwise. */
+  loadTime?: true;
 }
 
 export interface DanglingRecord {
@@ -198,11 +206,27 @@ function git(args: string[], cwd: string, signal?: AbortSignal): Promise<string>
   });
 }
 
+// Files that take effect at install, deploy or load. Dependency and schema paths win over the generated patterns.
+const DEPENDENCY_FILE = /(^|\/)(?:Gemfile(?:\.lock)?|gems\.(?:rb|locked)|[^/]+\.gemspec|package(?:-lock)?\.json|npm-shrinkwrap\.json|pnpm-(?:lock|workspace)\.yaml|yarn\.lock|bun\.lockb?|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|requirements[^/]*\.txt|Pipfile(?:\.lock)?|poetry\.lock|pyproject\.toml|composer\.(?:json|lock))$/;
+const SCHEMA_FILE = /(^|\/)db\/(?:[\w-]+_)?(?:schema\.rb|structure\.sql)$|(^|\/)db\/schema\/|\.prisma$/;
+const MIGRATION_FILE = /(^|\/)db\/(?:migrate|data)\/|(^|\/)migrations\//;
+const CONFIG_FILE = /(^|\/)config\/|(^|\/)\.env(?:\.[^/]*)?$|\.(?:ya?ml|toml|ini)$|(^|\/)[^/]+\.config\.[cm]?[jt]s$|(^|\/)tsconfig[^/]*\.json$|(^|\/)(?:Dockerfile|Procfile|docker-compose[^/]*)$/;
+
 function classifyFile(path: string, binary: boolean): FileKind {
   if (binary) return "other";
+  if (DEPENDENCY_FILE.test(path)) return "dependency";
+  if (SCHEMA_FILE.test(path)) return "schema";
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
-  if (!languageFor(path)) return "other";
-  return isTestPath(path) ? "test" : "code";
+  const language = languageFor(path);
+  if (isTestPath(path)) return language ? "test" : "other";
+  if (MIGRATION_FILE.test(path)) return "migration";
+  if (CONFIG_FILE.test(path)) return "config";
+  return language ? "code" : "other";
+}
+
+/** Changed files whose definitions become anchors; every other readable file gets hunk sections instead. */
+function anchored(file: ChangedFile): boolean {
+  return ANCHORED_KINDS.has(file.kind) && file.language !== undefined;
 }
 
 export function parseUnifiedDiff(text: string): ChangedFile[] {
@@ -465,7 +489,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
 
   const rubyReady = files.some((file) => file.language === "ruby") ? await rubyAdapter.ready() : false;
   const rubyIndexes = new Map<string, RubyIndex>();
-  const tsFiles = files.filter((file) => file.language === "javascript" && file.status !== "deleted" && (file.kind === "code" || file.kind === "test")).map((file) => resolve(cwd, file.path));
+  const tsFiles = files.filter((file) => file.language === "javascript" && file.status !== "deleted" && anchored(file)).map((file) => resolve(cwd, file.path));
   const tsPrograms = tsFiles.length ? new TsPrograms(cwd, headContentAbsolute) : undefined;
   tsPrograms?.prepare(tsFiles, signal);
   indexNotes.push(...(tsPrograms?.describe() ?? []));
@@ -479,7 +503,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     let collector = collectors.get(rootDisplay);
     if (!collector) {
       let rubyIndex: RubyIndex | undefined;
-      const productionRubyChange = files.some((file) => file.language === "ruby" && file.kind === "code" && file.status !== "deleted" && (rootDisplay === "." || file.path === rootDisplay || file.path.startsWith(`${rootDisplay}/`)));
+      const productionRubyChange = files.some((file) => file.language === "ruby" && anchored(file) && file.kind !== "test" && file.status !== "deleted" && (rootDisplay === "." || file.path === rootDisplay || file.path.startsWith(`${rootDisplay}/`)));
       if (rubyReady && options.indexCacheDir && languageFor(path) === "ruby" && !productionRubyChange) {
         indexNotes.push(`Ruby index for ${rootDisplay} skipped: only test files changed under it; name-based ripgrep resolution used instead.`);
       }
@@ -508,7 +532,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   const candidates: Candidate[] = [];
   const candidateByKey = new Map<string, Candidate>();
   for (const file of files) {
-    if (file.status === "deleted" || (file.kind !== "code" && file.kind !== "test") || !file.language) continue;
+    if (file.status === "deleted" || !anchored(file)) continue;
     const found = await collectorFor(file.path);
     if (!found) continue;
     const lines = await found.collector.lines(file.path);
@@ -621,7 +645,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   const fileHunks: FileHunkRecord[] = [];
   let fileHunkCounter = 0;
   for (const file of files) {
-    if ((file.kind !== "other" && file.kind !== "generated") || file.binary) continue;
+    if (anchored(file) || file.binary) continue;
     const old = file.status === "added" ? [] : await oldLines(file.oldPath ?? file.path) ?? [];
     let current: string[] = [];
     if (file.status !== "deleted") {
@@ -648,7 +672,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       if (oldLines.length || newLines.length) hunks.push({ oldStart: hunk.oldStart, oldLines, newStart: hunk.newStart, newLines, vicinity });
       if (remaining === 0) break;
     }
-    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind, status: file.status, hunks, omittedLines, parsed: false });
+    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind as FileHunkRecord["kind"], status: file.status, hunks, omittedLines, parsed: false });
   }
 
   const removedFor = async (candidate: Candidate): Promise<AnchorRecord["removed"]> => {
@@ -755,6 +779,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       callers: callerRecords.filter((record) => !record.test).map(({ score: _score, ...record }) => record),
       tests: testRecords,
       ...await baseFacts(candidate),
+      ...(LOAD_TIME_KINDS.has(candidate.def.kind) || (candidate.def as AdapterDefinition).loadTime ? { loadTime: true as const } : {}),
     });
   }
 
@@ -762,7 +787,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   const dangling: DanglingRecord[] = [];
   if (base) {
     for (const file of files) {
-      if (!file.language || (file.kind !== "code" && file.kind !== "test") || !file.oldRanges.length) continue;
+      if (!file.language || !anchored(file) || !file.oldRanges.length) continue;
       if (budget.exhausted) break;
       const oldPath = file.oldPath ?? file.path;
       let oldLines: string[];
@@ -774,7 +799,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       const ranges = file.status === "deleted" ? [[1, oldLines.length] as [number, number]] : file.oldRanges;
       const removed = removedDefinitionNames(oldLines, ranges, file.language);
       if (!removed.length) continue;
-      const found = await collectorFor(file.status === "deleted" ? (files.find((f) => f.kind === "code" && f.status !== "deleted")?.path ?? oldPath) : file.path).catch(() => undefined);
+      const found = await collectorFor(file.status === "deleted" ? (files.find((f) => anchored(f) && f.kind !== "test" && f.status !== "deleted")?.path ?? oldPath) : file.path).catch(() => undefined);
       if (!found) continue;
       for (const item of removed.slice(0, 12)) {
         if (found.collector.tooCommon(item.name)) continue;
@@ -847,7 +872,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     elapsedMs: coverage.elapsedMs,
     rgCalls: coverage.rgCalls,
     truncatedBy: coverage.truncatedBy,
-    files: { total: files.length, code: byKind("code"), test: byKind("test"), generated: byKind("generated"), other: byKind("other") },
+    files: { total: files.length, ...Object.fromEntries(FILE_KINDS.map((kind) => [kind, byKind(kind)])) as Record<FileKind, number> },
     anchors: { expanded: anchors.length, skipped: skippedAnchors.length },
     nodes: nodes.length,
     edges: edges.length,
@@ -1021,7 +1046,7 @@ function manifestText(result: Omit<ScanResult, "sections" | "packPath" | "jsonPa
   if (result.checkoutHead !== result.head) out.push(`revision: changed files, anchors, snippets and line numbers are from the range head ${result.head.slice(0, 12)}; the checkout is at ${result.checkoutHead.slice(0, 12)}, which callers, tests and unchanged files reflect. Do not re-read the changed files at the head; the pack already did.`);
   out.push(`roots: ${result.roots.join(", ") || "none"}  depth ${result.coverage.depthReached}/${result.coverage.maxDepth}  vicinity ±${result.coverage.vicinity}`);
   for (const note of result.coverage.notes.filter((item) => /^Ruby index for |^Prism parser unavailable|^TypeScript program for /.test(item))) out.push(`index: ${note}`);
-  out.push(`files ${result.files.length} (code ${byKind("code")}, tests ${byKind("test")}, generated ${byKind("generated")}, other ${byKind("other")}); anchors ${result.anchors.length} expanded, ${result.skippedAnchors.length} skipped; nodes ${result.nodes.length}; edges ${result.edges.length}; unresolved ${result.coverage.unresolved}; dangling ${result.dangling.length}; rg calls ${result.coverage.rgCalls}; ${result.coverage.elapsedMs} ms; truncated: ${result.coverage.truncatedBy}`);
+  out.push(`files ${result.files.length} (code ${byKind("code")}, tests ${byKind("test")}, generated ${byKind("generated")}, other ${byKind("other")}${FILE_KINDS.slice(4).filter((kind) => byKind(kind)).map((kind) => `, ${kind} ${byKind(kind)}`).join("")}); anchors ${result.anchors.length} expanded, ${result.skippedAnchors.length} skipped; nodes ${result.nodes.length}; edges ${result.edges.length}; unresolved ${result.coverage.unresolved}; dangling ${result.dangling.length}; rg calls ${result.coverage.rgCalls}; ${result.coverage.elapsedMs} ms; truncated: ${result.coverage.truncatedBy}`);
   out.push("");
   out.push("FILES");
   for (const file of result.files) {

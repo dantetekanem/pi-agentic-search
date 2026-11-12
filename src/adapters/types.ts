@@ -21,6 +21,8 @@ export interface AdapterDefinition extends Definition {
   returns?: string;
   /** The parameter list as written, whitespace removed; absent for definitions that take no parameter list. */
   signature?: string;
+  /** A class-body call (such as `has_many` or `validates`) that runs when its file loads. */
+  loadTime?: boolean;
 }
 
 export interface NamespaceInfo {

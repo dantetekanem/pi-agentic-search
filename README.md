@@ -24,6 +24,8 @@ A manifest lists the pack's contents and points to sections in `pack.md`. The ag
 
 Anchors in `pack.json` also carry facts that a review tool can check without re-reading the diff. `status` is `added` or `modified`: whether the base revision of the file defines the same symbol. Statements and declarations are identified by their text, so an edited one reads as added. `whitespaceOnly` lists the changed lines that `git diff -w` does not report, and `signatureChanged` says the base defines the symbol with a different parameter list. Explicit `--anchor` scans have no base and omit these fields.
 
+Changed files are classed as `code`, `test`, `migration`, `config`, `dependency`, `schema`, `generated` or `other`. Migrations and configuration that Ruby or JS/TS can parse are still anchored; dependency manifests, lockfiles and schema dumps get hunk sections. Anchors that run when their file loads carry `loadTime: true`: top-level statements, declarations, constants and objects, and Ruby class-body calls such as `has_many` or `validates` (a block passed to one is not separated from it). `scope` and `define_method` bodies run when called and are not marked.
+
 ## Installation
 
 You need Node.js 22+ and `rg` ([ripgrep](https://github.com/BurntSushi/ripgrep)) on your `PATH`. Diff context also uses Git. The package includes its Ruby parser and TypeScript dependency. The CLI does not need Pi or a TypeScript loader.

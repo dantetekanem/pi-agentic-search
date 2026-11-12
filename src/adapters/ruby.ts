@@ -568,14 +568,17 @@ class Parser {
     if (inClassBody && (argumentsOf(call).length > 0 || call.block)) {
       const declared = argumentsOf(call).map(symbolValue).filter((value): value is string => Boolean(value));
       const kind = DECLARATION_CALLS.has(name) || declared.length ? name : "declaration";
-      const signature = name === "scope" || name === "define_method" ? callableSignature(call, this.bytes) : undefined;
+      // scope and define_method define callables whose bodies run on call; every other class-body call runs at load.
+      const callable = name === "scope" || name === "define_method";
+      const signature = callable ? callableSignature(call, this.bytes) : undefined;
+      const loadTime = callable ? undefined : true;
       if (declared.length) {
         for (const value of declared) {
           const label = `${name} :${value}`;
-          this.definitions.push({ name: value, symbol: owner ? `${owner} ${label}` : label, kind, startLine, endLine, owner, signature });
+          this.definitions.push({ name: value, symbol: owner ? `${owner} ${label}` : label, kind, startLine, endLine, owner, signature, loadTime });
         }
       } else {
-        this.definitions.push({ name, symbol: owner ? `${owner} ${name}` : name, kind, startLine, endLine, owner });
+        this.definitions.push({ name, symbol: owner ? `${owner} ${name}` : name, kind, startLine, endLine, owner, loadTime });
       }
       if (name === "scope") this.defNodes.set(startLine, call);
       const body = firstBlockBody(call);
