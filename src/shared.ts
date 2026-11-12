@@ -27,6 +27,12 @@ export function normalizeSignature(text: string): string {
   return text.replace(/\s+/g, "");
 }
 
+/** Source text on one line, cut at `limit` characters with an ellipsis. */
+export function excerpt(text: string, limit: number): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > limit ? `${line.slice(0, limit)}…` : line;
+}
+
 export function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(value ?? fallback)));

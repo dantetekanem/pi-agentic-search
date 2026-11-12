@@ -220,17 +220,22 @@ export function useGone(input: any) {
     "input.doThing": "unknown-receiver",
     gone: "no-definition",
   };
+  const unresolvedReasons = (scanned: Awaited<ReturnType<Repo["scan"]>>) => Object.fromEntries(scanned.edges
+    .filter((edge) => edge.resolution === "unresolved")
+    .map((edge) => [edge.name, edge.reason]));
+
   const result = await scan("HEAD~1..HEAD");
-  const reasons = Object.fromEntries(result.edges.filter((edge) => edge.resolution === "unresolved").map((edge) => [edge.name, edge.reason]));
-  assert.deepEqual(reasons, expected);
+
+  assert.deepEqual(unresolvedReasons(result), expected);
   assert.ok(result.edges.every((edge) => (edge.resolution === "unresolved") === (edge.reason !== undefined)), "only unresolved edges carry a reason");
   assert.deepEqual(result.coverage.unresolvedByReason, { operator: 2, "unknown-receiver": 2, dynamic: 1, "no-definition": 3 });
   assert.match(result.inline, /unresolved edges \(8; 3 no-definition, 2 operator, 2 unknown-receiver, 1 dynamic\):\n  - `[^`]+` ×1 from n\d+:\d+ \[[a-z-]+\]/);
 
   // With a Ruby index a typed receiver is looked up first; an operator it lacks is still an operator, and a missing receiver constant is external.
   const indexed = await scan("HEAD~1..HEAD", { indexCacheDir: join(cwd, "..", "index") });
+
   const { "Billing::Ghost.run_it": _external, ...indexedExpected } = expected;
-  assert.deepEqual(Object.fromEntries(indexed.edges.filter((edge) => edge.resolution === "unresolved").map((edge) => [edge.name, edge.reason])), indexedExpected);
+  assert.deepEqual(unresolvedReasons(indexed), indexedExpected);
   assert.equal(indexed.edges.find((edge) => edge.name === "Billing::Ghost.run_it")?.resolution, "external");
   assert.match(indexed.edges.find((edge) => edge.name === "money.+")?.note ?? "", /Money and its ancestors .* define no \+/, "the index looked the operator up on Money");
 

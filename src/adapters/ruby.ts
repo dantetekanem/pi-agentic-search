@@ -1,5 +1,5 @@
 import type * as Prism from "@ruby/prism";
-import { normalizeSignature } from "../shared.ts";
+import { excerpt, normalizeSignature } from "../shared.ts";
 import type {
   AdapterDefinition,
   CallSite,
@@ -150,16 +150,15 @@ const EXIT_CALLS = new Set(["raise", "fail", "throw"]);
 // Code inside these runs on its own later; conditions around them do not dominate it.
 const GUARD_BOUNDARIES = new Set(["DefNode", "ClassNode", "ModuleNode", "SingletonClassNode"]);
 
-function guardText(source: Source, loc: Prism.Location): string {
-  const text = sliceSource(source.bytes, loc).replace(/\s+/g, " ").trim();
-  return text.length > GUARD_TEXT_LIMIT ? `${text.slice(0, GUARD_TEXT_LIMIT)}…` : text;
-}
-
 /** `if x`, `elsif x` and `unless x` keep their keyword; a ternary condition is the expression alone. */
 function conditionGuard(node: Prism.IfNode | Prism.UnlessNode, source: Source, branch: Guard["branch"]): Guard {
   const keyword = kindName(node) === "IfNode" ? (node as Prism.IfNode).ifKeywordLoc : (node as Prism.UnlessNode).keywordLoc;
-  const predicate = guardText(source, node.predicate.location);
-  return { line: lineAt(source.lineStarts, node.predicate.location.startOffset), text: keyword ? `${sliceSource(source.bytes, keyword)} ${predicate}` : predicate, branch };
+  const predicate = excerpt(sliceSource(source.bytes, node.predicate.location), GUARD_TEXT_LIMIT);
+  return {
+    line: lineAt(source.lineStarts, node.predicate.location.startOffset),
+    text: keyword ? `${sliceSource(source.bytes, keyword)} ${predicate}` : predicate,
+    branch,
+  };
 }
 
 /** The guard that `child` runs under inside `node`, when `node` branches. */
@@ -172,7 +171,12 @@ function branchGuard(node: Node, child: Node, source: Source): Guard | undefined
     if (child === otherwise) return conditionGuard(conditional, source, "else");
   } else if (kind === "AndNode" || kind === "OrNode") {
     const { left, right } = node as Prism.AndNode | Prism.OrNode;
-    if (child === right) return { line: lineAt(source.lineStarts, left.location.startOffset), text: guardText(source, left.location), branch: kind === "AndNode" ? "then" : "else" };
+    if (child !== right) return undefined;
+    return {
+      line: lineAt(source.lineStarts, left.location.startOffset),
+      text: excerpt(sliceSource(source.bytes, left.location), GUARD_TEXT_LIMIT),
+      branch: kind === "AndNode" ? "then" : "else",
+    };
   }
   return undefined;
 }
@@ -180,18 +184,33 @@ function branchGuard(node: Node, child: Node, source: Source): Guard | undefined
 function exits(node: Node | null | undefined): boolean {
   const kind = kindName(node);
   if (EXIT_NODES.has(kind)) return true;
-  if (kind === "CallNode") return !(node as Prism.CallNode).receiver && EXIT_CALLS.has((node as Prism.CallNode).name);
-  return (kind === "AndNode" || kind === "OrNode") && exits((node as Prism.AndNode).right);
+  if (kind === "CallNode") {
+    const call = node as Prism.CallNode;
+    return !call.receiver && EXIT_CALLS.has(call.name);
+  }
+  return (kind === "AndNode" || kind === "OrNode") && exits((node as Prism.AndNode | Prism.OrNode).right);
 }
 
-/** An if/unless (not a ternary) without an else whose branch ends in an exit guards the statements after it. */
+/** An `if` (not a ternary) or `unless` that has no else branch. */
+function conditionalWithoutElse(node: Node): Prism.IfNode | Prism.UnlessNode | undefined {
+  const kind = kindName(node);
+  if (kind === "IfNode") {
+    const ifNode = node as Prism.IfNode;
+    return ifNode.ifKeywordLoc && !ifNode.subsequent ? ifNode : undefined;
+  }
+  if (kind === "UnlessNode") {
+    const unless = node as Prism.UnlessNode;
+    return unless.elseClause ? undefined : unless;
+  }
+  return undefined;
+}
+
+/** An if or unless without an else whose branch ends in an exit guards the statements after it. */
 function exitGuard(statement: Node, source: Source): Guard | undefined {
-  const kind = kindName(statement);
-  if (kind === "IfNode" && (!(statement as Prism.IfNode).ifKeywordLoc || (statement as Prism.IfNode).subsequent)) return undefined;
-  if (kind === "UnlessNode" && (statement as Prism.UnlessNode).elseClause) return undefined;
-  if (kind !== "IfNode" && kind !== "UnlessNode") return undefined;
-  const body = (statement as Prism.IfNode | Prism.UnlessNode).statements?.body ?? [];
-  return exits(body[body.length - 1]) ? conditionGuard(statement as Prism.IfNode | Prism.UnlessNode, source, "after-return") : undefined;
+  const conditional = conditionalWithoutElse(statement);
+  const body = conditional?.statements?.body ?? [];
+  if (!conditional || !exits(body[body.length - 1])) return undefined;
+  return conditionGuard(conditional, source, "after-return");
 }
 
 function containsOffset(node: Node, offset: number): boolean {
@@ -217,14 +236,19 @@ function stepToward(node: Node, offset: number, source: Source): { child: Node; 
   return undefined;
 }
 
+const SPACE = 0x20;
+const TAB = 0x09;
+const LINE_END = new Set([0x0a, 0x0d]);
+const COMMENT = 0x23;
+
 /** The byte offset where the code of `line` starts, or undefined for a blank or comment line. */
 function firstCodeOffset(source: Source, line: number): number | undefined {
   const start = source.lineStarts[line - 1];
   if (start === undefined) return undefined;
   const end = source.lineStarts[line] ?? source.bytes.length;
   let offset = start;
-  while (offset < end && (source.bytes[offset] === 32 || source.bytes[offset] === 9)) offset += 1;
-  if (offset >= end || source.bytes[offset] === 10 || source.bytes[offset] === 13 || source.bytes[offset] === 35) return undefined;
+  while (offset < end && (source.bytes[offset] === SPACE || source.bytes[offset] === TAB)) offset += 1;
+  if (offset >= end || LINE_END.has(source.bytes[offset]!) || source.bytes[offset] === COMMENT) return undefined;
   return offset;
 }
 
@@ -388,14 +412,24 @@ function enqueueTarget(call: Prism.CallNode): { owner: string; method: string } 
   return owner ? { owner, method: action.name } : undefined;
 }
 
+function effectKind(call: Prism.CallNode, source: Source): Effect["kind"] | undefined {
+  if (WRITE_METHODS.has(call.name)) return "write";
+  if (ENQUEUE_METHODS.has(call.name)) return "enqueue";
+  const onCache = call.receiver && /(^|[.@:])\w*cache$/i.test(collapsedReceiver(call.receiver, source.bytes));
+  return CACHE_METHODS.has(call.name) && onCache ? "cache" : undefined;
+}
+
+/** The effect a call has, on the line of its method name, with the call's text up to any block. */
 function effectOf(call: Prism.CallNode, source: Source): Effect | undefined {
-  const cache = CACHE_METHODS.has(call.name) && call.receiver && /(^|[.@:])\w*cache$/i.test(collapsedReceiver(call.receiver, source.bytes));
-  const kind = WRITE_METHODS.has(call.name) ? "write" : ENQUEUE_METHODS.has(call.name) ? "enqueue" : cache ? "cache" : undefined;
+  const kind = effectKind(call, source);
   if (!kind) return undefined;
   const start = call.location.startOffset;
   const end = kindName(call.block) === "BlockNode" ? call.block!.location.startOffset : start + call.location.length;
-  const text = source.bytes.subarray(start, end).toString("utf8").replace(/\s+/g, " ").trim();
-  return { kind, line: lineAt(source.lineStarts, (call.messageLoc ?? call.location).startOffset), text: text.length > EFFECT_TEXT_LIMIT ? `${text.slice(0, EFFECT_TEXT_LIMIT)}…` : text };
+  return {
+    kind,
+    line: lineAt(source.lineStarts, (call.messageLoc ?? call.location).startOffset),
+    text: excerpt(source.bytes.subarray(start, end).toString("utf8"), EFFECT_TEXT_LIMIT),
+  };
 }
 
 type TypeLookup = (name: string) => LocalType | undefined;
@@ -798,26 +832,30 @@ class CallCollector {
     if (guard) this.guards.pop();
   }
 
+  /** A nested definition or class body runs on its own, so it starts with no guards. */
+  private visitUnguarded(node: Node): void {
+    const outer = this.guards;
+    this.guards = [];
+    this.visit(node);
+    this.guards = outer;
+  }
+
+  /** An exiting `if` or `unless` guards the statements after it. */
+  private visitStatements(node: Prism.StatementsNode): void {
+    const depth = this.guards.length;
+    for (const statement of node.body) {
+      this.visit(statement);
+      const exit = exitGuard(statement, this.facts);
+      if (exit) this.guards.push(exit);
+    }
+    this.guards.length = depth;
+  }
+
   visit(node: Node | null): void {
     if (!node || this.consumedReceivers.has(node)) return;
     const kind = kindName(node);
-    if (GUARD_BOUNDARIES.has(kind) && this.guards.length) {
-      const outer = this.guards;
-      this.guards = [];
-      this.visit(node);
-      this.guards = outer;
-      return;
-    }
-    if (kind === "StatementsNode") {
-      const depth = this.guards.length;
-      for (const statement of (node as Prism.StatementsNode).body) {
-        this.visit(statement);
-        const exit = exitGuard(statement, this.facts);
-        if (exit) this.guards.push(exit);
-      }
-      this.guards.length = depth;
-      return;
-    }
+    if (GUARD_BOUNDARIES.has(kind) && this.guards.length) return this.visitUnguarded(node);
+    if (kind === "StatementsNode") return this.visitStatements(node as Prism.StatementsNode);
     if (kind === "AndNode" || kind === "OrNode") {
       const { left, right } = node as Prism.AndNode | Prism.OrNode;
       this.visit(left);
@@ -1067,13 +1105,14 @@ export class RubyAdapter implements LanguageAdapter {
     const offset = line >= def.startLine && line <= def.endLine ? firstCodeOffset(ruby, line) : undefined;
     if (offset === undefined) return [];
     let guards: Guard[] = [];
-    for (let node: Node | undefined = ruby.program; node;) {
+    let node: Node = ruby.program;
+    for (;;) {
       if (GUARD_BOUNDARIES.has(kindName(node))) guards = [];
       const step = stepToward(node, offset, ruby);
-      if (step) guards.push(...step.guards);
-      node = step?.child;
+      if (!step) return guards;
+      guards.push(...step.guards);
+      node = step.child;
     }
-    return guards;
   }
 }
 

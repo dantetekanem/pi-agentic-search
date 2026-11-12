@@ -52,7 +52,8 @@ export interface ScanOptions {
 /** Where a changed file takes effect. `migration` and `config` files with a parser are still anchored like code. */
 export type FileKind = "code" | "test" | "generated" | "other" | "migration" | "config" | "dependency" | "schema";
 
-const FILE_KINDS: FileKind[] = ["code", "test", "generated", "other", "migration", "config", "dependency", "schema"];
+// Kinds for files that take effect at install, deploy or boot; the manifest counts them when present.
+const DEPLOY_FILE_KINDS: FileKind[] = ["migration", "config", "dependency", "schema"];
 const ANCHORED_KINDS = new Set<FileKind>(["code", "test", "migration", "config"]);
 // Top-level code that runs when its file loads; Ruby class-body calls are marked by the adapter.
 const LOAD_TIME_KINDS = new Set(["statement", "declaration", "constant", "object"]);
@@ -231,6 +232,17 @@ function classifyFile(path: string, binary: boolean): FileKind {
 /** Changed files whose definitions become anchors; every other readable file gets hunk sections instead. */
 function anchored(file: ChangedFile): boolean {
   return ANCHORED_KINDS.has(file.kind) && file.language !== undefined;
+}
+
+/** True only when both parameter lists are known and no base definition of the symbol has this one. */
+function signatureChanged(def: AdapterDefinition, atBase: AdapterDefinition[]): boolean {
+  const known = atBase.filter((item) => item.signature !== undefined);
+  if (def.signature === undefined || !known.length) return false;
+  return !known.some((item) => item.signature === def.signature);
+}
+
+function runsAtLoad(def: AdapterDefinition): boolean {
+  return LOAD_TIME_KINDS.has(def.kind) || def.loadTime === true;
 }
 
 export function parseUnifiedDiff(text: string): ChangedFile[] {
@@ -467,8 +479,9 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       await guardRevision(options, head);
     }
     files = parseUnifiedDiff(await git(resolved.args, cwd, signal));
-    const ignoringWhitespace = new Map(parseUnifiedDiff(await git(["diff", "-w", ...resolved.args.slice(1)], cwd, signal)).map((file) => [file.path, file.newRanges]));
-    whitespaceRanges = new Map(files.map((file) => [file.path, ignoringWhitespace.get(file.path) ?? []]));
+    const whitespaceDiff = parseUnifiedDiff(await git(["diff", "-w", ...resolved.args.slice(1)], cwd, signal));
+    const rangesIgnoringWhitespace = new Map(whitespaceDiff.map((file) => [file.path, file.newRanges]));
+    whitespaceRanges = new Map(files.map((file) => [file.path, rangesIgnoringWhitespace.get(file.path) ?? []]));
     for (const path of resolved.untracked) {
       const normalized = normalizeRepoRelativePath(path);
       if (files.some((file) => file.path === normalized)) continue;
@@ -532,7 +545,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   };
 
   // Anchor discovery
-  type Candidate = { file: ChangedFile; collector: Collector; node: SparsityNode; def: Definition; changedLines: number[]; priority: number; boundary: { score: number; tags: string[] } };
+  type Candidate = { file: ChangedFile; collector: Collector; node: SparsityNode; def: AdapterDefinition; changedLines: number[]; priority: number; boundary: { score: number; tags: string[] } };
   const candidates: Candidate[] = [];
   const candidateByKey = new Map<string, Candidate>();
   for (const file of files) {
@@ -649,7 +662,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   const fileHunks: FileHunkRecord[] = [];
   let fileHunkCounter = 0;
   for (const file of files) {
-    if (anchored(file) || file.binary) continue;
+    // Code and test files always have a parser, so they are anchored; naming them narrows the hunk kind.
+    if (file.kind === "code" || file.kind === "test" || anchored(file) || file.binary) continue;
     const old = file.status === "added" ? [] : await oldLines(file.oldPath ?? file.path) ?? [];
     let current: string[] = [];
     if (file.status !== "deleted") {
@@ -676,7 +690,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       if (oldLines.length || newLines.length) hunks.push({ oldStart: hunk.oldStart, oldLines, newStart: hunk.newStart, newLines, vicinity });
       if (remaining === 0) break;
     }
-    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind as FileHunkRecord["kind"], status: file.status, hunks, omittedLines, parsed: false });
+    if (hunks.length) fileHunks.push({ id: `f${++fileHunkCounter}`, path: file.path, kind: file.kind, status: file.status, hunks, omittedLines, parsed: false });
   }
 
   const removedFor = async (candidate: Candidate): Promise<AnchorRecord["removed"]> => {
@@ -697,37 +711,46 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     return removed;
   };
 
+  // Definitions of each changed file at the base revision: [] when the base has no such file, undefined when no parser read it.
   const baseDefinitions = new Map<string, AdapterDefinition[] | undefined>();
   const definitionsAtBase = async (file: ChangedFile): Promise<AdapterDefinition[] | undefined> => {
-    if (!base) return undefined;
     if (file.status === "added") return [];
     const path = file.oldPath ?? file.path;
-    if (baseDefinitions.has(path)) return baseDefinitions.get(path);
-    const lines = await oldLines(path);
-    const source = lines?.join("\n");
-    const facts = source === undefined ? undefined : file.language === "ruby" ? rubyAdapter.parse(path, source, true) : tsAdapter.parse(path, source, true);
-    const definitions = source === undefined ? [] : facts?.definitions;
-    baseDefinitions.set(path, definitions);
-    return definitions;
+    if (!baseDefinitions.has(path)) {
+      const lines = await oldLines(path);
+      const adapter = file.language === "ruby" ? rubyAdapter : tsAdapter;
+      baseDefinitions.set(path, lines ? adapter.parse(path, lines.join("\n"), true)?.definitions : []);
+    }
+    return baseDefinitions.get(path);
+  };
+  const whitespaceOnlyLines = (candidate: Candidate): number[] => {
+    const ranges = whitespaceRanges?.get(candidate.file.path);
+    if (!ranges) return [];
+    return candidate.changedLines.filter((line) => !ranges.some(([start, end]) => start <= line && line <= end));
   };
   const baseFacts = async (candidate: Candidate): Promise<Pick<AnchorRecord, "status" | "whitespaceOnly" | "signatureChanged">> => {
-    const ranges = whitespaceRanges?.get(candidate.file.path);
-    const whitespaceOnly = !whitespaceRanges ? undefined : !ranges ? [] : candidate.changedLines.filter((line) => !ranges.some(([start, end]) => start <= line && line <= end));
+    if (!base) return {};
+    const whitespaceOnly = whitespaceOnlyLines(candidate);
     const definitions = await definitionsAtBase(candidate.file);
-    if (!definitions) return whitespaceOnly ? { whitespaceOnly } : {};
-    const matches = definitions.filter((item) => item.symbol === candidate.def.symbol);
-    if (!matches.length) return { status: "added", whitespaceOnly: whitespaceOnly ?? [], signatureChanged: false };
-    const signature = (candidate.def as AdapterDefinition).signature;
-    const known = matches.filter((item) => item.signature !== undefined);
-    return { status: "modified", whitespaceOnly: whitespaceOnly ?? [], signatureChanged: signature !== undefined && known.length > 0 && !known.some((item) => item.signature === signature) };
+    if (!definitions) return { whitespaceOnly };
+
+    const sameSymbol = definitions.filter((item) => item.symbol === candidate.def.symbol);
+    return {
+      status: sameSymbol.length ? "modified" : "added",
+      whitespaceOnly,
+      signatureChanged: signatureChanged(candidate.def, sameSymbol),
+    };
   };
   const guardsFor = async (candidate: Candidate): Promise<AnchorRecord["guards"]> => {
-    const language = candidate.file.language!;
+    const language = candidate.node.language;
     const lines = await candidate.collector.lines(candidate.node.path);
     const facts = lines ? candidate.collector.factsFor(language, candidate.node.path, lines) : undefined;
     if (!facts) return [];
+
     const adapter = language === "ruby" ? rubyAdapter : tsAdapter;
-    return candidate.changedLines.map((line) => ({ line, guards: adapter.guardsAt(facts, candidate.def, line) })).filter((entry) => entry.guards.length);
+    return candidate.changedLines
+      .map((line) => ({ line, guards: adapter.guardsAt(facts, candidate.def, line) }))
+      .filter((entry) => entry.guards.length > 0);
   };
 
   // Expansion
@@ -791,7 +814,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       callers: callerRecords.filter((record) => !record.test).map(({ score: _score, ...record }) => record),
       tests: testRecords,
       ...await baseFacts(candidate),
-      ...(LOAD_TIME_KINDS.has(candidate.def.kind) || (candidate.def as AdapterDefinition).loadTime ? { loadTime: true as const } : {}),
+      ...(runsAtLoad(candidate.def) ? { loadTime: true as const } : {}),
       guards: await guardsFor(candidate),
       effects: (candidate.node.effects ?? []).filter((effect) => candidate.changedLines.includes(effect.line)),
     });
@@ -886,7 +909,17 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     elapsedMs: coverage.elapsedMs,
     rgCalls: coverage.rgCalls,
     truncatedBy: coverage.truncatedBy,
-    files: { total: files.length, ...Object.fromEntries(FILE_KINDS.map((kind) => [kind, byKind(kind)])) as Record<FileKind, number> },
+    files: {
+      total: files.length,
+      code: byKind("code"),
+      test: byKind("test"),
+      generated: byKind("generated"),
+      other: byKind("other"),
+      migration: byKind("migration"),
+      config: byKind("config"),
+      dependency: byKind("dependency"),
+      schema: byKind("schema"),
+    },
     anchors: { expanded: anchors.length, skipped: skippedAnchors.length },
     nodes: nodes.length,
     edges: edges.length,
@@ -907,6 +940,21 @@ function edgeLine(edge: SparsityEdge, byId: Map<string, SparsityNode>): string {
   const extras = [edge.note, edge.candidates ? `candidates: ${edge.candidates.slice(0, 4).join(", ")}${edge.candidates.length > 4 ? ", …" : ""}` : undefined].filter(Boolean).join("; ");
   const label = edge.via ? `${edge.resolution}, ${edge.via}` : edge.resolution;
   return `  - :${edge.line} \`${edge.name}\`${edge.relationship === "enqueues" ? " enqueues" : ""} → [${label}] ${destination}${extras ? `  (${extras})` : ""}`;
+}
+
+/** One line per distinct list of guards: the changed lines it covers, then each guard outermost first. */
+function describeGuards(entries: AnchorRecord["guards"]): string[] {
+  const groups = new Map<string, { lines: number[]; guards: Guard[] }>();
+  for (const entry of entries) {
+    const key = JSON.stringify(entry.guards);
+    const group = groups.get(key) ?? { lines: [], guards: entry.guards };
+    group.lines.push(entry.line);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => {
+    const guards = group.guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`);
+    return `  ${compressRanges(group.lines)}: ${guards.join(" › ")}`;
+  });
 }
 
 async function renderSections(result: Omit<ScanResult, "sections" | "packPath" | "jsonPath" | "metricsPath" | "inline">, collectors: Collector[], anchorIds: Set<string>): Promise<Array<Omit<Section, "startLine" | "endLine" | "inline">>> {
@@ -953,19 +1001,13 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     const out: string[] = [];
     out.push(`${anchor.id} ${anchor.symbol} [${anchor.kind}] ${anchor.path}:${anchor.startLine}-${anchor.endLine} fp ${anchor.fingerprint}`);
     out.push(`changed lines (+): ${compressRanges(anchor.changedLines)}`);
-    const baseFacts = [anchor.status, anchor.signatureChanged ? "parameters changed" : undefined, anchor.whitespaceOnly?.length ? `whitespace-only changes on ${compressRanges(anchor.whitespaceOnly)}` : undefined].filter(Boolean);
-    if (baseFacts.length) out.push(`base: ${baseFacts.join("; ")}`);
-    if (anchor.guards.length) {
-      const byGuards = new Map<string, { lines: number[]; guards: Guard[] }>();
-      for (const entry of anchor.guards) {
-        const key = JSON.stringify(entry.guards);
-        const group = byGuards.get(key) ?? { lines: [], guards: entry.guards };
-        group.lines.push(entry.line);
-        byGuards.set(key, group);
-      }
-      out.push("guards on changed lines:");
-      for (const group of byGuards.values()) out.push(`  ${compressRanges(group.lines)}: ${group.guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`).join(" › ")}`);
-    }
+    const baseNotes = [
+      anchor.status,
+      anchor.signatureChanged ? "parameters changed" : undefined,
+      anchor.whitespaceOnly?.length ? `whitespace-only changes on ${compressRanges(anchor.whitespaceOnly)}` : undefined,
+    ].filter(Boolean);
+    if (baseNotes.length) out.push(`base: ${baseNotes.join("; ")}`);
+    if (anchor.guards.length) out.push("guards on changed lines:", ...describeGuards(anchor.guards));
     if (anchor.effects.length) out.push(`effects on changed lines: ${anchor.effects.map((effect) => `${effect.kind} :${effect.line} \`${effect.text}\``).join("; ")}`);
     out.push(node.snippet);
     if (anchor.vicinity) out.push(anchor.vicinity);
@@ -1072,7 +1114,7 @@ function manifestText(result: Omit<ScanResult, "sections" | "packPath" | "jsonPa
   if (result.checkoutHead !== result.head) out.push(`revision: changed files, anchors, snippets and line numbers are from the range head ${result.head.slice(0, 12)}; the checkout is at ${result.checkoutHead.slice(0, 12)}, which callers, tests and unchanged files reflect. Do not re-read the changed files at the head; the pack already did.`);
   out.push(`roots: ${result.roots.join(", ") || "none"}  depth ${result.coverage.depthReached}/${result.coverage.maxDepth}  vicinity ±${result.coverage.vicinity}`);
   for (const note of result.coverage.notes.filter((item) => /^Ruby index for |^Prism parser unavailable|^TypeScript program for /.test(item))) out.push(`index: ${note}`);
-  out.push(`files ${result.files.length} (code ${byKind("code")}, tests ${byKind("test")}, generated ${byKind("generated")}, other ${byKind("other")}${FILE_KINDS.slice(4).filter((kind) => byKind(kind)).map((kind) => `, ${kind} ${byKind(kind)}`).join("")}); anchors ${result.anchors.length} expanded, ${result.skippedAnchors.length} skipped; nodes ${result.nodes.length}; edges ${result.edges.length}; unresolved ${result.coverage.unresolved}; dangling ${result.dangling.length}; rg calls ${result.coverage.rgCalls}; ${result.coverage.elapsedMs} ms; truncated: ${result.coverage.truncatedBy}`);
+  out.push(`files ${result.files.length} (code ${byKind("code")}, tests ${byKind("test")}, generated ${byKind("generated")}, other ${byKind("other")}${DEPLOY_FILE_KINDS.filter((kind) => byKind(kind)).map((kind) => `, ${kind} ${byKind(kind)}`).join("")}); anchors ${result.anchors.length} expanded, ${result.skippedAnchors.length} skipped; nodes ${result.nodes.length}; edges ${result.edges.length}; unresolved ${result.coverage.unresolved}; dangling ${result.dangling.length}; rg calls ${result.coverage.rgCalls}; ${result.coverage.elapsedMs} ms; truncated: ${result.coverage.truncatedBy}`);
   out.push("");
   out.push("FILES");
   for (const file of result.files) {

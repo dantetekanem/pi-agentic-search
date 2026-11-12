@@ -9,7 +9,7 @@ import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
-import type { CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
+import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
 import {
   camelToSnake,
   displaySearchRoot,
@@ -101,14 +101,25 @@ export interface SparsityOptions {
 }
 
 export function unresolvedByReason(edges: SparsityEdge[]): Record<UnresolvedReason, number> {
-  const counts = Object.fromEntries(UNRESOLVED_REASONS.map((reason) => [reason, 0])) as Record<UnresolvedReason, number>;
-  for (const edge of edges) if (edge.resolution === "unresolved") counts[edge.reason ?? "no-definition"] += 1;
+  const counts: Record<UnresolvedReason, number> = {
+    operator: 0,
+    "unknown-receiver": 0,
+    dynamic: 0,
+    "no-definition": 0,
+  };
+  for (const edge of edges) {
+    if (edge.resolution === "unresolved") counts[edge.reason ?? "no-definition"] += 1;
+  }
   return counts;
 }
 
 /** `3 no-definition, 1 operator`: the non-zero counts, largest first. */
 export function describeUnresolvedReasons(counts: Record<UnresolvedReason, number>): string {
-  return UNRESOLVED_REASONS.filter((reason) => counts[reason]).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b)).map((reason) => `${counts[reason]} ${reason}`).join(", ");
+  return UNRESOLVED_REASONS
+    .filter((reason) => counts[reason] > 0)
+    .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))
+    .map((reason) => `${counts[reason]} ${reason}`)
+    .join(", ");
 }
 
 export function describeRubyIndex(index: RubyIndex | undefined): string | undefined {
@@ -191,7 +202,7 @@ interface SiteResolution {
   resolution: Resolution;
   note?: string;
   via?: EdgeVia;
-  /** For an unresolved result whose cause is not an operator, dynamic dispatch or a missing definition. */
+  /** Why an unresolved result failed, when the resolver knows; otherwise the edge reads `no-definition`. */
   reason?: UnresolvedReason;
 }
 
@@ -364,6 +375,39 @@ function underRoot(root: string, path: string): boolean {
 
 function excludedFromSearch(path: string): boolean {
   return path.split("/").some((segment) => SKIP_DIRS.has(segment)) || LOCK_FILE.test(path);
+}
+
+/** Whether ripgrep would search `path` for `spec`: a listed file is searched as given; a directory applies the filters. */
+function inSearchScope(path: string, spec: SearchSpec): boolean {
+  return spec.paths.some((entry) => {
+    const scope = normalizeRepoRelativePath(entry);
+    if (scope === path) return true;
+    if (!underRoot(scope, path) || excludedFromSearch(path)) return false;
+    if (spec.language && languageFor(path) !== spec.language) return false;
+    return !spec.testsOnly || isTestPath(path) || /_spec\.rb$/.test(path);
+  });
+}
+
+function ripgrepArgs(spec: SearchSpec, paths: string[]): string[] {
+  const types = spec.language === "ruby" ? ["-t", "ruby"] : spec.language === "javascript" ? ["-t", "ts", "-t", "js"] : [];
+  return [
+    ...types,
+    ...(spec.testsOnly ? TEST_GLOBS : []),
+    "--max-count", String(spec.maxCount),
+    ...spec.patterns.flatMap((pattern) => ["-e", pattern]),
+    ...paths,
+  ];
+}
+
+/** ripgrep's line matching over content held in memory: the first `maxCount` lines that match any pattern. */
+function matchLines(path: string, lines: string[], patterns: RegExp[], maxCount: number): RgHit[] {
+  const hits: RgHit[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (hits.length >= maxCount) break;
+    const text = line.replace(/\r$/, "");
+    if (patterns.some((pattern) => pattern.test(text))) hits.push({ path, line: index + 1, text });
+  }
+  return hits;
 }
 
 function indentOf(line: string): number {
@@ -1090,36 +1134,22 @@ export class Collector {
     this.revisionFiles.add(this.displayPath(absolute));
   }
 
-  private inSearch(path: string, spec: SearchSpec): boolean {
-    return spec.paths.some((entry) => {
-      const scope = normalizeRepoRelativePath(entry);
-      if (scope === path) return true;
-      if (!underRoot(scope, path) || excludedFromSearch(path)) return false;
-      return (!spec.language || languageFor(path) === spec.language) && (!spec.testsOnly || isTestPath(path) || /_spec\.rb$/.test(path));
-    });
-  }
-
   /** Ripgrep over the checkout, except that files served from a revision are matched against that revision's lines. */
   private async search(spec: SearchSpec, signal?: AbortSignal): Promise<RgHit[]> {
     if (this.budget.exhausted) return [];
-    const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
     const hits: RgHit[] = [];
+
+    const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
     if (onDisk.length) {
-      const types = spec.language === "ruby" ? ["-t", "ruby"] : spec.language === "javascript" ? ["-t", "ts", "-t", "js"] : [];
-      const args = [...types, ...(spec.testsOnly ? TEST_GLOBS : []), "--max-count", String(spec.maxCount), ...spec.patterns.flatMap((pattern) => ["-e", pattern]), ...onDisk];
-      for (const hit of await rgJson(args, this.options.cwd, this.budget, signal)) if (!this.revisionFiles.has(hit.path)) hits.push(hit);
+      const checkoutHits = await rgJson(ripgrepArgs(spec, onDisk), this.options.cwd, this.budget, signal);
+      hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path)));
     }
+
     const patterns = spec.patterns.map((pattern) => new RegExp(pattern));
     for (const path of this.revisionFiles) {
-      if (!this.inSearch(path, spec)) continue;
+      if (!inSearchScope(path, spec)) continue;
       const lines = this.files.get(this.absolutePath(path)) ?? [];
-      let count = 0;
-      for (let index = 0; index < lines.length && count < spec.maxCount; index += 1) {
-        const text = lines[index]!.replace(/\r$/, "");
-        if (!patterns.some((pattern) => pattern.test(text))) continue;
-        hits.push({ path, line: index + 1, text });
-        count += 1;
-      }
+      hits.push(...matchLines(path, lines, patterns, spec.maxCount));
     }
     return hits;
   }
@@ -1181,7 +1211,8 @@ export class Collector {
     node.snippet = this.snippet(lines, this.definitionOf(node), focus, marks);
   }
 
-  async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string, allowNew = true): Promise<{ node: SparsityNode; created: boolean; def: Definition } | undefined> {
+  /** The definition around `path:line` as a node; `def` keeps the adapter's facts (signature, loadTime) when a parser found it. */
+  async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string, allowNew = true): Promise<{ node: SparsityNode; created: boolean; def: AdapterDefinition } | undefined> {
     const lines = await this.lines(path);
     if (!lines) return undefined;
     const language = languageFor(path);
@@ -1433,12 +1464,15 @@ export class Collector {
         if (site.name === "new" && site.receiverKind === "constant") return true;
         return !RUBY_COMMON_METHODS.has(site.name);
       });
-      return { sites, effects: all.flatMap((site) => (site.effect ? [site.effect] : [])) };
+      const effects = all.flatMap((site) => (site.effect ? [site.effect] : []));
+      return { sites, effects };
     }
     if (facts && node.language === "javascript") {
-      return { sites: tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name))), effects: [] };
+      const sites = tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name)));
+      return { sites, effects: [] };
     }
-    return { sites: node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def), effects: [] };
+    const sites = node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def);
+    return { sites, effects: [] };
   }
 
   private siteLabel(site: CallSite): string {
@@ -1488,7 +1522,7 @@ export class Collector {
   /** An enqueue runs the instance method `site.name` (perform or a mailer action) of the job or mailer constant `site.receiver`. */
   private async resolveRubyEnqueue(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
     const owner = site.receiver!;
-    if (!this.rubyIndex) return { ...await this.resolveRubyMethod(site.name, node.path, owner, signal), via: "constant" };
+    if (!this.rubyIndex) return this.resolveRubyMethod(site.name, node.path, owner, signal);
     const index = this.rubyIndex;
     const typeSymbol = resolveIndexedConstant(index, owner, node.symbol) ?? (index.namespaces.has(owner) ? owner : undefined);
     if (!typeSymbol) return { candidates: [], resolution: "external", via: "constant", note: `${owner} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
