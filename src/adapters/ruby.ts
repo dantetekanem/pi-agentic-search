@@ -615,7 +615,6 @@ class CallCollector {
 
   constructor(
     private readonly facts: RubyFacts,
-    private readonly def: Definition,
     private readonly owner: string | undefined,
     private readonly locals: Map<string, LocalType>,
     private readonly ivars: Map<string, IvarInfo>,
@@ -864,7 +863,7 @@ export class RubyAdapter implements LanguageAdapter {
     const ivars = new Map<string, IvarInfo>();
     for (const info of owner ? ruby.ivars.get(owner) ?? [] : []) if (!ivars.has(info.name) || info.type) ivars.set(info.name, info);
     const locals = new Map(ruby.localTypes.get(def.startLine));
-    const collector = new CallCollector(ruby, def, owner, locals, ivars);
+    const collector = new CallCollector(ruby, owner, locals, ivars);
     const call = kindName(node) === "CallNode" ? node as Prism.CallNode : undefined;
     const lambda = call ? argumentsOf(call).find((argument) => kindName(argument) === "LambdaNode") as Prism.LambdaNode | undefined : undefined;
     const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : lambda?.body ?? (call ? firstBlockBody(call) : null);

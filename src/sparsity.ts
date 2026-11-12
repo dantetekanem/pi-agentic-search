@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
