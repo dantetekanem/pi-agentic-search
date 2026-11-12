@@ -6,7 +6,7 @@ import { ancestorsOf, indexOfSources, lookupMethod, type RubyIndex } from "./ada
 import { frameworkKind, type EntryKind } from "./adapters/ruby-entries.ts";
 import { readRoutes, type Route } from "./adapters/ruby-routes.ts";
 import { addRgExcludes, isRealPathInsideCwd } from "./sparsity-shared.ts";
-import { findRoot, TEST_GLOBS } from "./sparsity.ts";
+import { findRoot, ofLanguage, TEST_GLOBS } from "./sparsity.ts";
 import { camelToSnake, displaySearchRoot, normalizeRepoRelativePath, uniqueValues } from "./shared.ts";
 
 /**
@@ -119,7 +119,9 @@ class Files {
       }
       const data = event?.type === "match" ? event.data : undefined;
       if (typeof data?.path?.text !== "string" || typeof data?.lines?.text !== "string" || typeof data?.line_number !== "number") continue;
-      hits.push({ path: normalizeRepoRelativePath(data.path.text), line: data.line_number, text: data.lines.text.replace(/\r?\n$/, "") });
+      const path = normalizeRepoRelativePath(data.path.text);
+      // The test globs override `-t ruby`, so other languages' test files come back too.
+      if (ofLanguage(path, "ruby")) hits.push({ path, line: data.line_number, text: data.lines.text.replace(/\r?\n$/, "") });
     }
     return hits;
   }

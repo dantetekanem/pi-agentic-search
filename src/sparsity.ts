@@ -243,6 +243,14 @@ const RIPGREP_TYPES: Record<Language, RegExp> = {
   javascript: /\.(?:cjs|js|jsx|mjs|vue|cts|mts|ts|tsx)$/,
 };
 
+/**
+ * Whether ripgrep's file type for `language` selects `path`. A `-g` glob such as the test globs overrides `-t`, so
+ * a search that combines them has its hits filtered by this.
+ */
+export function ofLanguage(path: string, language: Language): boolean {
+  return RIPGREP_TYPES[language].test(path);
+}
+
 interface ConstantResolution {
   candidates: Candidate[];
   note?: string;
@@ -436,7 +444,7 @@ function inSearchScope(path: string, spec: SearchSpec): boolean {
     const scope = normalizeRepoRelativePath(entry);
     if (scope === path) return true;
     if (!underRoot(scope, path) || excludedFromSearch(path)) return false;
-    if (spec.language && !RIPGREP_TYPES[spec.language].test(path)) return false;
+    if (spec.language && !ofLanguage(path, spec.language)) return false;
     return !spec.testsOnly || isTestPath(path) || /_spec\.rb$/.test(path);
   });
 }
@@ -1237,7 +1245,7 @@ export class Collector {
     const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
     if (onDisk.length) {
       const checkoutHits = await rgJson(ripgrepArgs(spec, onDisk), this.options.cwd, this.budget, signal, status);
-      hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path)));
+      hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path) && (!spec.language || ofLanguage(hit.path, spec.language))));
     }
 
     const patterns = spec.patterns.map((pattern) => new RegExp(pattern));

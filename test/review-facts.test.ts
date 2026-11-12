@@ -84,6 +84,25 @@ test("a range scanned from a later, edited checkout reads references at the rang
   assert.ok(!result.nodes.some((node) => node.symbol === "thrice" || node.symbol === "Cart#tripled"), "callers that only the checkout has are not reported");
 }));
 
+test("a search for tests keeps to the anchor's language, though ripgrep's test globs override its file types", () => repo(async ({ git, write, scan }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "app/models/cart.rb": "class Cart\n  def total\n    1\n  end\nend\n",
+    "test/models/cart_test.rb": 'require "test_helper"\n\nclass CartTest < ActiveSupport::TestCase\n  test "totals" do\n    assert_equal 1, Cart.new.total\n  end\nend\n',
+    "src/cart.ts": "export function total() {\n  return 1;\n}\n",
+    "src/cart.test.ts": 'import { total } from "./cart";\n\nit("totals", () => {\n  expect(total()).toBe(1);\n});\n',
+  });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({ "app/models/cart.rb": "class Cart\n  def total\n    2\n  end\nend\n", "src/cart.ts": "export function total() {\n  return 2;\n}\n" });
+  git("commit", "-qam", "change");
+
+  const result = await scan("HEAD~1..HEAD");
+  const testsOf = (symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)?.tests.map((test) => test.path);
+  assert.deepEqual(testsOf("Cart#total"), ["test/models/cart_test.rb"]);
+  assert.deepEqual(testsOf("total"), ["src/cart.test.ts"]);
+}));
+
 test("anchors say whether the base defined them, which lines changed only whitespace, and whether parameters changed", () => repo(async ({ git, write, scan }) => {
   await write({
     "package.json": '{"name":"fixture"}\n',
@@ -748,6 +767,8 @@ end
 `,
     "spec/requests/orders_spec.rb": 'require "rails_helper"\n\nRSpec.describe "Orders", type: :request do\n  it "creates" do\n    post "/orders", params: {}\n  end\nend\n',
     "spec/controllers/legacy_spec.rb": 'require "rails_helper"\n\nRSpec.describe OrdersController, type: :controller do\n  it "works" do\n    post :create\n  end\nend\n',
+    // A JavaScript test is not one of the Ruby tests the entry point's search lists.
+    "test/javascript/checkout.test.js": 'it("posts", async () => {\n  await post("/orders");\n});\n',
     "test/jobs/receipt_job_test.rb": 'require "test_helper"\n\nclass ReceiptJobTest < ActiveJob::TestCase\n  test "performs" do\n    ReceiptJob.perform_now(1)\n  end\nend\n',
     "test/models/order_test.rb": `require "test_helper"
 
