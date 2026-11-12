@@ -7,6 +7,7 @@ import { CONTEXT_LIMITS, contextTokens, enrichContext, pathDepth, rankFileGroups
 import { SearchRequest } from "./retrieval.ts";
 import { EXECUTION_LIMITS, SearchExecutor, inPool } from "./execution.ts";
 import { ProjectFiles } from "./inventory.ts";
+import { findEntryTests, formatEntryTests } from "./entry-tests.ts";
 import { clampInt, displaySearchRoot, stripAtPrefix, uniqueValues } from "./shared.ts";
 import type { PathMatch, RankedFileResult, SearchCoverageDetails, SearchDetails, SearchIntent } from "./types.ts";
 
@@ -187,6 +188,13 @@ async function executeSearch(params: SearchInput, cwd: string, request: SearchRe
     text = `Search interrupted: ${String(request.signal.reason ?? "cancelled").slice(0, 512)}. Retrieved ${details.totalFiles} files${features.guidance === false ? "." : "; see coverage details for completed work."}`;
   }
   if (literalFallback) text += "\n\n[agentic_search retried this as a literal string because ripgrep rejected the regex.]";
+  if (intent === "tests" && request.checkpoint()) {
+    const entryTests = await findEntryTests(params.query, params.path, cwd, request.signal);
+    if (entryTests) {
+      details.entryTests = entryTests;
+      text = [text, formatEntryTests(entryTests)].filter(Boolean).join("\n\n");
+    }
+  }
   return { content: [{ type: "text" as const, text }], details };
 }
 

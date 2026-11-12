@@ -235,7 +235,7 @@ interface SearchSpec {
   testsOnly?: boolean;
 }
 
-const TEST_GLOBS = ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"];
+export const TEST_GLOBS = ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"];
 const LOCK_FILE = /(^|\/)(?:[^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
 // The files ripgrep's `-t ruby` and `-t ts -t js` select, for revision files matched in memory.
 const RIPGREP_TYPES: Record<Language, RegExp> = {

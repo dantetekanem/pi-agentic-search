@@ -7,6 +7,7 @@ import test from "node:test";
 import { rubyAdapter } from "../src/adapters/ruby.ts";
 import { readRoutes } from "../src/adapters/ruby-routes.ts";
 import { tsAdapter } from "../src/adapters/ts.ts";
+import { runSearch } from "../src/search.ts";
 import { collectSparsity, formatSparsity } from "../src/sparsity.ts";
 import { scanSparsity, type ScanOptions } from "../src/sparsity-scan.ts";
 
@@ -713,6 +714,87 @@ end
 
   const unindexed = await scan("HEAD~1..HEAD");
   assert.ok(unindexed.anchors.every((anchor) => anchor.entry === undefined) && unindexed.nodes.every((node) => node.entry === undefined), "without the index there is no entry registry");
+}));
+
+test("search for an entry point's tests also finds them by convention, by route and, for a job, by enqueue or perform", () => repo(async ({ cwd, write }) => {
+  await write({
+    "Gemfile": "source 'https://rubygems.org'\n",
+    "app/controllers/application_controller.rb": "class ApplicationController < ActionController::Base\nend\n",
+    "app/controllers/orders_controller.rb": "class OrdersController < ApplicationController\n  def create\n    ReceiptJob.perform_later(1)\n  end\n\n  def show\n  end\nend\n",
+    "app/jobs/application_job.rb": "class ApplicationJob < ActiveJob::Base\nend\n",
+    "app/jobs/receipt_job.rb": "class ReceiptJob < ApplicationJob\n  def perform(id)\n    id\n  end\nend\n",
+    "app/models/checkout.rb": "class Checkout\n  def total\n    1\n  end\nend\n",
+    "config/routes.rb": "Rails.application.routes.draw do\n  resources :orders, only: [:create, :show]\n  post \"checkout\", to: \"orders#create\"\nend\n",
+    "test/controllers/orders_controller_test.rb": `require "test_helper"
+
+class OrdersControllerTest < ActionDispatch::IntegrationTest
+  test "creates" do
+    post orders_url, params: { order: { id: 1 } }
+  end
+
+  test "shows" do
+    get order_url(1)
+  end
+end
+`,
+    "test/integration/checkout_flow_test.rb": `require "test_helper"
+
+class CheckoutFlowTest < ActionDispatch::IntegrationTest
+  test "checks out" do
+    post checkout_path
+    post "/orders"
+  end
+end
+`,
+    "spec/requests/orders_spec.rb": 'require "rails_helper"\n\nRSpec.describe "Orders", type: :request do\n  it "creates" do\n    post "/orders", params: {}\n  end\nend\n',
+    "spec/controllers/legacy_spec.rb": 'require "rails_helper"\n\nRSpec.describe OrdersController, type: :controller do\n  it "works" do\n    post :create\n  end\nend\n',
+    "test/jobs/receipt_job_test.rb": 'require "test_helper"\n\nclass ReceiptJobTest < ActiveJob::TestCase\n  test "performs" do\n    ReceiptJob.perform_now(1)\n  end\nend\n',
+    "test/models/order_test.rb": `require "test_helper"
+
+class OrderTest < ActiveSupport::TestCase
+  test "enqueues a receipt" do
+    assert_enqueued_with(job: ReceiptJob) { Order.new.complete }
+  end
+
+  test "names the job" do
+    assert ReceiptJob.name
+  end
+end
+`,
+  });
+  const entryTests = async (query: string, extra: { path?: string; intent?: "tests" | "auto" } = {}) => (await runSearch({ query, intent: extra.intent ?? "tests", path: extra.path }, cwd)).details.entryTests;
+  const found = (tests: NonNullable<Awaited<ReturnType<typeof entryTests>>>["tests"]) => tests.map((test) => `${test.path}:${test.line} ${test.found}`);
+
+  const action = await entryTests("OrdersController#create");
+  assert.ok(action);
+  assert.deepEqual(action.entry, { symbol: "OrdersController#create", kind: "controller", exact: true, path: "app/controllers/orders_controller.rb", line: 2 });
+  assert.deepEqual(found(action.tests), [
+    "spec/controllers/legacy_spec.rb:3 class",
+    "spec/requests/orders_spec.rb:3 path",
+    "spec/requests/orders_spec.rb:5 route",
+    "test/controllers/orders_controller_test.rb:3 path",
+    "test/controllers/orders_controller_test.rb:5 route",
+    "test/integration/checkout_flow_test.rb:5 route",
+    "test/integration/checkout_flow_test.rb:6 route",
+  ], "get order_url requests show, not create");
+  assert.deepEqual(action.tests.find((test) => test.line === 5 && test.path.startsWith("test/controllers"))?.detail, "post orders_url → orders#create (POST /orders)");
+  assert.deepEqual(action.tests.find((test) => test.line === 6)?.detail, 'post "/orders" → orders#create (POST /orders)');
+  assert.deepEqual(await entryTests("create", { path: "app/controllers/orders_controller.rb" }).then((result) => result?.entry), action.entry, "a method name and its file name the same entry point");
+
+  const job = await entryTests("ReceiptJob");
+  assert.ok(job);
+  assert.deepEqual(job.entry, { symbol: "ReceiptJob#perform", kind: "job", exact: true, path: "app/jobs/receipt_job.rb", line: 2 });
+  assert.deepEqual(found(job.tests), [
+    "test/jobs/receipt_job_test.rb:3 path",
+    "test/jobs/receipt_job_test.rb:5 perform",
+    "test/models/order_test.rb:5 enqueue",
+  ], "a line that only names the job is not a test of it");
+
+  const text = (await runSearch({ query: "OrdersController#create", intent: "tests" }, cwd)).content[0].text;
+  assert.match(text, /ENTRY POINT OrdersController#create \(controller, routed\) app\/controllers\/orders_controller\.rb:2/);
+  assert.match(text, /test\/integration\/checkout_flow_test\.rb:5 \[route\] post checkout_path → orders#create \(POST \/checkout\)/);
+  assert.equal(await entryTests("Checkout"), undefined, "a class the framework does not call is not an entry point");
+  assert.equal(await entryTests("OrdersController#create", { intent: "auto" }), undefined, "only a tests search looks for life-cycle tests");
 }));
 
 test("a reference on the first line of a file with a byte order mark still counts", () => repo(async ({ cwd, write }) => {

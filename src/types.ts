@@ -1,4 +1,5 @@
 import type { TruncationResult } from "@earendil-works/pi-coding-agent";
+import type { EntryTests } from "./entry-tests.ts";
 
 export interface SymbolBinding { local: string; imported: string }
 export interface RelatedResolvedReference {
@@ -144,4 +145,6 @@ export interface SearchDetails {
   fullOutputPath?: string;
   literalFallback?: boolean;
   regexError?: string;
+  /** With intent `tests`, when the query names a Rails controller action or job: the tests that drive it and how each was found. */
+  entryTests?: EntryTests;
 }

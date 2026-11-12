@@ -264,6 +264,16 @@ function assemble(root: string, treeHash: string, files: Record<string, FileEntr
   return { root, treeHash, fileCount: Object.keys(files).length, definitions, bySymbol, byName, namespaces, callSites, builtMs, cacheHit, overlayFiles };
 }
 
+/** An index of the given sources alone, for reading a few classes' ancestry without indexing their root. */
+export function indexOfSources(sources: Map<string, string>): RubyIndex {
+  const files: Record<string, FileEntry> = {};
+  for (const [path, source] of sources) {
+    const entry = fileEntry(path, source);
+    if (entry) files[path] = entry;
+  }
+  return assemble(".", "sources", files, 0, false, 0);
+}
+
 async function treeHashFor(cwd: string, root: string, signal?: AbortSignal): Promise<string | undefined> {
   const spec = root === "." || root === "" ? "HEAD^{tree}" : `HEAD:${root}`;
   try {

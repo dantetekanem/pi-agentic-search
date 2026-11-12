@@ -12,6 +12,8 @@ For example, searching for `remaining_value` with context `actual goal progress`
 
 The search can also follow supported Ruby mixins and JavaScript/TypeScript imports into other files and packages. That lets the agent find the definition behind an imported name without opening every file along the way. Directory and partial-path searches follow relationships from a limited set of ranked matches, with the selected and omitted files reported in the results.
 
+A tests search (`intent: tests`) for a Rails entry point also returns the tests that drive it, under `details.entryTests`. The query names a controller action or a job (`OrdersController#create`, `Admin::OrdersController`, `ReceiptJob`), or is a method name with `path` set to its file. The class must be a controller or job by its declared ancestors, which the search reads by Rails file naming. Each test hit says how it was found: `path` (a test file named after the class, such as `test/controllers/orders_controller_test.rb` or `spec/requests/orders_spec.rb`), `class` (a test class or `describe` names it), `route` (a request through a URL helper or a quoted path of a route to the action, with a verb the route accepts, when `config/routes.rb` parses), and for a job `enqueue` or `perform` (a line naming the job with `perform_later`, `assert_enqueued_with`, `perform_now` and the like). Whether a test executes particular lines is not a search fact; coverage decides that.
+
 ## Following calls and reviewing changes
 
 The context tools collect definitions, calls, callers, and related tests for Ruby, JavaScript, and TypeScript.
