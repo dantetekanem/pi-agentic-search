@@ -1109,6 +1109,15 @@ async function rgFiles(glob: string, root: string, cwd: string, budget: Budget, 
 
 // Resolution
 
+/** The line declares, imports or re-exports `name` itself; a call on an assignment or export line (`const x = name()`) does not. */
+export function declaresName(text: string, name: string): boolean {
+  const n = escapeRegex(name);
+  const declaration = new RegExp(`^\\s*(export\\s+)?(default\\s+)?(declare\\s+)?(async\\s+)?(abstract\\s+)?(def\\s+(self\\.)?|function\\s*\\*?\\s*|class\\s+|const\\s+|let\\s+|var\\s+|enum\\s+|interface\\s+|type\\s+)${n}([^\\w$]|$)`);
+  const scope = new RegExp(`^\\s*scope\\s*\\(?\\s*:${n}\\b`);
+  const destructured = new RegExp(`^\\s*(export\\s+)?(const|let|var)\\s*[{\\[](?:[^}\\]]*[^\\w$.}\\]])?${n}(?![\\w$])[^}\\]]*[}\\]]\\s*=`);
+  return declaration.test(text) || scope.test(text) || destructured.test(text) || /^\s*(import|require|require_relative)\b/.test(text) || /^\s*export\s*(\*|\{|type\s*\{)/.test(text);
+}
+
 export class Collector {
   private readonly files = new Map<string, string[]>();
   private readonly revisionFiles = new Set<string>();
@@ -1983,7 +1992,7 @@ export class Collector {
     const capped = [...matchesPerFile.values()].some((count) => count >= maxCount);
     const filtered = raw
       .filter((hit) => !(options.exclude && hit.path === options.exclude.path && hit.line >= options.exclude.startLine && hit.line <= options.exclude.endLine))
-      .filter((hit) => !/^\s*(def|function|const|let|var|class|export|scope|import|require)\b/.test(hit.text))
+      .filter((hit) => !declaresName(hit.text, name))
       .filter((hit) => !/^\s*(#|\/\/|\*)/.test(hit.text))
       .filter((hit) => !insideStringLiteral(hit.text, name))
       .filter((hit) => !(options.skipTests && isTestPath(hit.path)))

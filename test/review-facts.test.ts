@@ -8,7 +8,7 @@ import { rubyAdapter } from "../src/adapters/ruby.ts";
 import { readRoutes } from "../src/adapters/ruby-routes.ts";
 import { tsAdapter } from "../src/adapters/ts.ts";
 import { runSearch } from "../src/search.ts";
-import { collectSparsity, formatSparsity } from "../src/sparsity.ts";
+import { collectSparsity, declaresName, formatSparsity } from "../src/sparsity.ts";
 import { scanSparsity, type ScanOptions } from "../src/sparsity-scan.ts";
 
 interface Repo {
@@ -978,4 +978,30 @@ test("a reference on the first line of a file with a byte order mark still count
 
   const callerPaths = result.edges.filter((edge) => edge.relationship === "called_by").map((edge) => result.nodes.find((node) => node.id === edge.from)?.path);
   assert.deepEqual(callerPaths, ["src/boot.ts"], "ripgrep drops the mark from the line it reports, so the served line is compared without it");
+}));
+
+test("a call written as an assignment or an export is a caller, and a declaration of the name is not", () => repo(async ({ cwd, write }) => {
+  await write({
+    "package.json": '{"name":"fixture"}\n',
+    "src/target.ts": "export function hostReviews(options: object) {\n  return options;\n}\n",
+    "src/viaConst.ts": 'import { hostReviews } from "./target";\n\nexport const reviews = hostReviews({});\n',
+    "src/viaAwait.ts": 'import { hostReviews } from "./target";\n\nexport async function open() {\n  const host = await hostReviews({});\n  return host;\n}\n',
+    "src/viaRequire.ts": 'const { hostReviews } = require("./target");\n',
+    "app/models/pricing.rb": "class Pricing\n  def quote_total(cart)\n    cart\n  end\nend\n",
+    "app/models/checkout.rb": "class Checkout\n  def total(cart)\n    amount = quote_total(cart)\n    amount\n  end\nend\n",
+  });
+
+  const callers = async (target: string) => {
+    const result = await collectSparsity({ cwd, target, maxDepth: 1, vicinity: 5, maxNodes: 20, callers: true, budgetMs: 20_000 });
+    return result.edges.filter((edge) => edge.relationship === "called_by").map((edge) => result.nodes.find((node) => node.id === edge.from)?.path).sort();
+  };
+  assert.deepEqual(await callers("src/target.ts:1"), ["src/viaAwait.ts", "src/viaConst.ts"]);
+  assert.deepEqual(await callers("app/models/pricing.rb:2"), ["app/models/checkout.rb"]);
+
+  for (const text of ["function foo() {", "export async function foo(a) {", "import { foo } from './x'", "import foo from './x'", "const foo = () => 1", "export const foo = 1", "const { foo } = require('x')", "export { foo }", "require 'foo'", "def foo", "def self.foo(a)", "scope :foo, -> { all }", "class foo"]) {
+    assert.equal(declaresName(text, "foo"), true, text);
+  }
+  for (const text of ["const x = foo(1)", "export const y = foo()", "const host = await foo({", "let z = foo", "x = foo(1)", "  result = Foo.new.foo", "const { a } = foo()", "var v = obj.foo()", "export default foo()"]) {
+    assert.equal(declaresName(text, "foo"), false, text);
+  }
 }));

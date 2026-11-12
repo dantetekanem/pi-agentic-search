@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- A call written as an assignment or an export (`const host = await startHost({`, `export const y = foo()`, Ruby `x = foo(1)`) is a caller. The by-name search dropped every line that began with `const`, `export`, `def`, `import`…, so such callers were missed and `callerCount` could read `{ total: 0, complete: true }`. A hit is now dropped only when its line declares, imports or re-exports the searched name itself.
 - Test searches keep to the anchor's language. Ripgrep's test globs override its file types, so a Ruby anchor could list a JavaScript test that names the same method (and the reverse), and a scan where both languages share a name could fail with `Cannot read properties of undefined (reading 'getLineStarts')`.
 - `scan` of a committed range no longer fails with `Cannot read properties of undefined (reading 'trim')` when the checkout's copy of a changed file is longer than the range head's. Searches read changed files at the range head, so a caller inside one is reported at the head's line, and a hit whose line text differs from the content the scan reads is dropped.
 
