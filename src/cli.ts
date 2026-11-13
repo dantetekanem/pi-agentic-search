@@ -25,6 +25,7 @@ const common: Record<string, Option> = {
 const contextOptions: Record<string, Option> = {
   root: { type: "string", description: "Narrow the component root" },
   "vicinity-check": numberOption("Snippet context lines", 20, 5, 60),
+  "cache-dir": { type: "string", description: "Keep the Ruby index in this directory between runs (default: a temporary one, removed at exit)" },
 };
 const commands: Record<string, { usage: string; options: Record<string, Option> }> = {
   search: { usage: "search <query>", options: {
@@ -55,6 +56,8 @@ const commands: Record<string, { usage: string; options: Record<string, Option> 
     "budget-ms": numberOption("Git/ripgrep budget", 30_000, 2_000, 120_000),
     "output-dir": { type: "string", description: "Pack directory (default: new system temporary directory)" },
     "inline-budget-kb": numberOption("Inline pack size in KiB", 40, 4, 48),
+    callers: { type: "string", description: "all: list every call site of each anchor (default: 6 callers, one per file)" },
+    tests: { type: "string", description: "all: list every test definition that references an anchor, with its calls and setup blocks" },
   } },
 };
 
@@ -91,6 +94,8 @@ async function boundedText(text: string): Promise<string> {
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let indexCacheDir: string | undefined;
+  // A temporary index directory is removed at exit; one named by --cache-dir is kept for the next run.
+  let temporaryIndex = false;
   const controller = new AbortController();
   const interrupt = () => controller.abort(new Error("interrupted"));
   process.once("SIGINT", interrupt);
@@ -134,11 +139,20 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const intent = string("intent");
     if (intent !== undefined && !["definition", "references", "tests", "file", "auto"].includes(intent)) throw new UsageError(`Invalid intent: ${intent}`);
     if (values.diff !== undefined && values.anchor !== undefined) throw new UsageError("Use --diff or --anchor, not both");
+    for (const name of ["callers", "tests"]) {
+      if (values[name] !== undefined && string(name) !== "all") throw new UsageError(`Invalid --${name}: ${String(values[name])}; expected all`);
+    }
+    if (values["cache-dir"] !== undefined && !string("cache-dir")?.trim()) throw new UsageError("--cache-dir needs a directory");
     if (values["strict-revision"] && (values.anchor !== undefined || !string("diff")?.trim() || string("diff")?.trim() === "worktree")) {
       throw new UsageError("--strict-revision requires --diff <commit|range>, not worktree or --anchor");
     }
     const cwd = await repositoryCwd(string("cwd"), process.cwd());
-    if (command !== "search") indexCacheDir = await mkdtemp(join(tmpdir(), "agentic-search-index-"));
+    const cacheDir = string("cache-dir")?.trim();
+    if (command !== "search" && cacheDir) indexCacheDir = resolve(cwd, cacheDir);
+    else if (command !== "search") {
+      indexCacheDir = await mkdtemp(join(tmpdir(), "agentic-search-index-"));
+      temporaryIndex = true;
+    }
     const runtime = { indexCacheDir, signal: controller.signal };
     const context = {
       root: string("root"),
@@ -176,6 +190,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         anchors: Array.isArray(values.anchor) ? values.anchor.filter((value): value is string => typeof value === "string") : undefined,
         max_anchors: number("max-anchors"),
         inline_budget_kb: number("inline-budget-kb"),
+        callers: string("callers") === "all" ? "all" : undefined,
+        tests: string("tests") === "all" ? "all" : undefined,
       }, cwd, outputDir, runtime);
       output = { text: inline, details };
     }
@@ -186,6 +202,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return controller.signal.aborted ? 130 : error instanceof UsageError ? 2 : 1;
   } finally {
     process.removeListener("SIGINT", interrupt);
-    if (indexCacheDir) await rm(indexCacheDir, { recursive: true, force: true });
+    if (indexCacheDir && temporaryIndex) await rm(indexCacheDir, { recursive: true, force: true });
   }
 }

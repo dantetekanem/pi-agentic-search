@@ -6,6 +6,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { normalizeRepoRelativePath } from "../shared.ts";
 import { addRgExcludes, runGit } from "../sparsity-shared.ts";
 import { rubyAdapter } from "./ruby.ts";
+import { scriptFiles, scriptLanguage } from "../scripts.ts";
 import type { AdapterDefinition, NamespaceInfo, ParamInfo } from "./types.ts";
 
 export interface IndexedDefinition {
@@ -19,6 +20,8 @@ export interface IndexedDefinition {
   singleton?: boolean;
   params?: ParamInfo[];
   returns?: string;
+  /** A method that is not public. */
+  visibility?: "private" | "protected";
 }
 
 export interface IndexedNamespace {
@@ -36,6 +39,8 @@ export interface IndexedCallSite {
   receiverType?: string;
   via?: string;
   inDef?: string;
+  /** The call enqueues `receiver#name` (`Job.perform_later` is indexed under `perform`) instead of calling it. */
+  enqueue?: true;
 }
 
 interface FileEntry {
@@ -49,7 +54,7 @@ interface SerializedIndex {
   root: string;
   treeHash: string;
   strings: string[];
-  files: Array<[number, Array<[number, number, number, number, number, number, number, ParamInfo[] | 0, number]>, Array<[number, number, number, number[]]>, Array<[number, number, number, number, number, number]>]>;
+  files: Array<[number, Array<[number, number, number, number, number, number, number, ParamInfo[] | 0, number, number]>, Array<[number, number, number, number[]]>, Array<[number, number, number, number, number, number, number]>]>;
 }
 
 class Interner {
@@ -73,9 +78,9 @@ function serialize(root: string, treeHash: string, files: Record<string, FileEnt
   for (const [path, entry] of Object.entries(files)) {
     payload.files.push([
       strings.id(path),
-      entry.definitions.map((def) => [strings.id(def.symbol), strings.id(def.name), strings.id(def.kind), def.startLine, def.endLine, strings.id(def.owner), def.singleton ? 1 : 0, def.params ?? 0, strings.id(def.returns)]),
+      entry.definitions.map((def) => [strings.id(def.symbol), strings.id(def.name), strings.id(def.kind), def.startLine, def.endLine, strings.id(def.owner), def.singleton ? 1 : 0, def.params ?? 0, strings.id(def.returns), strings.id(def.visibility)]),
       entry.namespaces.map((namespace) => [strings.id(namespace.symbol), namespace.kind === "class" ? 0 : 1, strings.id(namespace.superclass), namespace.mixins.map((mixin) => strings.id(mixin))]),
-      entry.callSites.map((site) => [strings.id(site.name), site.line, strings.id(site.receiver), strings.id(site.receiverType), strings.id(site.via), strings.id(site.inDef)]),
+      entry.callSites.map((site) => [strings.id(site.name), site.line, strings.id(site.receiver), strings.id(site.receiverType), strings.id(site.via), strings.id(site.inDef), site.enqueue ? 1 : 0]),
     ]);
   }
   payload.strings = strings.strings;
@@ -89,7 +94,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
   for (const [pathId, defs, namespaces, sites] of payload.files) {
     const path = text(pathId)!;
     files[path] = {
-      definitions: defs.map(([symbol, name, kind, startLine, endLine, owner, singleton, params, returns]) => ({
+      definitions: defs.map(([symbol, name, kind, startLine, endLine, owner, singleton, params, returns, visibility]) => ({
         symbol: text(symbol)!,
         name: text(name)!,
         kind: text(kind)!,
@@ -100,6 +105,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
         singleton: singleton === 1 ? true : undefined,
         params: params === 0 ? undefined : params,
         returns: text(returns),
+        ...(visibility >= 0 ? { visibility: text(visibility) as IndexedDefinition["visibility"] } : {}),
       })),
       namespaces: namespaces.map(([symbol, kind, superclass, mixins]) => ({
         symbol: text(symbol)!,
@@ -108,7 +114,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
         superclass: text(superclass),
         mixins: mixins.map((mixin) => text(mixin)!),
       })),
-      callSites: sites.map(([name, line, receiver, receiverType, via, inDef]) => ({
+      callSites: sites.map(([name, line, receiver, receiverType, via, inDef, enqueue]) => ({
         name: text(name)!,
         path,
         line,
@@ -116,6 +122,7 @@ function deserialize(buffer: Buffer): { root: string; treeHash: string; version:
         receiverType: text(receiverType),
         via: text(via),
         inDef: text(inDef),
+        ...(enqueue === 1 ? { enqueue: true as const } : {}),
       })),
     };
   }
@@ -147,7 +154,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 8;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
@@ -203,6 +210,7 @@ function fileEntry(path: string, source: string): FileEntry | undefined {
     singleton: def.singleton,
     params: def.params?.some((param) => param.type) ? def.params : undefined,
     returns: def.returns,
+    ...(def.visibility ? { visibility: def.visibility } : {}),
   }));
   const namespaces = facts.namespaces.map((namespace: NamespaceInfo) => ({
     symbol: namespace.symbol,
@@ -214,9 +222,18 @@ function fileEntry(path: string, source: string): FileEntry | undefined {
   const callSites: FileEntry["callSites"] = [];
   for (const def of facts.definitions) {
     if (def.kind === "class" || def.kind === "module" || def.kind === "constant") continue;
+    const called = new Set<string>();
     for (const site of rubyAdapter.calls(facts, def)) {
-      if (site.relationship !== "calls" && site.source !== "constant") continue;
-      callSites.push({ name: site.name, path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol });
+      const enqueue = site.relationship === "enqueues";
+      if (site.relationship !== "calls" && site.source !== "constant" && !enqueue) continue;
+      // A mailer enqueue repeats the action call on its line; a job enqueue is the only site naming `perform`.
+      if (enqueue && called.has(`${site.name}:${site.line}`)) continue;
+      called.add(`${site.name}:${site.line}`);
+      callSites.push({ name: site.name, path, line: site.line, receiver: site.receiver, receiverType: site.receiverType, via: site.via, inDef: def.symbol, ...(enqueue ? { enqueue: true as const } : {}) });
+      // `new` runs the class's `initialize`, so it is a call site of that too, when the class is known: a constant
+      // receiver, or a bare `new` inside the class's own methods.
+      const built = site.receiverType ?? (site.receiver === undefined || site.receiver === "self" ? def.owner : undefined);
+      if (site.name === "new" && !enqueue && built) callSites.push({ name: "initialize", path, line: site.line, receiver: site.receiver, receiverType: built, via: site.via, inDef: def.symbol });
     }
   }
   return { definitions, namespaces, callSites };
@@ -252,6 +269,16 @@ function assemble(root: string, treeHash: string, files: Record<string, FileEntr
   return { root, treeHash, fileCount: Object.keys(files).length, definitions, bySymbol, byName, namespaces, callSites, builtMs, cacheHit, overlayFiles };
 }
 
+/** An index of the given sources alone, for reading a few classes' ancestry without indexing their root. */
+export function indexOfSources(sources: Map<string, string>): RubyIndex {
+  const files: Record<string, FileEntry> = {};
+  for (const [path, source] of sources) {
+    const entry = fileEntry(path, source);
+    if (entry) files[path] = entry;
+  }
+  return assemble(".", "sources", files, 0, false, 0);
+}
+
 async function treeHashFor(cwd: string, root: string, signal?: AbortSignal): Promise<string | undefined> {
   const spec = root === "." || root === "" ? "HEAD^{tree}" : `HEAD:${root}`;
   try {
@@ -261,7 +288,7 @@ async function treeHashFor(cwd: string, root: string, signal?: AbortSignal): Pro
   }
 }
 
-async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal): Promise<{ modified: string[]; deleted: string[]; untracked: string[] }> {
+async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal, scripts: ReadonlySet<string> = new Set()): Promise<{ modified: string[]; deleted: string[]; untracked: string[] }> {
   const result = { modified: [] as string[], deleted: [] as string[], untracked: [] as string[] };
   let output: string;
   try {
@@ -273,7 +300,7 @@ async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal): Prom
     if (!line.trim()) continue;
     const status = line.slice(0, 2);
     const path = normalizeRepoRelativePath(line.slice(3).split(" -> ").pop()!.trim());
-    if (!/\.(rb|rake)$/.test(path)) continue;
+    if (!/\.(rb|rake)$/.test(path) && !scripts.has(path)) continue;
     if (status.includes("?")) result.untracked.push(path);
     else if (status.includes("D")) result.deleted.push(path);
     else result.modified.push(path);
@@ -294,13 +321,15 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
 
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const discovery = await rgFiles(root, options.cwd, maxFiles, options.signal);
-  const files = discovery.files;
   if (discovery.capped) {
     return { ...assemble(root, "none", {}, Date.now() - started, false, 0), skipped: `more than ${maxFiles} Ruby files under ${root} exceed the index cap; discovery stopped at ${maxFiles + 1}` };
   }
+  // Ruby scripts with no file ending, such as bin/production-errors, by their first line.
+  const scripts = new Set([...(await scriptFiles(root, options.cwd, options.signal))].flatMap(([path, language]) => (language === "ruby" ? [path] : [])));
+  const files = [...discovery.files, ...[...scripts].filter((path) => !discovery.files.includes(path))];
 
   const treeHash = (await treeHashFor(options.cwd, root, options.signal)) ?? "worktree";
-  const dirty = await dirtyFiles(options.cwd, root, options.signal);
+  const dirty = await dirtyFiles(options.cwd, root, options.signal, scripts);
   const dirtySet = new Set([...dirty.modified, ...dirty.deleted, ...dirty.untracked]);
   const cachePath = join(options.cacheDir, `${cacheKey(options.cwd, root, treeHash)}.json.gz`);
 
@@ -366,7 +395,8 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
     }
   }
   for (const [path, source] of options.overlay ?? []) {
-    if (!(root === "." || path === root || path.startsWith(`${root}/`)) || !/\.(?:rb|rake)$/.test(path)) continue;
+    const ruby = /\.(?:rb|rake)$/.test(path) || scriptLanguage(path, source.split("\n")[0]) === "ruby";
+    if (!(root === "." || path === root || path.startsWith(`${root}/`)) || !ruby) continue;
     const entry = fileEntry(path, source);
     if (entry) {
       merged[path] = entry;
@@ -390,6 +420,21 @@ export function ancestorsOf(index: RubyIndex, symbol: string, limit = 12): strin
     if (namespace.superclass) queue.push(resolveConstant(index, namespace.superclass, current) ?? namespace.superclass);
   }
   return seen;
+}
+
+/** The definitions `name` dispatches to on `typeSymbol` (`singleton` for a class method), searching its ancestors in order. */
+export function lookupMethod(index: RubyIndex, typeSymbol: string, name: string, singleton: boolean): IndexedDefinition[] {
+  for (const ancestor of ancestorsOf(index, typeSymbol)) {
+    const direct = index.bySymbol.get(`${ancestor}${singleton ? "." : "#"}${name}`) ?? [];
+    if (direct.length) return direct;
+    if (singleton) {
+      const instanceOnModule = index.bySymbol.get(`${ancestor}#${name}`) ?? [];
+      if (instanceOnModule.length && index.namespaces.get(ancestor)?.kind === "module") return instanceOnModule;
+    }
+    const declared = (index.byName.get(name) ?? []).filter((item) => item.owner === ancestor && !["method", "singleton_method", "class", "module", "test"].includes(item.kind));
+    if (declared.length) return declared;
+  }
+  return [];
 }
 
 export function resolveConstant(index: RubyIndex, reference: string, fromSymbol: string | undefined): string | undefined {

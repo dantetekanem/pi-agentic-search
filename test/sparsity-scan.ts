@@ -184,7 +184,7 @@ const readerFile = parsed.find((file) => file.path === "app/models/billing/reade
 assert.equal(readerFile.kind, "code");
 assert.equal(readerFile.language, "ruby");
 assert.ok(readerFile.newRanges.length >= 2);
-assert.equal(parsed.find((file) => file.path === "config/settings.yml")?.kind, "other");
+assert.equal(parsed.find((file) => file.path === "config/settings.yml")?.kind, "config");
 assert.equal(parsed.find((file) => file.path === "test/models/billing/reader_test.rb")?.kind, "test");
 
 // Index the committed range
@@ -259,7 +259,7 @@ for (const section of result.sections) {
 assert.match(result.inline, /SPARSITY SCAN HEAD~1\.\.HEAD/);
 assert.match(result.inline, /FILES\n/);
 assert.match(result.inline, /M app\/models\/billing\/reader\.rb {2}\[code, ruby\]/);
-assert.match(result.inline, /M config\/settings\.yml {2}\[other\]/);
+assert.match(result.inline, /M config\/settings\.yml {2}\[config\]/);
 assert.match(result.inline, /legacy_applies\? removed from app\/models\/billing\/exemptions\.rb:\d+: NO definition left/);
 assert.match(result.inline, /^Resolution: exact .* name_only \(root-wide name match\)/m);
 const json = JSON.parse(await readFile(result.jsonPath, "utf8"));

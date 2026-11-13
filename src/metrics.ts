@@ -13,7 +13,7 @@ export interface RunMetrics {
   setupMs?: number;
   rgCalls: number;
   truncatedBy: string;
-  files?: { total: number; code: number; test: number; generated: number; other: number };
+  files?: { total: number; code: number; test: number; generated: number; other: number; migration?: number; config?: number; dependency?: number; schema?: number };
   anchors?: { expanded: number; skipped: number };
   nodes: number;
   edges: number;

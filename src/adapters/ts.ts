@@ -1,6 +1,8 @@
 import ts from "typescript";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { AdapterDefinition, CallSite, Definition, FileFacts, LanguageAdapter, ResolvedTarget } from "./types.ts";
+import { excerpt, normalizeSignature } from "../shared.ts";
+import type { AdapterDefinition, CallSite, Definition, FileFacts, Guard, LanguageAdapter, ResolvedTarget } from "./types.ts";
 
 interface TsFacts extends FileFacts {
   sourceFile: ts.SourceFile;
@@ -153,7 +155,7 @@ function nameText(node: ts.Node | undefined, sf: ts.SourceFile): string | undefi
   return node.getText(sf);
 }
 
-function isFunctionLike(node: ts.Node | undefined): boolean {
+function isFunctionLike(node: ts.Node | undefined): node is ts.ArrowFunction | ts.FunctionExpression {
   return Boolean(node && (ts.isArrowFunction(node) || ts.isFunctionExpression(node)));
 }
 
@@ -180,16 +182,148 @@ function packageNameFrom(fileName: string): string | undefined {
   return last.replace(/^node_modules\//, "");
 }
 
+// Guards: the conditions that dominate code, as written. Shared by the call visitor and guardsAt.
+
+const GUARD_TEXT_LIMIT = 300;
+
+/** A guard whose text is `expression` as written. */
+function expressionGuard(expression: ts.Expression, sf: ts.SourceFile, branch: Guard["branch"]): Guard {
+  return {
+    line: lineOf(sf, expression.getStart(sf)),
+    text: excerpt(expression.getText(sf), GUARD_TEXT_LIMIT),
+    branch,
+  };
+}
+
+/** An `if` keeps its keyword: `if (x)`. */
+function ifGuard(statement: ts.IfStatement, sf: ts.SourceFile, branch: Guard["branch"]): Guard {
+  const guard = expressionGuard(statement.expression, sf, branch);
+  return { ...guard, text: `if (${guard.text})` };
+}
+
+/** The guard that `child` runs under inside `node`, when `node` branches. */
+function branchGuard(node: ts.Node, child: ts.Node, sf: ts.SourceFile): Guard | undefined {
+  if (ts.isIfStatement(node)) {
+    if (child === node.thenStatement) return ifGuard(node, sf, "then");
+    if (child === node.elseStatement) return ifGuard(node, sf, "else");
+  } else if (ts.isConditionalExpression(node)) {
+    if (child === node.whenTrue) return expressionGuard(node.condition, sf, "then");
+    if (child === node.whenFalse) return expressionGuard(node.condition, sf, "else");
+  } else if (ts.isBinaryExpression(node) && child === node.right) {
+    const operator = node.operatorToken.kind;
+    if (operator === ts.SyntaxKind.AmpersandAmpersandToken) return expressionGuard(node.left, sf, "then");
+    if (operator === ts.SyntaxKind.BarBarToken) return expressionGuard(node.left, sf, "else");
+  }
+  return undefined;
+}
+
+function exits(statement: ts.Statement | undefined): boolean {
+  if (!statement) return false;
+  if (ts.isBlock(statement)) return exits(statement.statements[statement.statements.length - 1]);
+  return ts.isReturnStatement(statement) || ts.isThrowStatement(statement) || ts.isContinueStatement(statement) || ts.isBreakStatement(statement);
+}
+
+/** An `if` without an else whose branch ends in return, throw, continue or break guards the statements after it. */
+function exitGuard(statement: ts.Node, sf: ts.SourceFile): Guard | undefined {
+  if (!ts.isIfStatement(statement) || statement.elseStatement || !exits(statement.thenStatement)) return undefined;
+  return ifGuard(statement, sf, "after-return");
+}
+
+/** The text a literal or name node holds; JSX text with its whitespace collapsed, as JSX renders it. */
+function literalText(node: ts.Node): string | undefined {
+  if (ts.isJsxText(node)) return node.text.replace(/\s+/g, " ").trim();
+  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node) || ts.isBigIntLiteral(node)
+    || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node) || ts.isRegularExpressionLiteral(node)) return node.text;
+  return undefined;
+}
+
+/** A node as the kinds and literal texts of its tree, depth first; trivia such as comments and layout are not in it. */
+function syntaxText(node: ts.Node): string {
+  const out: string[] = [];
+  const walk = (current: ts.Node) => {
+    out.push(ts.SyntaxKind[current.kind] ?? String(current.kind));
+    const literal = literalText(current);
+    if (literal !== undefined) out.push(JSON.stringify(literal));
+    // `let`, `const` and `using` live in the declaration list's flags, not in a child node.
+    if (ts.isVariableDeclarationList(current)) out.push(String(current.flags & ts.NodeFlags.BlockScoped));
+    out.push("(");
+    ts.forEachChild(current, walk);
+    out.push(")");
+  };
+  walk(node);
+  return out.join(" ");
+}
+
+const SETUP_CALLS = new Set(["beforeEach", "beforeAll", "before", "setup"]);
+
+/** A `beforeEach(...)`, `beforeAll(...)`, `before(...)` or `setup(...)` statement. */
+function isSetupCall(node: ts.Node): boolean {
+  return ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && SETUP_CALLS.has(node.expression.expression.text);
+}
+
+function holdsStatements(node: ts.Node): boolean {
+  return ts.isBlock(node) || ts.isSourceFile(node) || ts.isModuleBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node);
+}
+
+/** Code inside these runs on its own later; conditions around them do not dominate it. */
+function isGuardBoundary(node: ts.Node): boolean {
+  return ts.isFunctionDeclaration(node)
+    || ts.isMethodDeclaration(node)
+    || ts.isConstructorDeclaration(node)
+    || ts.isGetAccessorDeclaration(node)
+    || ts.isSetAccessorDeclaration(node)
+    || ts.isClassDeclaration(node)
+    || ts.isClassExpression(node);
+}
+
+/** One step down toward `offset`: the child holding it and the guards entering that child adds. */
+function stepToward(node: ts.Node, offset: number, sf: ts.SourceFile): { child: ts.Node; guards: Guard[] } | undefined {
+  const exitGuards: Guard[] = [];
+  let found: { child: ts.Node; guards: Guard[] } | undefined;
+  ts.forEachChild(node, (child) => {
+    if (child.getStart(sf) <= offset && offset < child.getEnd()) {
+      const guard = branchGuard(node, child, sf);
+      found = { child, guards: guard ? [...exitGuards, guard] : exitGuards };
+      return true;
+    }
+    const exit = holdsStatements(node) ? exitGuard(child, sf) : undefined;
+    if (exit) exitGuards.push(exit);
+    return undefined;
+  });
+  return found;
+}
+
+/** Where the code of `line` starts: after indentation, closing brackets and a leading `else`. Undefined for a blank or comment line. */
+function firstCodeOffset(sf: ts.SourceFile, line: number): number | undefined {
+  const text = sf.text;
+  const starts = sf.getLineStarts();
+  const end = line < starts.length ? starts[line]! : text.length;
+  let offset = starts[line - 1]!;
+  const skipClosers = () => {
+    while (offset < end && " \t\r})]".includes(text[offset]!)) offset += 1;
+  };
+
+  skipClosers();
+  if (text.startsWith("else", offset) && !/[\w$]/.test(text[offset + 4] ?? "")) {
+    offset += "else".length;
+    skipClosers();
+  }
+
+  if (offset >= end || text[offset] === "\n" || text.startsWith("//", offset) || text.startsWith("/*", offset)) return undefined;
+  return offset;
+}
+
 class Extractor {
   readonly definitions: AdapterDefinition[] = [];
   readonly defNodes = new Map<number, ts.Node>();
 
   constructor(private readonly sf: ts.SourceFile) {}
 
-  private push(node: ts.Node, name: string, kind: string, owner?: string): void {
+  private push(node: ts.Node, name: string, kind: string, owner?: string, callable?: ts.SignatureDeclarationBase): void {
     const [startLine, endLine] = rangeOf(this.sf, node);
     const symbol = owner ? `${owner}.${name}` : name;
-    this.definitions.push({ name, symbol, kind, startLine, endLine, owner });
+    const signature = callable ? normalizeSignature(this.sf.text.slice(callable.parameters.pos, callable.parameters.end)) : undefined;
+    this.definitions.push({ name, symbol, kind, startLine, endLine, owner, signature });
     if (!this.defNodes.has(startLine)) this.defNodes.set(startLine, node);
   }
 
@@ -200,7 +334,7 @@ class Extractor {
   private visitStatement(node: ts.Node, owner: string | undefined, topLevel: boolean): void {
     if (ts.isFunctionDeclaration(node)) {
       const name = node.name?.text ?? "default";
-      this.push(node, name, kindForName(name, true), owner);
+      this.push(node, name, kindForName(name, true), owner, node);
       this.visitTestsInside(node.body, owner);
       return;
     }
@@ -214,10 +348,10 @@ class Extractor {
         }
         const init = declaration.initializer;
         if (isFunctionLike(init)) {
-          this.push(node, name, kindForName(name, true), owner);
-          this.visitTestsInside((init as ts.ArrowFunction).body, owner);
+          this.push(node, name, kindForName(name, true), owner, init);
+          this.visitTestsInside(init.body, owner);
         } else if (ts.isCallExpression(init) && COMPONENT_WRAPPERS.test(init.expression.getText(this.sf))) {
-          this.push(node, name, kindForName(name, true), owner);
+          this.push(node, name, kindForName(name, true), owner, init.arguments.find(isFunctionLike));
         } else if (ts.isObjectLiteralExpression(init) || ts.isArrayLiteralExpression(init)) {
           this.push(node, name, "object", owner);
         } else if (topLevel) {
@@ -233,9 +367,9 @@ class Extractor {
         const memberName = member.name ? nameText(member.name, this.sf) : ts.isConstructorDeclaration(member) ? "constructor" : undefined;
         if (!memberName) continue;
         if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member) || ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
-          this.push(member, memberName, "method", name);
+          this.push(member, memberName, "method", name, member);
         } else if (ts.isPropertyDeclaration(member) && isFunctionLike(member.initializer)) {
-          this.push(member, memberName, "method", name);
+          this.push(member, memberName, "method", name, member.initializer);
         }
       }
       return;
@@ -250,7 +384,7 @@ class Extractor {
       return;
     }
     if (ts.isExportAssignment(node) && isFunctionLike(node.expression)) {
-      this.push(node, "default", "function", owner);
+      this.push(node, "default", "function", owner, node.expression);
       return;
     }
     if (ts.isExpressionStatement(node)) {
@@ -266,7 +400,8 @@ class Extractor {
         return;
       }
       if (topLevel && ts.isBinaryExpression(expression) && /^(module\.exports|exports\.[\w$]+)$/.test(expression.left.getText(this.sf))) {
-        this.push(node, expression.left.getText(this.sf), isFunctionLike(expression.right) ? "function" : "constant", owner);
+        const callable = isFunctionLike(expression.right) ? expression.right : undefined;
+        this.push(node, expression.left.getText(this.sf), callable ? "function" : "constant", owner, callable);
       }
     }
   }
@@ -295,13 +430,15 @@ class Extractor {
 class Calls {
   readonly sites: CallSite[] = [];
   private readonly seen = new Set<string>();
+  private guards: Guard[] = [];
 
-  constructor(private readonly facts: TsFacts, private readonly def: Definition, private readonly cwd: string) {}
+  constructor(private readonly facts: TsFacts, private readonly def: Definition, private readonly cwd: string, private readonly root: ts.Node) {}
 
   private push(site: CallSite): void {
     const key = `${site.source}:${site.receiver ?? ""}:${site.name}:${site.line}`;
     if (this.seen.has(key)) return;
     this.seen.add(key);
+    if (this.guards.length) site.guards = [...this.guards];
     this.sites.push(site);
   }
 
@@ -375,7 +512,29 @@ class Calls {
         if (!builtin) this.push({ name: text, line: lineOf(sf, node.getStart(sf)), relationship: "references", source: "jsx", via: target ? "checker" : undefined, target });
       }
     }
-    ts.forEachChild(node, (child) => this.visit(child));
+    this.visitChildren(node);
+  }
+
+  /** Visits each child under the conditions it runs under; a nested function or class starts with none. */
+  private visitChildren(node: ts.Node): void {
+    const sf = this.facts.sourceFile;
+    const outer = this.guards;
+    if (node !== this.root && isGuardBoundary(node)) this.guards = [];
+    const depth = this.guards.length;
+    const isStatementList = holdsStatements(node);
+
+    ts.forEachChild(node, (child) => {
+      const guard = branchGuard(node, child, sf);
+      if (guard) this.guards.push(guard);
+      this.visit(child);
+      if (guard) this.guards.pop();
+
+      const exit = isStatementList ? exitGuard(child, sf) : undefined;
+      if (exit) this.guards.push(exit);
+    });
+
+    this.guards.length = depth;
+    this.guards = outer;
   }
 }
 
@@ -393,9 +552,9 @@ export class TsAdapter implements LanguageAdapter {
     return Promise.resolve(true);
   }
 
-  parse(path: string, source: string): FileFacts | undefined {
+  parse(path: string, source: string, detached = false): FileFacts | undefined {
     const absolute = isAbsolute(path) ? path : resolve(this.cwd || process.cwd(), path);
-    const found = this.programs?.sourceFileFor(absolute);
+    const found = detached ? undefined : this.programs?.sourceFileFor(absolute);
     const handle = found?.handle;
     const fromProgram = found?.sourceFile;
     const sourceFile = fromProgram && fromProgram.text === source
@@ -426,6 +585,7 @@ export class TsAdapter implements LanguageAdapter {
 
   confirmsReference(facts: FileFacts, line: number, name: string): boolean {
     const sf = (facts as TsFacts).sourceFile;
+    if (line < 1 || line > sf.getLineStarts().length) return false;
     const lineStart = sf.getPositionOfLineAndCharacter(line - 1, 0);
     const lineEnd = line < sf.getLineStarts().length ? sf.getPositionOfLineAndCharacter(line, 0) : sf.getEnd();
     let found = false;
@@ -447,9 +607,68 @@ export class TsAdapter implements LanguageAdapter {
     const tsFacts = facts as TsFacts;
     const node = tsFacts.defNodes.get(def.startLine);
     if (!node) return [];
-    const collector = new Calls(tsFacts, def, this.cwd);
+    const collector = new Calls(tsFacts, def, this.cwd, node);
     collector.visit(node);
     return collector.sites;
+  }
+
+  setupBlocks(facts: FileFacts, def: Definition): Array<{ startLine: number; endLine: number }> {
+    const { sourceFile: sf, defNodes } = facts as TsFacts;
+    const target = defNodes.get(def.startLine);
+    if (!target) return [];
+    const blocks: Array<{ startLine: number; endLine: number }> = [];
+    let node: ts.Node = sf;
+    // Walk down to the test, collecting the setup calls beside each block that encloses it.
+    while (node !== target) {
+      const children: ts.Node[] = [];
+      ts.forEachChild(node, (child) => {
+        children.push(child);
+      });
+      const next = children.find((child) => child.getStart(sf) <= target.getStart(sf) && target.getEnd() <= child.getEnd());
+      if (holdsStatements(node)) {
+        for (const child of children) if (child !== next && isSetupCall(child)) blocks.push({ startLine: lineOf(sf, child.getStart(sf)), endLine: lineOf(sf, child.getEnd()) });
+      }
+      if (!next) break;
+      node = next;
+    }
+    return blocks;
+  }
+
+  semanticFingerprint(facts: FileFacts, def: Definition): string | undefined {
+    const sf = (facts as TsFacts).sourceFile;
+    const starts = sf.getLineStarts();
+    const start = starts[def.startLine - 1];
+    if (start === undefined) return undefined;
+    const end = starts[def.endLine] ?? sf.text.length;
+    // The outermost nodes on the definition's lines; comments are trivia, not nodes.
+    const parts: string[] = [];
+    const visit = (node: ts.Node) => {
+      const from = node.getStart(sf);
+      const to = node.getEnd();
+      if (to <= start || from >= end) return;
+      if (from >= start && to <= end) {
+        parts.push(syntaxText(node));
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sf, visit);
+    return parts.length ? createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16) : undefined;
+  }
+
+  guardsAt(facts: FileFacts, def: Definition, line: number): Guard[] {
+    const sf = (facts as TsFacts).sourceFile;
+    const offset = line >= def.startLine && line <= def.endLine && line <= sf.getLineStarts().length ? firstCodeOffset(sf, line) : undefined;
+    if (offset === undefined) return [];
+    let guards: Guard[] = [];
+    let node: ts.Node = sf;
+    for (;;) {
+      if (isGuardBoundary(node)) guards = [];
+      const step = stepToward(node, offset, sf);
+      if (!step) return guards;
+      guards.push(...step.guards);
+      node = step.child;
+    }
   }
 }
 

@@ -1,14 +1,20 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
+import { SKIP_DIRS } from "./classifications.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
+import { entryKey, entryRegistry, readExceptionsApps, type Entry } from "./adapters/ruby-entries.ts";
+import { readRoutes } from "./adapters/ruby-routes.ts";
+import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
+import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
+import { scriptFiles, scriptLanguage, shebangLanguage, type ScriptEntry } from "./scripts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
-import { ancestorsOf, buildRubyIndex, resolveConstant as resolveIndexedConstant, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
-import type { CallSite as AdapterCallSite, FileFacts } from "./adapters/types.ts";
+import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
+import type { AdapterDefinition, CallSite as AdapterCallSite, Effect, FileFacts, Guard } from "./adapters/types.ts";
 import {
   camelToSnake,
   displaySearchRoot,
@@ -19,10 +25,13 @@ import {
 export type Language = "ruby" | "javascript";
 export type Resolution = "exact" | "static_candidate" | "ambiguous" | "unresolved" | "external" | "local";
 
-export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "self" | "lexical" | "constant" | "chain" | "superclass" | "same_file" | "import" | "name_only";
+export type EdgeVia = "checker" | "typed" | "assigned" | "ivar" | "named" | "self" | "lexical" | "constant" | "chain" | "superclass" | "same_file" | "import" | "render" | "convention" | "name_only";
 
-export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a parameter, callback or variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), chain (a scope or relation chain on a model; each step checked against the index), superclass, same_file, import (followed an import), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
+export const EDGE_LABELS = "Resolution: exact (the definition the name points to), static_candidate (found by name; not runtime proof), ambiguous (several candidates), unresolved (nothing found; reason given), external (a package or outside this root), local (a parameter, callback or variable inside the same definition). How: checker (TypeScript type checker), typed (sig/RBS/YARD annotation), assigned (from an assignment), ivar (set in initialize), self (the owner or its ancestors), lexical (constant nesting), constant (explicit receiver constant), chain (a scope or relation chain on a model; each step checked against the index), superclass, same_file, import (followed an import), render (a render call names the template by its path, or by its name in its own folder), convention (Rails renders an action's own template), named (guessed from a variable name), name_only (root-wide name match). Trust falls in that order; the last two are guesses.";
 export type Truncation = "none" | "max_nodes" | "budget" | "rg_timeout";
+/** Why an edge is unresolved: an operator call, a receiver whose type is not known, a runtime-chosen callee, or no definition found. */
+export type UnresolvedReason = "operator" | "unknown-receiver" | "dynamic" | "no-definition";
+export const UNRESOLVED_REASONS: UnresolvedReason[] = ["operator", "unknown-receiver", "dynamic", "no-definition"];
 
 export interface SparsityNode {
   id: string;
@@ -33,21 +42,35 @@ export interface SparsityNode {
   startLine: number;
   endLine: number;
   fingerprint: string;
+  /** The definition's syntax tree hashed without comments or layout, so it holds across a comment edit or re-indentation. Absent when no parser read it. */
+  semanticFingerprint?: string;
   snippet: string;
   vicinity?: string;
   depth: number;
+  /** Writes, enqueues and cache calls inside an expanded Ruby definition, including calls that are not followed. Absent when none. */
+  effects?: Effect[];
+  /**
+   * The framework calls this definition: a job's `perform` or a controller action, which needs a Ruby index; or its
+   * package exposes it: a command's statement, the default export of a module Pi loads, what the package exports; or
+   * it is a script's top-level statement, which runs from the command line.
+   */
+  entry?: Entry | PackageEntry | ScriptEntry;
 }
 
 export interface SparsityEdge {
   from: string;
   to?: string;
   name: string;
-  relationship: "calls" | "references" | "called_by";
+  relationship: "calls" | "references" | "called_by" | "enqueues";
   resolution: Resolution;
   via?: EdgeVia;
   line: number;
   candidates?: string[];
   note?: string;
+  /** Set on unresolved edges only. */
+  reason?: UnresolvedReason;
+  /** Conditions dominating the call site, outermost first; absent when none. */
+  guards?: Guard[];
 }
 
 export interface SparsityCoverage {
@@ -58,6 +81,7 @@ export interface SparsityCoverage {
   nodes: number;
   edges: number;
   unresolved: number;
+  unresolvedByReason: Record<UnresolvedReason, number>;
   truncatedBy: Truncation;
   frontier: string[];
   cycles: string[];
@@ -87,6 +111,28 @@ export interface SparsityOptions {
   indexCacheDir?: string;
   metricsLog?: string;
   signal?: AbortSignal;
+}
+
+export function unresolvedByReason(edges: SparsityEdge[]): Record<UnresolvedReason, number> {
+  const counts: Record<UnresolvedReason, number> = {
+    operator: 0,
+    "unknown-receiver": 0,
+    dynamic: 0,
+    "no-definition": 0,
+  };
+  for (const edge of edges) {
+    if (edge.resolution === "unresolved") counts[edge.reason ?? "no-definition"] += 1;
+  }
+  return counts;
+}
+
+/** `3 no-definition, 1 operator`: the non-zero counts, largest first. */
+export function describeUnresolvedReasons(counts: Record<UnresolvedReason, number>): string {
+  return UNRESOLVED_REASONS
+    .filter((reason) => counts[reason] > 0)
+    .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))
+    .map((reason) => `${counts[reason]} ${reason}`)
+    .join(", ");
 }
 
 export function describeRubyIndex(index: RubyIndex | undefined): string | undefined {
@@ -128,6 +174,52 @@ export interface ReferenceHit {
   line: number;
   text: string;
   test: boolean;
+  /** The call provably dispatches to the searched definition, and how its receiver's type was known. Set only with a Ruby index. */
+  exactVia?: EdgeVia;
+  /** The call enqueues the searched definition (a job's `perform`) instead of calling it. */
+  enqueue?: boolean;
+  /** Set by `callers`: the conditions dominating the call site, outermost first. */
+  guards?: Guard[];
+  /** What the call writes when it is not the searched definition's own name: the path a render call names a template by. */
+  named?: string;
+  /** No call names it: Rails renders the action's own template by convention. */
+  convention?: true;
+}
+
+/** What a reference search found: the hits it shows, and every site that passed its filters. */
+export interface ReferenceSearch {
+  hits: ReferenceHit[];
+  /** Distinct files among `sites`. */
+  totalFiles: number;
+  /** Every site that passed the filters, several per file, before the per-file rule and the limit. */
+  sites: Array<{ path: string; line: number; test: boolean }>;
+  /** False when the search may have missed sites: ripgrep's per-file match cap, the time budget, or sites dropped for an unknown receiver type. */
+  exhaustive: boolean;
+}
+
+/** Production call sites of an anchor: how many the search found, how many it lists, and whether that list is all of them. */
+export interface CallerCount {
+  total: number;
+  shown: number;
+  complete: boolean;
+}
+
+export interface CallerSearch {
+  hits: ReferenceHit[];
+  count: CallerCount;
+}
+
+export interface ReferenceOptions {
+  exclude?: SparsityNode;
+  onlyTests?: boolean;
+  skipTests?: boolean;
+  limit: number;
+  depth?: number;
+  perFile?: boolean;
+  /** Keep only sites whose receiver type the Ruby index knows, for names too common to search by name alone. */
+  typedOnly?: boolean;
+  /** Ripgrep's matching lines per file (default 4); a file that reaches it makes the search not exhaustive. */
+  maxCount?: number;
 }
 
 export type QueueItem = { node: SparsityNode; def: Definition; depth: number; ancestry: string[]; focus?: number[] };
@@ -147,6 +239,31 @@ interface RgHit {
   text: string;
 }
 
+/** One ripgrep search: `paths` lists files (searched as given) and directories (filtered by language, tests and excludes). */
+interface SearchSpec {
+  patterns: string[];
+  paths: string[];
+  maxCount: number;
+  language?: Language;
+  testsOnly?: boolean;
+}
+
+export const TEST_GLOBS = ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"];
+const LOCK_FILE = /(^|\/)(?:[^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
+// The files ripgrep's `-t ruby` and `-t ts -t js` select, for revision files matched in memory.
+const RIPGREP_TYPES: Record<Language, RegExp> = {
+  ruby: /(^|\/)(?:[^/]+\.(?:gemspec|rake|rb|rbw)|\.irbrc|Gemfile|Rakefile|config\.ru)$/,
+  javascript: /\.(?:cjs|js|jsx|mjs|vue|cts|mts|ts|tsx)$/,
+};
+
+/**
+ * Whether ripgrep's file type for `language` selects `path`. A `-g` glob such as the test globs overrides `-t`, so
+ * a search that combines them has its hits filtered by this.
+ */
+export function ofLanguage(path: string, language: Language): boolean {
+  return RIPGREP_TYPES[language].test(path);
+}
+
 interface ConstantResolution {
   candidates: Candidate[];
   note?: string;
@@ -157,6 +274,8 @@ interface SiteResolution {
   resolution: Resolution;
   note?: string;
   via?: EdgeVia;
+  /** Why an unresolved result failed, when the resolver knows; otherwise the edge reads `no-definition`. */
+  reason?: UnresolvedReason;
 }
 
 const RUBY_EXTENSIONS = new Set([".rb", ".rake"]);
@@ -167,7 +286,11 @@ const MAX_CALLS_PER_NODE = 24;
 const MAX_CANDIDATES_PER_CALL = 4;
 const MAX_CALLERS = 8;
 const MAX_CALLER_FILES = 40;
+// Ripgrep's matching lines per file when every caller is wanted.
+const ALL_MATCHES_PER_FILE = 1000;
 
+// Definitions a view template may call by name: helpers, model methods and scopes.
+const VIEW_CALLABLE_KINDS = new Set(["method", "singleton_method", "scope"]);
 const EXPANDABLE_KINDS = new Set(["method", "singleton_method", "scope", "define_method", "class_method", "function", "component", "test", "it", "describe", "context", "scenario"]);
 
 const RUBY_KEYWORDS = new Set([
@@ -275,6 +398,11 @@ export function languageFor(path: string): Language | undefined {
   return undefined;
 }
 
+/** The language of a file's definitions: a Rails view template's are Ruby's, though no parser here reads its markup. */
+export function fileLanguage(path: string): Language | undefined {
+  return templateName(normalizeRepoRelativePath(path)) ? "ruby" : languageFor(path);
+}
+
 export function renderSurroundings(lines: string[], startLine: number, endLine: number, vicinity: number): string {
   const aboveStart = Math.max(1, startLine - vicinity);
   const aboveEnd = startLine - 1;
@@ -302,12 +430,103 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** The `**`/`*`/`{a,b}` globs this module passes to `rg --files`, as a path regex. */
+function globRegex(glob: string): RegExp {
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    if (glob.startsWith("**/", i)) {
+      source += "(?:.*/)?";
+      i += 2;
+    } else if (glob[i] === "*") {
+      source += "[^/]*";
+    } else if (glob[i] === "{" && glob.indexOf("}", i) > i) {
+      const end = glob.indexOf("}", i);
+      source += `(?:${glob.slice(i + 1, end).split(",").map(escapeRegex).join("|")})`;
+      i = end;
+    } else {
+      source += escapeRegex(glob[i]!);
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function underRoot(root: string, path: string): boolean {
+  return root === "." || path === root || path.startsWith(`${root}/`);
+}
+
+function excludedFromSearch(path: string): boolean {
+  return path.split("/").some((segment) => SKIP_DIRS.has(segment)) || LOCK_FILE.test(path);
+}
+
+/** Whether ripgrep would search `path` for `spec`: a listed file is searched as given; a directory applies the filters. */
+function inSearchScope(path: string, spec: SearchSpec): boolean {
+  return spec.paths.some((entry) => {
+    const scope = normalizeRepoRelativePath(entry);
+    if (scope === path) return true;
+    if (!underRoot(scope, path) || excludedFromSearch(path)) return false;
+    if (spec.language && !ofLanguage(path, spec.language)) return false;
+    return !spec.testsOnly || isTestPath(path) || /_spec\.rb$/.test(path);
+  });
+}
+
+function ripgrepArgs(spec: SearchSpec, paths: string[]): string[] {
+  const types = spec.language === "ruby" ? ["-t", "ruby"] : spec.language === "javascript" ? ["-t", "ts", "-t", "js"] : [];
+  return [
+    ...types,
+    ...(spec.testsOnly ? TEST_GLOBS : []),
+    "--max-count", String(spec.maxCount),
+    ...spec.patterns.flatMap((pattern) => ["-e", pattern]),
+    ...paths,
+  ];
+}
+
+/** A file line as ripgrep reports it: without a UTF-8 byte order mark or a carriage return. */
+function ripgrepText(line: string): string {
+  return line.replace(/^\uFEFF/, "").replace(/\r$/, "");
+}
+
+/** ripgrep's line matching over content held in memory: the first `maxCount` lines that match any pattern. */
+function matchLines(path: string, lines: string[], patterns: RegExp[], maxCount: number): RgHit[] {
+  const hits: RgHit[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (hits.length >= maxCount) break;
+    const text = ripgrepText(line);
+    if (patterns.some((pattern) => pattern.test(text))) hits.push({ path, line: index + 1, text });
+  }
+  return hits;
+}
+
 function indentOf(line: string): number {
   return line.length - line.trimStart().length;
 }
 
 function fingerprintOf(lines: string[], startLine: number, endLine: number): string {
   return createHash("sha256").update(lines.slice(startLine - 1, endLine).join("\n")).digest("hex").slice(0, 16);
+}
+
+/** `{ semanticFingerprint }` from the parser's syntax tree, or nothing when no parser read the file. */
+function semanticFingerprintOf(language: Language, facts: FileFacts | undefined, def: Definition): { semanticFingerprint?: string } {
+  const semanticFingerprint = facts ? (language === "ruby" ? rubyAdapter : tsAdapter).semanticFingerprint(facts, def) : undefined;
+  return semanticFingerprint ? { semanticFingerprint } : {};
+}
+
+function indexedCandidates(defs: IndexedDefinition[]): Candidate[] {
+  return defs.map((item) => ({ path: item.path, line: item.startLine, text: item.symbol, symbol: item.symbol }));
+}
+
+/** The guards a call site carries onto its edges. */
+function siteGuards(site: CallSite): { guards?: Guard[] } {
+  return site.guards?.length ? { guards: site.guards } : {};
+}
+
+/** Guards as text, outermost first: `unless x [after-return, line 3] › if y [then, line 5]`. */
+export function guardText(guards: Guard[]): string {
+  return guards.map((guard) => `${guard.text} [${guard.branch}, line ${guard.line}]`).join(" › ");
+}
+
+/** A Ruby call whose method name is an operator such as `+`, `[]` or `<=>`. */
+function isOperatorCall(site: CallSite): boolean {
+  return site.source !== "constant" && !/^[A-Za-z_]/.test(site.name);
 }
 
 function insideStringLiteral(text: string, name: string): boolean {
@@ -325,6 +544,7 @@ function insideStringLiteral(text: string, name: string): boolean {
 }
 
 function insideJsImport(lines: string[], line: number): boolean {
+  if (line < 1 || line > lines.length) return false;
   for (let i = line - 1; i >= Math.max(0, line - 30); i -= 1) {
     const text = lines[i]!.trim();
     if (/^import\b/.test(text)) return true;
@@ -612,6 +832,12 @@ export function findDefinition(language: Language, lines: string[], line: number
   return language === "ruby" ? findRubyDefinition(lines, line) : findJsDefinition(lines, line);
 }
 
+/** A view template as one definition: every line of the file, named by its path under `app/views`. */
+function templateDefinition(template: TemplateName, lines: string[]): Definition {
+  const last = lines.length > 1 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+  return { name: template.file, symbol: template.file, kind: "template", startLine: 1, endLine: Math.max(1, last) };
+}
+
 // Call extraction
 
 function stripRubyNoise(text: string): string {
@@ -849,15 +1075,26 @@ function extractJsCalls(lines: string[], def: Definition): CallSite[] {
 
 // Ripgrep
 
-async function rgJson(args: string[], cwd: string, budget: Budget, signal?: AbortSignal): Promise<RgHit[]> {
-  if (!budget.spend()) return [];
+/** Whether a search saw everything it was asked to search; set false when the budget or a timeout cut it. */
+interface SearchStatus {
+  complete: boolean;
+}
+
+async function rgJson(args: string[], cwd: string, budget: Budget, signal?: AbortSignal, status?: SearchStatus): Promise<RgHit[]> {
+  if (!budget.spend()) {
+    if (status) status.complete = false;
+    return [];
+  }
   const full = ["--json", "--line-number", "--color=never", "--hidden"];
   addRgExcludes(full);
   full.push(...args);
 
   const output = await new Promise<string>((resolvePromise) => {
     execFile("rg", full, { cwd, encoding: "utf8", maxBuffer: 20 * 1024 * 1024, signal, timeout: RG_CALL_TIMEOUT_MS }, (error, stdout) => {
-      if (error && (error as { killed?: boolean }).killed) budget.truncatedBy = "rg_timeout";
+      if (error && (error as { killed?: boolean }).killed) {
+        budget.truncatedBy = "rg_timeout";
+        if (status) status.complete = false;
+      }
       resolvePromise(String(stdout ?? ""));
     });
   });
@@ -896,8 +1133,18 @@ async function rgFiles(glob: string, root: string, cwd: string, budget: Budget, 
 
 // Resolution
 
+/** The line declares, imports or re-exports `name` itself; a call on an assignment or export line (`const x = name()`) does not. */
+export function declaresName(text: string, name: string): boolean {
+  const n = escapeRegex(name);
+  const declaration = new RegExp(`^\\s*(export\\s+)?(default\\s+)?(declare\\s+)?(async\\s+)?(abstract\\s+)?(def\\s+(self\\.)?|function\\s*\\*?\\s*|class\\s+|const\\s+|let\\s+|var\\s+|enum\\s+|interface\\s+|type\\s+)${n}([^\\w$]|$)`);
+  const scope = new RegExp(`^\\s*scope\\s*\\(?\\s*:${n}\\b`);
+  const destructured = new RegExp(`^\\s*(export\\s+)?(const|let|var)\\s*[{\\[](?:[^}\\]]*[^\\w$.}\\]])?${n}(?![\\w$])[^}\\]]*[}\\]]\\s*=`);
+  return declaration.test(text) || scope.test(text) || destructured.test(text) || /^\s*(import|require|require_relative)\b/.test(text) || /^\s*export\s*(\*|\{|type\s*\{)/.test(text);
+}
+
 export class Collector {
   private readonly files = new Map<string, string[]>();
+  private readonly revisionFiles = new Set<string>();
   private readonly nodesByKey = new Map<string, SparsityNode>();
   readonly nodes: SparsityNode[] = [];
   readonly edges: SparsityEdge[] = [];
@@ -913,7 +1160,46 @@ export class Collector {
   private readonly rubyIndex?: RubyIndex;
   private readonly rubyReady: boolean;
   private readonly facts = new Map<string, FileFacts | undefined>();
+  private entries?: Promise<Map<string, Entry>>;
+  private exposed?: PackageEntries;
   expandedNodes = 0;
+
+  /** The entry registry of this root, built once from the Ruby index, the root's `config/routes.rb` and its `config/application.rb`. */
+  private entryRegistry(): Promise<Map<string, Entry>> | undefined {
+    if (!this.indexed) return undefined;
+    this.entries ??= (async () => {
+      const path = this.root === "." ? "config/routes.rb" : `${this.root}/config/routes.rb`;
+      const lines = await this.lines(path);
+      const routes = lines ? readRoutes(lines.join("\n")) : undefined;
+      if (lines && !routes) this.notes.push(`${path} does not parse; controller actions are entries by their class alone, none exact.`);
+      if (routes?.unread.length) {
+        const count = routes.unread.length;
+        this.notes.push(`${path}: ${count} statement${count === 1 ? "" : "s"} not read (${routes.unread.slice(0, 5).map((item) => item.text).join("; ")}${count > 5 ? "; …" : ""}); actions only they route are entries by their class alone, not exact.`);
+      }
+      const application = this.root === "." ? "config/application.rb" : `${this.root}/config/application.rb`;
+      const config = await this.lines(application);
+      return entryRegistry(this.rubyIndex!, routes, path, config ? { file: application, apps: readExceptionsApps(config.join("\n")), lines: config } : undefined, lines);
+    })();
+    return this.entries;
+  }
+
+  /** What this root's package.json exposes, read once; served files are read as the collector serves them. */
+  private packageEntries(): PackageEntries {
+    this.exposed ??= packageEntries(this.root, (path) => {
+      const absolute = this.absolutePath(path);
+      const served = this.files.get(absolute);
+      if (served) return served.join("\n");
+      try {
+        const real = realpathSync(absolute);
+        const inside = relative(realpathSync(this.options.cwd), real);
+        if (inside && !inside.startsWith("..") && !isAbsolute(inside)) return readFileSync(real, "utf8");
+      } catch {
+        // Not there.
+      }
+      return undefined;
+    });
+    return this.exposed;
+  }
 
   rubyFacts(path: string, lines: string[]): FileFacts | undefined {
     if (!this.rubyReady) return undefined;
@@ -931,6 +1217,8 @@ export class Collector {
   }
 
   factsFor(language: Language, path: string, lines: string[]): FileFacts | undefined {
+    // A template's markup is not Ruby: no parser reads it, so no facts are made up from it.
+    if (templateName(path)) return undefined;
     return language === "ruby" ? this.rubyFacts(path, lines) : this.tsFacts(path, lines);
   }
 
@@ -955,7 +1243,8 @@ export class Collector {
   }
 
   definitionOf(node: SparsityNode): Definition {
-    return { name: node.symbol.split(/[#. ]/).pop() ?? node.symbol, symbol: node.symbol, kind: node.kind, startLine: node.startLine, endLine: node.endLine };
+    const name = node.kind === "template" ? node.symbol : node.symbol.split(/[#. ]/).pop() ?? node.symbol;
+    return { name, symbol: node.symbol, kind: node.kind, startLine: node.startLine, endLine: node.endLine };
   }
 
   async headLines(node: SparsityNode, count: number): Promise<string> {
@@ -1003,8 +1292,53 @@ export class Collector {
     return isAbsolute(path) ? path : resolve(this.options.cwd, path);
   }
 
+  /** Serves `path` from a revision instead of the checkout. Searches then read that content too, so hit lines match it. */
   preload(path: string, content: string): void {
-    this.files.set(this.absolutePath(path), content.split("\n"));
+    const absolute = this.absolutePath(path);
+    this.files.set(absolute, content.split("\n"));
+    this.revisionFiles.add(this.displayPath(absolute));
+  }
+
+  /** Ripgrep over the checkout, except that files served from a revision are matched against that revision's lines. */
+  private async search(spec: SearchSpec, signal?: AbortSignal, status?: SearchStatus): Promise<RgHit[]> {
+    if (this.budget.exhausted) {
+      if (status) status.complete = false;
+      return [];
+    }
+    const hits: RgHit[] = [];
+
+    const onDisk = spec.paths.filter((entry) => !this.revisionFiles.has(normalizeRepoRelativePath(entry)));
+    if (onDisk.length) {
+      // A script with no file ending is of no ripgrep type: it is searched as a file named on its own.
+      const scripts = spec.language ? await this.scriptsIn(spec, onDisk) : [];
+      const checkoutHits = await rgJson(ripgrepArgs(spec, [...onDisk, ...scripts]), this.options.cwd, this.budget, signal, status);
+      hits.push(...checkoutHits.filter((hit) => !this.revisionFiles.has(hit.path) && (!spec.language || ofLanguage(hit.path, spec.language) || scripts.includes(hit.path))));
+    }
+
+    const patterns = spec.patterns.map((pattern) => new RegExp(pattern));
+    for (const path of this.revisionFiles) {
+      const lines = this.files.get(this.absolutePath(path)) ?? [];
+      const script = spec.language !== undefined && scriptLanguage(path, lines[0]) === spec.language;
+      if (!inSearchScope(path, spec) && !(script && inSearchScope(path, { ...spec, language: undefined }))) continue;
+      hits.push(...matchLines(path, lines, patterns, spec.maxCount));
+    }
+    return hits;
+  }
+
+  private scripts?: Promise<Map<string, Language>>;
+
+  /** This root's scripts of a search's language with no file ending, under its folders, and tests only when it wants tests. */
+  private async scriptsIn(spec: SearchSpec, paths: string[]): Promise<string[]> {
+    this.scripts ??= scriptFiles(this.root, this.options.cwd, this.options.signal);
+    const scopes = paths.map(normalizeRepoRelativePath);
+    return [...(await this.scripts)].flatMap(([path, language]) =>
+      language === spec.language && !scopes.includes(path) && scopes.some((scope) => underRoot(scope, path)) && !excludedFromSearch(path) && (!spec.testsOnly || isTestPath(path)) ? [path] : []);
+  }
+
+  private async listFiles(glob: string, signal?: AbortSignal): Promise<string[]> {
+    const matcher = globRegex(glob);
+    const revision = [...this.revisionFiles].filter((path) => underRoot(this.root, path) && !excludedFromSearch(path) && matcher.test(path));
+    return uniqueValues([...(await rgFiles(glob, this.root, this.options.cwd, this.budget, signal)), ...revision]);
   }
 
   async lines(path: string): Promise<string[] | undefined> {
@@ -1058,16 +1392,21 @@ export class Collector {
     node.snippet = this.snippet(lines, this.definitionOf(node), focus, marks);
   }
 
-  async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string, allowNew = true): Promise<{ node: SparsityNode; created: boolean; def: Definition } | undefined> {
+  /** The definition around `path:line` as a node; `def` keeps the adapter's facts (signature, loadTime) when a parser found it. */
+  async node(path: string, line: number, depth: number, focus?: number, symbolHint?: string, allowNew = true): Promise<{ node: SparsityNode; created: boolean; def: AdapterDefinition } | undefined> {
     const lines = await this.lines(path);
     if (!lines) return undefined;
-    const language = languageFor(path);
-    if (!language) return undefined;
     const display = this.displayPath(this.absolutePath(path));
-    const facts = this.factsFor(language, display, lines);
+    // A Rails view template is one definition, the whole file: Ruby inside markup no parser here reads.
+    const template = templateName(display);
+    const language = template ? "ruby" : languageFor(path) ?? scriptLanguage(display, lines[0]);
+    if (!language) return undefined;
+    // Awaited before the lookup below, so finding or creating the node stays one synchronous step.
+    const entries = language === "ruby" ? await this.entryRegistry() : undefined;
+    const facts = template ? undefined : this.factsFor(language, display, lines);
     const hinted = facts && symbolHint ? facts.definitions.find((item) => item.symbol === symbolHint && item.startLine <= line && line <= item.endLine) : undefined;
     const adapterDef = facts ? (language === "ruby" ? rubyAdapter.definitionAt(facts, line) : tsAdapter.definitionAt(facts, line)) : undefined;
-    const def = hinted ?? adapterDef ?? findDefinition(language, lines, line);
+    const def = template ? templateDefinition(template, lines) : hinted ?? adapterDef ?? findDefinition(language, lines, line);
     if (!def) return undefined;
     const key = `${display}:${def.startLine}:${def.symbol}`;
     const existing = this.nodesByKey.get(key);
@@ -1087,9 +1426,15 @@ export class Collector {
       startLine: def.startLine,
       endLine: def.endLine,
       fingerprint: fingerprintOf(lines, def.startLine, def.endLine),
+      ...semanticFingerprintOf(language, facts, def),
       snippet: this.snippet(lines, def, focus ?? def.startLine),
       depth,
     };
+    const exposed = language === "javascript" ? this.packageEntries() : undefined;
+    // A script's top-level statement runs from the command line, when no package.json names the script a command first.
+    const script: ScriptEntry | undefined = def.kind === "statement" && shebangLanguage(lines[0]) ? { kind: "command", exact: true } : undefined;
+    const entry = entries?.get(entryKey(display, def.startLine)) ?? exposed?.byName.get(`${display}#${def.name}`) ?? (def.kind === "statement" ? exposed?.commands.get(display) : undefined) ?? script;
+    if (entry) node.entry = entry;
     this.nodes.push(node);
     this.nodesByKey.set(key, node);
     this.depthReached = Math.max(this.depthReached, depth);
@@ -1126,9 +1471,9 @@ export class Collector {
   private async namespaceUnderRoot(namespace: string, signal?: AbortSignal): Promise<boolean> {
     const cached = this.constantCache.get(namespace);
     if (cached) return cached.candidates.length > 0;
-    const files = await rgFiles(`**/${camelToSnake(namespace)}{.rb,}`, this.root, this.options.cwd, this.budget, signal);
+    const files = await this.listFiles(`**/${camelToSnake(namespace)}{.rb,}`, signal);
     if (files.length) return true;
-    const hits = await rgJson(["-t", "ruby", "--max-count", "1", "-e", `^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(namespace)}([^\\w]|$)`, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "ruby", maxCount: 1, patterns: [`^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(namespace)}([^\\w]|$)`], paths: [this.root] }, signal);
     return hits.length > 0;
   }
 
@@ -1137,17 +1482,17 @@ export class Collector {
     const last = segments[segments.length - 1]!;
     if (/^[A-Z][A-Z0-9_]*$/.test(last) && last.length > 1) {
       const assignment = `^\\s*(\\w+::)*${escapeRegex(last)}\\s*=[^=~>]`;
-      const sameFile = await rgJson(["--max-count", "2", "-e", assignment, fromPath], this.options.cwd, this.budget, signal);
+      const sameFile = await this.search({ maxCount: 2, patterns: [assignment], paths: [fromPath] }, signal);
       if (sameFile.length) return { candidates: this.rankCandidates(sameFile, fromPath) };
       if (segments.length >= 2) {
         const owners = await this.resolveRubyConstant(segments.slice(0, -1).join("::"), fromPath, signal);
         const files = uniqueValues(owners.candidates.map((owner) => owner.path));
         if (files.length) {
-          const inOwner = await rgJson(["--max-count", "2", "-e", assignment, ...files], this.options.cwd, this.budget, signal);
+          const inOwner = await this.search({ maxCount: 2, patterns: [assignment], paths: files }, signal);
           if (inOwner.length) return { candidates: this.rankCandidates(inOwner, fromPath, constant) };
         }
       }
-      const anywhere = await rgJson(["-t", "ruby", "--max-count", "1", "-e", assignment, this.root], this.options.cwd, this.budget, signal);
+      const anywhere = await this.search({ language: "ruby", maxCount: 1, patterns: [assignment], paths: [this.root] }, signal);
       if (anywhere.length) {
         const ranked = this.rankCandidates(anywhere, fromPath, segments.length >= 2 ? segments.slice(0, -1).join("::") : undefined);
         return ranked.length > MAX_CANDIDATES_PER_CALL
@@ -1157,7 +1502,7 @@ export class Collector {
       return { candidates: [], note: `${constant} is not assigned under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
     }
     const pathGuess = `${segments.map(camelToSnake).join("/")}.rb`;
-    const files = await rgFiles(`**/${pathGuess}`, this.root, this.options.cwd, this.budget, signal);
+    const files = await this.listFiles(`**/${pathGuess}`, signal);
     const hits: RgHit[] = [];
     for (const file of files.slice(0, MAX_CANDIDATES_PER_CALL)) {
       const lines = await this.lines(file);
@@ -1172,7 +1517,7 @@ export class Collector {
     }
 
     const pattern = `^\\s*(class|module)\\s+(\\w+::)*${escapeRegex(last)}([^\\w]|$)`;
-    const found = await rgJson(["-t", "ruby", "--max-count", "1", "-e", pattern, this.root], this.options.cwd, this.budget, signal);
+    const found = await this.search({ language: "ruby", maxCount: 1, patterns: [pattern], paths: [this.root] }, signal);
     if (found.length) {
       const parentPath = segments.slice(0, -1).map(camelToSnake).join("/");
       const inNamespace = parentPath ? found.filter((hit) => hit.path.includes(`/${parentPath}/`) || hit.path.includes(`/${parentPath}.rb`)) : found;
@@ -1208,14 +1553,13 @@ export class Collector {
 
   private async resolveRubyMethod(name: string, fromPath: string, receiverConstant?: string, signal?: AbortSignal): Promise<SiteResolution & { ownerFallback?: boolean }> {
     const patterns = this.rubyMethodPattern(name);
-    const patternArgs = patterns.flatMap((pattern) => ["-e", pattern]);
 
     if (receiverConstant) {
       const resolved = await this.resolveRubyConstant(receiverConstant, fromPath, signal);
       const owners = resolved.candidates;
       if (owners.length) {
         const files = uniqueValues(owners.map((owner) => owner.path));
-        const hits = await rgJson(["-t", "ruby", "--max-count", "3", ...patternArgs, ...files], this.options.cwd, this.budget, signal);
+        const hits = await this.search({ language: "ruby", maxCount: 3, patterns, paths: files }, signal);
         if (hits.length) {
           const ranked = this.rankCandidates(hits, fromPath, receiverConstant);
           return { candidates: ranked, resolution: ranked.length === 1 ? "exact" : "static_candidate", via: "constant" };
@@ -1225,10 +1569,10 @@ export class Collector {
       return { candidates: [], resolution: resolved.note && /comes from the platform, a gem or another component/.test(resolved.note) ? "external" : "unresolved", via: "constant", note: resolved.note ?? `receiver ${receiverConstant} was not found under ${this.rootDisplay}; it is probably defined outside this root.` };
     }
 
-    const sameFile = await rgJson(["--max-count", "3", ...patternArgs, fromPath], this.options.cwd, this.budget, signal);
+    const sameFile = await this.search({ maxCount: 3, patterns, paths: [fromPath] }, signal);
     if (sameFile.length) return { candidates: sameFile, resolution: sameFile.length === 1 ? "exact" : "static_candidate", via: "same_file" };
 
-    const hits = await rgJson(["-t", "ruby", "--max-count", "2", ...patternArgs, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "ruby", maxCount: 2, patterns, paths: [this.root] }, signal);
     if (!hits.length) return { candidates: [], resolution: "unresolved" };
     const ranked = this.rankCandidates(hits, fromPath);
     if (ranked.length > MAX_CANDIDATES_PER_CALL) return { candidates: ranked, resolution: "ambiguous", via: "name_only", note: `${ranked.length} definitions named ${name} under ${this.rootDisplay}; receiver type unknown.` };
@@ -1244,8 +1588,7 @@ export class Collector {
           `^\\s*export\\s*\\{[^}]*\\b${escaped}\\b`,
           `^\\s*(async\\s+)?(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`,
         ];
-    const hits = await rgJson(["--max-count", "3", ...patterns.flatMap((pattern) => ["-e", pattern]), ...files], this.options.cwd, this.budget, signal);
-    return hits;
+    return this.search({ maxCount: 3, patterns, paths: files }, signal);
   }
 
   private async resolveJsImportFile(fromPath: string, specifier: string): Promise<string | undefined> {
@@ -1255,12 +1598,12 @@ export class Collector {
     return undefined;
   }
 
-  private async resolveJs(site: CallSite, fromPath: string, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<{ candidates: Candidate[]; resolution: Resolution; note?: string; via?: EdgeVia }> {
+  private async resolveJs(site: CallSite, fromPath: string, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<SiteResolution> {
     const lookup = site.receiver && site.receiver !== "this" ? imports.get(site.receiver) : imports.get(site.name);
     if (site.receiver && site.receiver !== "this" && !lookup) {
       const local = await this.resolveJsInFiles(site.name, [fromPath], false, signal);
       if (local.length) return { candidates: local, resolution: "static_candidate", via: "same_file", note: `receiver ${site.receiver} is not an import; matched a same-file definition by name.` };
-      return { candidates: [], resolution: "unresolved", note: `receiver ${site.receiver} is a local value; its type is not traced statically.` };
+      return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: `receiver ${site.receiver} is a local value; its type is not traced statically.` };
     }
 
     if (lookup) {
@@ -1291,38 +1634,51 @@ export class Collector {
       }
       return { candidates: local.filter((hit) => !values.includes(hit)), resolution: "exact", via: "same_file" };
     }
-    const methodHits = await rgJson(["--max-count", "2", "-e", `^\\s*((public|private|protected|static|async|override)\\s+)*${escapeRegex(site.name)}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`, fromPath], this.options.cwd, this.budget, signal);
+    const methodHits = await this.search({ maxCount: 2, patterns: [`^\\s*((public|private|protected|static|async|override)\\s+)*${escapeRegex(site.name)}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`], paths: [fromPath] }, signal);
     if (methodHits.length) return { candidates: methodHits, resolution: "exact", via: "same_file" };
 
-    const hits = await rgJson(["-t", "ts", "-t", "js", "--max-count", "2", "-e", `\\b(function\\s*\\*?|const|let|var|class)\\s+${escapeRegex(site.name)}([^\\w$]|$)`, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "javascript", maxCount: 2, patterns: [`\\b(function\\s*\\*?|const|let|var|class)\\s+${escapeRegex(site.name)}([^\\w$]|$)`], paths: [this.root] }, signal);
     if (!hits.length) return { candidates: [], resolution: "unresolved" };
     const ranked = this.rankCandidates(hits, fromPath);
     if (ranked.length > MAX_CANDIDATES_PER_CALL) return { candidates: ranked, resolution: "ambiguous", via: "name_only", note: `${ranked.length} definitions named ${site.name} under ${this.rootDisplay}; not imported here.` };
     return { candidates: ranked, resolution: "static_candidate", via: "name_only" };
   }
 
-  private callSites(node: SparsityNode, def: Definition, lines: string[], facts: FileFacts | undefined): CallSite[] {
+  /** The call sites to resolve, and the effects of every call, read before common methods are dropped. */
+  private callSites(node: SparsityNode, def: Definition, lines: string[], facts: FileFacts | undefined): { sites: CallSite[]; effects: Effect[] } {
     if (facts && node.language === "ruby") {
-      return rubyAdapter.calls(facts, def).filter((site) => {
-        if (site.source === "symbol_proc" || site.source === "dynamic") return true;
+      const all = rubyAdapter.calls(facts, def);
+      const sites = all.filter((site) => {
+        if (site.source === "symbol_proc" || site.source === "dynamic" || site.source === "enqueue") return true;
         if (RUBY_KEYWORDS.has(site.name)) return false;
         if (site.source === "constant") return true;
         if (site.name === "new" && site.receiverKind === "constant") return true;
         return !RUBY_COMMON_METHODS.has(site.name);
       });
+      const effects = all.flatMap((site) => (site.effect ? [site.effect] : []));
+      return { sites, effects };
     }
     if (facts && node.language === "javascript") {
-      return tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name)));
+      const sites = tsAdapter.calls(facts, def).filter((site) => site.target || !(site.source === "member" && JS_BUILTIN_MEMBERS.has(site.name)));
+      return { sites, effects: [] };
     }
-    return node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def);
+    const sites = node.language === "ruby" ? extractRubyCalls(lines, def) : extractJsCalls(lines, def);
+    return { sites, effects: [] };
   }
 
   private siteLabel(site: CallSite): string {
     return site.label ?? (site.receiver ? `${site.receiver}.${site.name}` : site.name);
   }
 
+  /** Operator and dynamic calls keep that reason wherever their lookup failed; other failures say what the resolver found. */
+  private unresolvedReason(site: CallSite, resolved: SiteResolution, language: Language): UnresolvedReason {
+    if (site.source === "dynamic") return "dynamic";
+    if (language === "ruby" && isOperatorCall(site)) return "operator";
+    return resolved.reason ?? "no-definition";
+  }
+
   private async resolveSite(site: CallSite, node: SparsityNode, def: Definition, imports: Map<string, JsImport>, signal?: AbortSignal): Promise<SiteResolution> {
-    if (site.source === "dynamic") return { candidates: [], resolution: "unresolved", note: site.dynamic ?? "dynamic dispatch; the callee is a runtime value" };
+    if (site.source === "dynamic") return { candidates: [], resolution: "unresolved", reason: "dynamic", note: site.dynamic ?? "dynamic dispatch; the callee is a runtime value" };
     if (node.language !== "ruby") return site.target ? this.resolveFromTarget(site) : this.resolveJs(site, node.path, imports, signal);
     const resolved = await this.resolveRubySite(site, node, def, signal);
     if (!site.dynamic) return resolved;
@@ -1330,10 +1686,11 @@ export class Collector {
   }
 
   private async resolveRubySite(site: CallSite, node: SparsityNode, def: Definition, signal?: AbortSignal): Promise<SiteResolution> {
-    if (site.source === "symbol_proc" && !site.receiverType) return { candidates: [], resolution: "unresolved", note: "symbol-to-proc call detected, but the collection element type is unknown" };
+    if (site.source === "enqueue") return this.resolveRubyEnqueue(site, node, signal);
+    if (site.source === "symbol_proc" && !site.receiverType) return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: "symbol-to-proc call detected, but the collection element type is unknown" };
     const indexed = this.rubyIndex ? this.resolveViaIndex(site, node, def) : undefined;
     if (indexed) return indexed;
-    if (!/^[A-Za-z_]/.test(site.name) && site.source !== "constant") return { candidates: [], resolution: "unresolved", note: "operator call detected, but its receiver type is unknown; name-only operator lookup is omitted" };
+    if (isOperatorCall(site)) return { candidates: [], resolution: "unresolved", reason: "operator", note: "operator call detected, but its receiver type is unknown; name-only operator lookup is omitted" };
     if (site.source === "constant") {
       const { candidates, note } = await this.resolveRubyConstant(site.name, node.path, signal);
       const outside = !candidates.length && /comes from the platform, a gem or another component/.test(note ?? "");
@@ -1347,7 +1704,22 @@ export class Collector {
       resolved.via = site.via;
       return resolved;
     }
-    return this.resolveRubyMethod(site.name, node.path, site.receiverKind === "constant" ? site.receiver : undefined, signal);
+    const resolved = await this.resolveRubyMethod(site.name, node.path, site.receiverKind === "constant" ? site.receiver : undefined, signal);
+    // A receiver that is a local, ivar or chained value with no traced (or only a name-guessed) type.
+    const untypedReceiver = (site.receiverKind ? !["implicit", "self", "constant"].includes(site.receiverKind) : site.source === "receiver_method") && (!site.receiverType || site.via === "named");
+    return untypedReceiver ? { ...resolved, reason: "unknown-receiver" } : resolved;
+  }
+
+  /** An enqueue runs the instance method `site.name` (perform or a mailer action) of the job or mailer constant `site.receiver`. */
+  private async resolveRubyEnqueue(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
+    const owner = site.receiver!;
+    if (!this.rubyIndex) return this.resolveRubyMethod(site.name, node.path, owner, signal);
+    const index = this.rubyIndex;
+    const typeSymbol = resolveIndexedConstant(index, owner, node.symbol) ?? (index.namespaces.has(owner) ? owner : undefined);
+    if (!typeSymbol) return { candidates: [], resolution: "external", via: "constant", note: `${owner} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
+    const found = lookupMethod(index, typeSymbol, site.name, false);
+    if (found.length) return { candidates: indexedCandidates(found.slice(0, MAX_CANDIDATES_PER_CALL)), resolution: found.length === 1 ? "exact" : "static_candidate", via: "constant" };
+    return { candidates: [], resolution: "unresolved", via: "constant", note: `${typeSymbol} and its ancestors under ${this.rootDisplay} define no ${site.name}; inherited from outside this root or dynamic.` };
   }
 
   private async resolveRubyChainLoosely(site: CallSite, node: SparsityNode, signal?: AbortSignal): Promise<SiteResolution> {
@@ -1360,7 +1732,7 @@ export class Collector {
       return { ...typed, via: "chain", resolution: typed.resolution === "exact" ? "static_candidate" : typed.resolution, note: [typed.note, `relation of ${receiverType}${steps} assumed; ${reason}`].filter(Boolean).join("; ") };
     }
     const loose = await this.resolveRubyMethod(site.name, node.path, undefined, signal);
-    return { ...loose, note: [loose.note, `receiver ${site.receiver ?? receiverType} is a chained value whose type was not traced; ${receiverType} declares no ${site.name}`].filter(Boolean).join("; ") };
+    return { ...loose, reason: "unknown-receiver", note: [loose.note, `receiver ${site.receiver ?? receiverType} is a chained value whose type was not traced; ${receiverType} declares no ${site.name}`].filter(Boolean).join("; ") };
   }
 
   private readonly modelCache = new Map<string, boolean>();
@@ -1379,20 +1751,23 @@ export class Collector {
     const owners = (await this.resolveRubyConstant(constant, fromPath, signal)).candidates;
     if (!owners.length) return { candidates: [], resolution: "external", via: "constant", note: `${constant} is outside ${this.rootDisplay}; its constructor is not inspected` };
     const files = uniqueValues(owners.map((owner) => owner.path));
-    const hits = await rgJson(["-t", "ruby", "--max-count", "2", "-e", "^\\s*def\\s+initialize([^\\w?!=]|$)", ...files], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language: "ruby", maxCount: 2, patterns: ["^\\s*def\\s+initialize([^\\w?!=]|$)"], paths: files }, signal);
     if (!hits.length) return { candidates: [], resolution: "unresolved", via: "constant", note: `no initialize definition found in ${constant}; inherited or dynamic construction is not traced` };
     const ranked = this.rankCandidates(hits, fromPath, constant);
     return { candidates: ranked, resolution: ranked.length === 1 ? "exact" : "static_candidate", via: "constant", note: "new dispatches to initialize" };
   }
 
   async expand(node: SparsityNode, def: Definition, depth: number, ancestry: string[], queue: QueueItem[], signal?: AbortSignal, focus?: number[]): Promise<void> {
-    if (depth > 0 && !EXPANDABLE_KINDS.has(def.kind)) return;
+    // A template's calls are Ruby inside markup, which no parser here reads; following them would follow guesses.
+    if ((depth > 0 && !EXPANDABLE_KINDS.has(def.kind)) || def.kind === "template") return;
     const lines = await this.lines(node.path);
     if (!lines) return;
     const facts = this.factsFor(node.language, node.path, lines);
     if (facts?.errors) this.frontier.push(`${node.path}: ${facts.errors} parse errors; call detection may be incomplete (parser)`);
     const distance = focus?.length ? (line: number) => Math.min(...focus.map((f) => Math.abs(f - line))) : () => 0;
-    const examined = [...this.callSites(node, def, lines, facts)].sort((a, b) => distance(a.line) - distance(b.line) || a.line - b.line);
+    const { sites, effects } = this.callSites(node, def, lines, facts);
+    if (effects.length) node.effects = effects;
+    const examined = [...sites].sort((a, b) => distance(a.line) - distance(b.line) || a.line - b.line);
     const imports = node.language === "javascript" ? parseJsImports(lines.join("\n")) : new Map<string, JsImport>();
     type Pending = { site: CallSite; label: string; resolved: SiteResolution; order: number };
     const pending: Pending[] = [];
@@ -1407,7 +1782,8 @@ export class Collector {
 
     const emitted: Array<{ order: number; edge: SparsityEdge }> = [];
     for (const item of pending.filter((entry) => !entry.resolved.candidates.length)) {
-      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note } });
+      const reason = item.resolved.resolution === "unresolved" ? this.unresolvedReason(item.site, item.resolved, node.language) : undefined;
+      emitted.push({ order: item.order, edge: { from: node.id, name: item.label, relationship: item.site.relationship, resolution: item.resolved.resolution, via: item.resolved.via, line: item.site.line, note: item.resolved.note, ...(reason ? { reason } : {}), ...siteGuards(item.site) } });
     }
 
     const trust = (resolution: Resolution) => (resolution === "exact" ? 0 : resolution === "static_candidate" ? 1 : 2);
@@ -1438,11 +1814,11 @@ export class Collector {
           newTargets += 1;
         }
         if (!created) {
-          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed` } });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "unresolved", line: site.line, note: `${candidate.path}:${candidate.line} could not be read or parsed`, reason: "no-definition", ...siteGuards(site) } });
           continue;
         }
         if (created.node.id === node.id && candidate.line !== created.def.startLine) {
-          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "local", line: site.line, note: `${label} is defined inside this definition at line ${candidate.line}; a local, not a separate definition.` } });
+          emitted.push({ order: item.order, edge: { from: node.id, name: label, relationship: site.relationship, resolution: "local", line: site.line, note: `${label} is defined inside this definition at line ${candidate.line}; a local, not a separate definition.`, ...siteGuards(site) } });
           continue;
         }
         const edge: SparsityEdge = {
@@ -1454,6 +1830,7 @@ export class Collector {
           via: resolved.via,
           line: site.line,
           note: resolved.note,
+          ...siteGuards(site),
         };
         if (resolved.resolution === "ambiguous") edge.candidates = resolved.candidates.slice(0, 8).map((c) => `${c.path}:${c.line}`);
         emitted.push({ order: item.order, edge });
@@ -1462,7 +1839,7 @@ export class Collector {
           this.cycles.push(`${[...ancestry, node.id, created.node.id].join(" → ")}`);
           continue;
         }
-        if (created.created && site.relationship === "calls") {
+        if (created.created && (site.relationship === "calls" || site.relationship === "enqueues")) {
           queue.push({ node: created.node, def: created.def, depth: depth + 1, ancestry: [...ancestry, node.id] });
         }
       }
@@ -1473,7 +1850,7 @@ export class Collector {
 
   private resolveViaIndex(site: CallSite, node: SparsityNode, def: Definition): SiteResolution | undefined {
     const index = this.rubyIndex!;
-    const toCandidates = (defs: IndexedDefinition[]): Candidate[] => defs.map((item) => ({ path: item.path, line: item.startLine, text: item.symbol, symbol: item.symbol }));
+    const toCandidates = indexedCandidates;
 
     if (site.source === "constant") {
       const symbol = resolveIndexedConstant(index, site.name, node.symbol);
@@ -1485,8 +1862,8 @@ export class Collector {
 
     if (site.source === "super") {
       const superclass = site.receiverType ? resolveIndexedConstant(index, site.receiverType, node.symbol) ?? site.receiverType : undefined;
-      if (!superclass) return { candidates: [], resolution: "unresolved", note: "super without a known superclass in this root" };
-      const found = this.lookupMethod(index, superclass, def.name, def.kind === "singleton_method");
+      if (!superclass) return { candidates: [], resolution: "unresolved", reason: "unknown-receiver", note: "super without a known superclass in this root" };
+      const found = lookupMethod(index, superclass, def.name, def.kind === "singleton_method");
       if (found.length) return { candidates: toCandidates(found), resolution: "exact", via: "superclass" };
       return { candidates: [], resolution: "unresolved", note: `${superclass} and its ancestors under ${this.rootDisplay} define no ${def.name}; the super target is outside this root or dynamic.` };
     }
@@ -1505,13 +1882,13 @@ export class Collector {
       return { candidates: [], resolution: "external", via: site.receiverKind === "constant" ? "constant" : chain ? "chain" : site.via, note: `receiver ${receiverType} is not defined under ${this.rootDisplay}; it comes from the platform, a gem or another component.` };
     }
     if (constructor) {
-      const customNew = this.lookupMethod(index, typeSymbol, "new", true);
+      const customNew = lookupMethod(index, typeSymbol, "new", true);
       if (customNew.length) return { candidates: toCandidates(customNew), resolution: customNew.length === 1 ? "exact" : "static_candidate", via: "constant" };
     }
     const methodName = constructor ? "initialize" : site.name;
     const verdicts = chain || symbolProc ? this.chainVerdicts(index, typeSymbol, site.chain ?? []) : { classMethods: [], unknown: [] };
     if (chain && !this.isModel(index, typeSymbol) && (verdicts.classMethods.length || verdicts.unknown.length)) return undefined;
-    const found = this.lookupMethod(index, typeSymbol, methodName, singleton || (implicit && def.kind === "singleton_method"));
+    const found = lookupMethod(index, typeSymbol, methodName, singleton || (implicit && def.kind === "singleton_method"));
     if (found.length) {
       let resolution: Resolution = site.via === "named" || found.length > 1 ? "static_candidate" : "exact";
       const via: EdgeVia = constructor || site.receiverKind === "constant" ? "constant" : implicit ? "self" : chain ? "chain" : site.via ?? "typed";
@@ -1545,7 +1922,7 @@ export class Collector {
     const unknown: string[] = [];
     for (const step of steps) {
       if (RELATION_METHODS.has(step)) continue;
-      const declared = this.lookupMethod(index, typeSymbol, step, true);
+      const declared = lookupMethod(index, typeSymbol, step, true);
       if (declared.some((item) => item.kind === "scope")) continue;
       if (declared.length) classMethods.push(step);
       else unknown.push(step);
@@ -1589,40 +1966,63 @@ export class Collector {
     return { candidates: [{ path: display, line: target.line, text: target.symbol ?? site.name, symbol: target.symbol }], resolution: "exact", via: "checker", note };
   }
 
-  private lookupMethod(index: RubyIndex, typeSymbol: string, name: string, singleton: boolean): IndexedDefinition[] {
-    for (const ancestor of ancestorsOf(index, typeSymbol)) {
-      const direct = index.bySymbol.get(`${ancestor}${singleton ? "." : "#"}${name}`) ?? [];
-      if (direct.length) return direct;
-      if (singleton) {
-        const instanceOnModule = index.bySymbol.get(`${ancestor}#${name}`) ?? [];
-        if (instanceOnModule.length && index.namespaces.get(ancestor)?.kind === "module") return instanceOnModule;
-      }
-      const declared = (index.byName.get(name) ?? []).filter((item) => item.owner === ancestor && !["method", "singleton_method", "class", "module", "test"].includes(item.kind));
-      if (declared.length) return declared;
-    }
-    return [];
-  }
-
   tooCommon(name: string): boolean {
     return name.length < 4 || RUBY_COMMON_METHODS.has(name) || JS_GLOBALS.has(name) || ["render", "perform", "call", "execute", "run", "handle", "main", "default", "index", "show", "create", "update", "destroy"].includes(name);
   }
 
-  private async indexedReferences(name: string, options: { exclude?: SparsityNode; onlyTests?: boolean; skipTests?: boolean; limit: number; depth?: number; perFile?: boolean }): Promise<{ hits: ReferenceHit[]; totalFiles: number }> {
+  private get indexed(): boolean {
+    return Boolean(this.rubyIndex && !this.rubyIndex.skipped);
+  }
+
+  /** Whether calls in `inDef` with no explicit receiver run on the class: inside a singleton method or a scope body. */
+  private classContext(index: RubyIndex, inDef: string | undefined): boolean {
+    return (index.bySymbol.get(inDef ?? "") ?? []).some((item) => item.kind === "singleton_method" || item.kind === "scope");
+  }
+
+  /** How the receiver type of `site` was known, when the method it dispatches to through that type is `target` and nothing else. */
+  private dispatchVia(index: RubyIndex, site: IndexedCallSite, type: string | undefined, name: string, target: SparsityNode | undefined): EdgeVia | undefined {
+    if (!target || !type || !["method", "singleton_method", "scope"].includes(target.kind)) return undefined;
+    if (site.via === "named" || site.via === "chain") return undefined;
+    const constantReceiver = site.receiver !== undefined && site.receiver === site.receiverType;
+    const implicit = site.receiver === undefined || site.receiver === "self";
+    const onClass = site.enqueue ? false : constantReceiver || (implicit && this.classContext(index, site.inDef));
+    const found = lookupMethod(index, type, name, onClass);
+    if (found.length !== 1 || found[0]!.path !== target.path || found[0]!.startLine !== target.startLine) return undefined;
+    if (site.enqueue || constantReceiver) return "constant";
+    return implicit ? "self" : (site.via as EdgeVia | undefined) ?? "typed";
+  }
+
+  private async indexedReferences(name: string, options: ReferenceOptions): Promise<ReferenceSearch> {
     const index = this.rubyIndex!;
     const sites = index.callSites.get(name) ?? [];
     const ownerSymbol = options.exclude?.symbol.split(/[#. ]/)[0];
     const ownerAncestors = ownerSymbol ? ancestorsOf(index, ownerSymbol) : [];
-    const compatible = (receiverType: string | undefined, fromDef: string | undefined): boolean => {
-      if (!receiverType || !ownerSymbol) return true;
-      const resolved = resolveIndexedConstant(index, receiverType, fromDef) ?? receiverType;
-      if (!index.namespaces.has(resolved)) return true;
-      return resolved === ownerSymbol || ancestorsOf(index, resolved).includes(ownerSymbol) || ownerAncestors.includes(resolved);
+    // The site's receiver type when the index defines it; an unknown or name-only type is undefined.
+    const typeOf = (site: IndexedCallSite): string | undefined => {
+      if (!site.receiverType) return undefined;
+      const resolved = resolveIndexedConstant(index, site.receiverType, site.inDef) ?? site.receiverType;
+      return index.namespaces.has(resolved) ? resolved : undefined;
     };
+    const compatible = (type: string | undefined): boolean => !type || !ownerSymbol
+      || type === ownerSymbol || ancestorsOf(index, type).includes(ownerSymbol) || ownerAncestors.includes(type);
+    let untyped = 0;
+    // A bare call in the file of a top-level `def`, such as `main` at the bottom of a script, can only mean that def.
+    const topLevel = options.exclude !== undefined && !/[#.]/.test(options.exclude.symbol) && options.exclude.kind === "method";
+    const sameFileBareCall = (site: IndexedCallSite) => topLevel && site.receiver === undefined && site.path === options.exclude!.path;
     const filtered = sites
       .filter((site) => !(options.exclude && site.path === options.exclude.path && site.line >= options.exclude.startLine && site.line <= options.exclude.endLine))
       .filter((site) => !(options.skipTests && isTestPath(site.path)))
       .filter((site) => !(options.onlyTests && !isTestPath(site.path)))
-      .filter((site) => compatible(site.receiverType, site.inDef))
+      .filter((site) => {
+        const type = typeOf(site);
+        // `initialize` runs from a `new` on its class: one on a class the index does not hold builds something else.
+        if (name === "initialize" && !type) return false;
+        if (options.typedOnly && !type && !sameFileBareCall(site)) {
+          untyped += 1;
+          return false;
+        }
+        return compatible(type);
+      })
       .sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path) || a.line - b.line);
     const chosen: typeof filtered = [];
     const seenFiles = new Set<string>();
@@ -1634,94 +2034,296 @@ export class Collector {
     const hits: ReferenceHit[] = [];
     for (const site of chosen) {
       if (hits.length >= options.limit) break;
+      if (options.limit === Infinity && this.budget.exhausted) break;
       const created = await this.node(site.path, site.line, options.depth ?? 1, site.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
-      hits.push({ node: created.node, def: created.def, line: site.line, text: await this.lineText(site.path, site.line), test: isTestPath(site.path) });
+      const exactVia = this.dispatchVia(index, site, typeOf(site), name, options.exclude) ?? (sameFileBareCall(site) ? "self" : undefined);
+      hits.push({
+        node: created.node, def: created.def, line: site.line, text: await this.lineText(site.path, site.line), test: isTestPath(site.path),
+        ...(exactVia ? { exactVia } : {}), ...(site.enqueue ? { enqueue: true } : {}),
+      });
     }
-    return { hits, totalFiles: seenFiles.size };
+    return {
+      hits,
+      totalFiles: new Set(filtered.map((site) => site.path)).size,
+      sites: filtered.map((site) => ({ path: site.path, line: site.line, test: isTestPath(site.path) })),
+      exhaustive: untyped === 0,
+    };
   }
 
-  async references(name: string, language: Language, options: { exclude?: SparsityNode; onlyTests?: boolean; skipTests?: boolean; limit: number; depth?: number; perFile?: boolean }, signal?: AbortSignal): Promise<{ hits: ReferenceHit[]; totalFiles: number }> {
-    if (language === "ruby" && this.rubyIndex && !this.rubyIndex.skipped) return this.indexedReferences(name, options);
+  async references(name: string, language: Language, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
+    if (language === "ruby" && this.indexed) return this.indexedReferences(name, options);
     const escaped = escapeRegex(name);
     const tail = /[?!=]$/.test(name) ? "" : "([^\\w?!=]|$)";
     const pattern = `(^|[^\\w:@$.]|\\.)${escaped}${tail}`;
-    const typeArgs = language === "ruby" ? ["-t", "ruby"] : ["-t", "ts", "-t", "js"];
-    const globArgs = options.onlyTests
-      ? ["-g", "**/test/**", "-g", "**/tests/**", "-g", "**/spec/**", "-g", "**/__tests__/**", "-g", "**/*.test.*", "-g", "**/*.spec.*", "-g", "**/*_test.rb", "-g", "**/*_spec.rb"]
-      : [];
-    const raw = await rgJson([...typeArgs, ...globArgs, "--max-count", "4", "-e", pattern, this.root], this.options.cwd, this.budget, signal);
+    const maxCount = options.maxCount ?? 4;
+    const status: SearchStatus = { complete: true };
+    const raw = await this.search({ language, testsOnly: options.onlyTests, maxCount, patterns: [pattern], paths: [this.root] }, signal, status);
+    const matchesPerFile = new Map<string, number>();
+    for (const hit of raw) matchesPerFile.set(hit.path, (matchesPerFile.get(hit.path) ?? 0) + 1);
+    const capped = [...matchesPerFile.values()].some((count) => count >= maxCount);
     const filtered = raw
       .filter((hit) => !(options.exclude && hit.path === options.exclude.path && hit.line >= options.exclude.startLine && hit.line <= options.exclude.endLine))
-      .filter((hit) => !/^\s*(def|function|const|let|var|class|export|scope|import|require)\b/.test(hit.text))
+      .filter((hit) => !declaresName(hit.text, name))
       .filter((hit) => !/^\s*(#|\/\/|\*)/.test(hit.text))
       .filter((hit) => !insideStringLiteral(hit.text, name))
       .filter((hit) => !(options.skipTests && isTestPath(hit.path)))
       .filter((hit) => !(options.onlyTests && !isTestPath(hit.path)));
-    const chosen: RgHit[] = [];
-    const seenFiles = new Set<string>();
+    const found: RgHit[] = [];
     for (const hit of filtered) {
-      if (options.perFile !== false && seenFiles.has(hit.path)) continue;
+      // A hit counts only when the content this collector serves has the same text on that line.
+      const lines = await this.lines(hit.path);
+      const served = lines?.[hit.line - 1];
+      if (!lines || served === undefined || ripgrepText(served) !== hit.text) continue;
       if (language === "javascript") {
-        const lines = await this.lines(hit.path);
-        if (lines && insideJsImport(lines, hit.line)) continue;
-        const facts = lines ? this.tsFacts(hit.path, lines) : undefined;
+        if (insideJsImport(lines, hit.line)) continue;
+        const facts = this.tsFacts(hit.path, lines);
         if (facts && !tsAdapter.confirmsReference(facts, hit.line, name)) continue;
       }
+      found.push(hit);
+    }
+    found.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path) || a.line - b.line);
+    const chosen: RgHit[] = [];
+    const seenFiles = new Set<string>();
+    for (const hit of found) {
+      if (options.perFile !== false && seenFiles.has(hit.path)) continue;
       seenFiles.add(hit.path);
       chosen.push(hit);
     }
-    const ranked = chosen.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || a.path.localeCompare(b.path) || a.line - b.line);
     const hits: ReferenceHit[] = [];
-    for (const hit of ranked) {
+    for (const hit of chosen) {
       if (hits.length >= options.limit) break;
       const created = await this.node(hit.path, hit.line, options.depth ?? 1, hit.line, undefined, !this.options.capReferences || !this.atNodeCap);
       if (!created) continue;
       hits.push({ node: created.node, def: created.def, line: hit.line, text: hit.text.trim(), test: isTestPath(hit.path) });
     }
-    return { hits, totalFiles: seenFiles.size };
+    return {
+      hits,
+      totalFiles: seenFiles.size,
+      sites: found.map((hit) => ({ path: hit.path, line: hit.line, test: isTestPath(hit.path) })),
+      exhaustive: status.complete && !capped,
+    };
   }
 
-  async callers(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit = MAX_CALLERS): Promise<ReferenceHit[]> {
-    const name = def.name;
-    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return [];
-    if (this.tooCommon(name)) {
-      this.notes.push(`callers of ${name} skipped: name too common to search usefully; search a qualified receiver instead.`);
-      return [];
-    }
-    const { hits, totalFiles } = await this.references(name, anchor.language, { exclude: anchor, limit }, signal);
-    if (totalFiles > MAX_CALLER_FILES) this.notes.push(`callers of ${name}: ${totalFiles} files reference the name; showing ${hits.length}. Treat this as a high-fanout boundary.`);
-    else if (totalFiles > hits.length) this.frontier.push(`callers of ${name}: ${totalFiles - hits.length} more files not expanded`);
+  /** The adapter's call at a caller's line, and the conditions dominating it: the call's own, or the line's when no call matched. */
+  private async callSite(hit: ReferenceHit, name: string): Promise<{ site?: CallSite; guards: Guard[] }> {
+    const lines = await this.lines(hit.node.path);
+    const facts = lines ? this.factsFor(hit.node.language, hit.node.path, lines) : undefined;
+    if (!facts) return { guards: [] };
+    const adapter = hit.node.language === "ruby" ? rubyAdapter : tsAdapter;
+    const site = adapter.calls(facts, hit.def).find((item) => item.line === hit.line && item.name === name);
+    return site ? { site, guards: site.guards ?? [] } : { guards: adapter.guardsAt(facts, hit.def, hit.line) };
+  }
 
-    for (const hit of hits) {
-      this.edges.push({
-        from: hit.node.id,
-        to: anchor.id,
-        name,
-        relationship: "called_by",
-        resolution: "static_candidate",
-        line: hit.line,
-        note: hit.test ? "test" : undefined,
+  /** `path` imports `name` from the module at `target`, by a relative import of its own. */
+  private async importsFrom(path: string, name: string, target: string): Promise<boolean> {
+    const lines = await this.lines(path);
+    const binding = lines ? parseJsImports(lines.join("\n")).get(name) : undefined;
+    if (!binding || binding.namespace || binding.imported !== name || !binding.specifier.startsWith(".")) return false;
+    const bare = (file: string) => file.replace(/\.(?:[cm]?[jt]sx?)$/, "");
+    const wanted = bare(this.absolutePath(target));
+    return jsImportCandidatePaths(this.absolutePath(path), binding.specifier).some((candidate) => bare(candidate) === wanted);
+  }
+
+  /** The TypeScript checker resolved the call to `anchor` itself. */
+  private resolvesTo(site: CallSite | undefined, anchor: SparsityNode): boolean {
+    const target = site?.target;
+    if (!target || target.external || target.local) return false;
+    return target.line === anchor.startLine && this.displayRealPath(target.path) === anchor.path;
+  }
+
+  private readonly templateCode = new Map<string, (line: number, column: number) => boolean>();
+
+  /** Whether `pattern` first matches a template's line inside its Ruby, not its markup. */
+  private async inTemplateRuby(hit: RgHit, template: TemplateName, pattern: RegExp): Promise<boolean> {
+    return (await this.templateRubyAt(hit, template, pattern)) >= 0;
+  }
+
+  /** The column where `pattern` first matches a template's line inside its Ruby, or -1. */
+  private async templateRubyAt(hit: RgHit, template: TemplateName, pattern: RegExp): Promise<number> {
+    if (!this.templateCode.has(hit.path)) this.templateCode.set(hit.path, rubyInTemplate((await this.lines(hit.path)) ?? [], template.handler));
+    const code = this.templateCode.get(hit.path)!;
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    for (const match of hit.text.matchAll(global)) {
+      const column = match.index + (match[0].length - match[0].trimStart().length);
+      if (code(hit.line, column)) return column;
+    }
+    return -1;
+  }
+
+  /** Hits as a reference search keeps them: one per file unless every site is wanted, up to the limit, each a node. */
+  private async referenceHits(found: Array<RgHit & Partial<ReferenceHit>>, options: ReferenceOptions): Promise<ReferenceHit[]> {
+    const hits: ReferenceHit[] = [];
+    const seenFiles = new Set<string>();
+    for (const hit of found) {
+      if (hits.length >= options.limit) break;
+      if (options.perFile !== false && seenFiles.has(hit.path)) continue;
+      seenFiles.add(hit.path);
+      const created = await this.node(hit.path, hit.line, options.depth ?? 1, hit.line, undefined, !this.options.capReferences || !this.atNodeCap);
+      if (!created) continue;
+      hits.push({
+        node: created.node, def: created.def, line: hit.line, text: hit.text.trim(), test: isTestPath(hit.path),
+        ...(hit.exactVia ? { exactVia: hit.exactVia } : {}), ...(hit.named ? { named: hit.named } : {}), ...(hit.convention ? { convention: true as const } : {}),
       });
     }
     return hits;
   }
 
+  /**
+   * Templates under the root's `app/views` that call a Ruby method by name, in their Ruby: a helper or a model method a
+   * view uses. A view's receivers have no type here, so a call on one is a match by name, not proof. A call with no
+   * receiver runs on the view, which holds the app's helpers, so for a method of `app/helpers` it is exact.
+   */
+  private async templateUses(name: string, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
+    const views = viewsFolder(this.root);
+    const tail = /[?!=]$/.test(name) ? "" : "([^\\w?!=]|$)";
+    const pattern = `(^|[^\\w:@$.]|\\.)${escapeRegex(name)}${tail}`;
+    const status: SearchStatus = { complete: true };
+    const raw = await this.search({ maxCount: options.maxCount ?? 4, patterns: [pattern], paths: [views] }, signal, status);
+    const helper = options.exclude !== undefined && /(?:^|\/)app\/helpers\//.test(options.exclude.path);
+    const found: Array<RgHit & Partial<ReferenceHit>> = [];
+    for (const hit of raw) {
+      const template = templateName(hit.path);
+      const column = template ? await this.templateRubyAt(hit, template, new RegExp(`(?<![\\w$@:])${escapeRegex(name)}(?![\\w?!=])`)) : -1;
+      if (column < 0) continue;
+      const bare = !/(?:\.|&\.)\s*$/.test(hit.text.slice(0, column));
+      found.push(helper && bare ? { ...hit, exactVia: "self" } : hit);
+    }
+    found.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+    // A template is one definition, so its call sites count once, as the caller it is.
+    const callers = found.filter((hit, index) => found.findIndex((other) => other.path === hit.path) === index);
+    return {
+      hits: await this.referenceHits(options.perFile === false ? found : callers, options),
+      totalFiles: callers.length,
+      sites: (options.perFile === false ? found : callers).map((hit) => ({ path: hit.path, line: hit.line, test: false })),
+      exhaustive: status.complete,
+    };
+  }
+
+  /**
+   * What renders a template: a line that names it in a render call, in a Ruby file or another template under the root,
+   * and for a template that is no partial, the action of its name in its folder's controller or mailer, which renders
+   * it by convention when it renders nothing else. A partial rendered by its object's model name is a match by name.
+   */
+  private async renderers(anchor: SparsityNode, options: ReferenceOptions, signal?: AbortSignal): Promise<ReferenceSearch> {
+    const template = templateName(anchor.path)!;
+    const patterns = renderPatterns(template);
+    const [qualified, local, objects] = [patterns.qualified, patterns.local, patterns.objects].map((list) => list.map((source) => new RegExp(source)));
+    const status: SearchStatus = { complete: true };
+    const raw = await this.search({ maxCount: options.maxCount ?? 4, patterns: [...patterns.qualified, ...patterns.local, ...patterns.objects], paths: [this.root] }, signal, status);
+    const found: Array<RgHit & Partial<ReferenceHit>> = [];
+    for (const hit of raw) {
+      const own = templateName(hit.path);
+      if (hit.path === anchor.path || !(own || ofLanguage(hit.path, "ruby")) || /^\s*#/.test(hit.text)) continue;
+      if (own && !(await this.inTemplateRuby(hit, own, /\b(?:render|partial)\b/))) continue;
+      const named = qualified.some((pattern) => pattern.test(hit.text)) || (inTemplateFolder(hit.path, template) && local.some((pattern) => pattern.test(hit.text)));
+      if (named) found.push({ ...hit, exactVia: "render", named: renderedName(hit.text, template) });
+      else if (objects.some((pattern) => pattern.test(hit.text))) found.push({ ...hit, named: renderedName(hit.text, template) });
+    }
+    // Rails renders an action's own template after the action, when it renders or redirects nowhere else.
+    if (!template.partial) {
+      for (const path of conventionalRenderers(template)) {
+        const lines = await this.lines(path);
+        const facts = lines ? this.rubyFacts(path, lines) : undefined;
+        for (const action of facts?.definitions.filter((item) => item.kind === "method" && item.name === template.name && !item.visibility) ?? []) {
+          if (!found.some((hit) => hit.path === path && action.startLine <= hit.line && hit.line <= action.endLine)) {
+            found.push({ path, line: action.startLine, text: lines![action.startLine - 1] ?? "", exactVia: "convention", convention: true });
+          }
+        }
+      }
+    }
+    found.sort((a, b) => Number(isTestPath(a.path)) - Number(isTestPath(b.path)) || Number(!a.exactVia) - Number(!b.exactVia) || a.path.localeCompare(b.path) || a.line - b.line);
+    return {
+      hits: await this.referenceHits(found, options),
+      totalFiles: new Set(found.map((hit) => hit.path)).size,
+      sites: found.map((hit) => ({ path: hit.path, line: hit.line, test: isTestPath(hit.path) })),
+      exhaustive: status.complete,
+    };
+  }
+
+  /**
+   * Callers of `anchor`, as `called_by` edges with their call sites' guards. `limit` caps the list and keeps one call
+   * site per file; `all` lists every call site found. A name too common to search is filtered by receiver type when a
+   * Ruby index is present and skipped otherwise. The count covers production call sites; test call sites are tests.
+   * A Ruby method's callers include the view templates that call it, and a template's are what renders it.
+   */
+  async callers(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = MAX_CALLERS): Promise<CallerSearch> {
+    const name = def.name;
+    const none: CallerSearch = { hits: [], count: { total: 0, shown: 0, complete: false } };
+    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return none;
+    const all = limit === "all";
+    const options: ReferenceOptions = { exclude: anchor, limit: all ? Infinity : limit, perFile: !all, maxCount: all ? ALL_MATCHES_PER_FILE : undefined };
+    let search: ReferenceSearch;
+    if (def.kind === "template") search = await this.renderers(anchor, options, signal);
+    else {
+      const typedOnly = this.tooCommon(name);
+      if (typedOnly && !(anchor.language === "ruby" && this.indexed)) {
+        this.notes.push(`callers of ${name} skipped: name too common to search usefully; search a qualified receiver instead.`);
+        return none;
+      }
+      search = await this.references(name, anchor.language, { ...options, typedOnly }, signal);
+      if (typedOnly && !search.exhaustive) this.notes.push(`callers of ${name}: name too common to search by name alone; only call sites whose receiver type the Ruby index knows are listed.`);
+      // A helper or a model method a view calls: templates hold Ruby the index does not read, so they are found by name.
+      // Only what the app defines under app/ is in a view's reach; a script's or a library's method of the same name is not.
+      if (anchor.language === "ruby" && !typedOnly && VIEW_CALLABLE_KINDS.has(def.kind) && /(?:^|\/)app\//.test(anchor.path)) {
+        const inViews = await this.templateUses(name, { ...options, limit: options.limit - search.hits.length }, signal);
+        search = { hits: [...search.hits, ...inViews.hits], totalFiles: search.totalFiles + inViews.totalFiles, sites: [...search.sites, ...inViews.sites], exhaustive: search.exhaustive && inViews.exhaustive };
+      }
+    }
+    const { hits, totalFiles } = search;
+    if (totalFiles > MAX_CALLER_FILES) this.notes.push(`callers of ${name}: ${totalFiles} files reference the name; showing ${hits.length}. Treat this as a high-fanout boundary.`);
+    else if (totalFiles > hits.length) this.frontier.push(`callers of ${name}: ${totalFiles - hits.length} more files not expanded`);
+
+    for (const hit of hits) {
+      const { site, guards } = hit.node.kind === "template" || hit.convention ? { site: undefined, guards: [] } : await this.callSite(hit, name);
+      hit.guards = guards;
+      if (!hit.exactVia && this.resolvesTo(site, anchor)) hit.exactVia = "checker";
+      // A file outside the TypeScript programs, such as a Node script with no ending, is still exact by its import.
+      if (!hit.exactVia && anchor.language === "javascript" && await this.importsFrom(hit.node.path, name, anchor.path)) hit.exactVia = "import";
+      this.edges.push({
+        from: hit.node.id,
+        to: anchor.id,
+        name: hit.named ?? name,
+        relationship: "called_by",
+        resolution: hit.exactVia ? "exact" : "static_candidate",
+        ...(hit.exactVia ? { via: hit.exactVia } : {}),
+        line: hit.line,
+        note: hit.test ? "test" : hit.enqueue ? "enqueue" : hit.convention ? "renders its template by convention" : undefined,
+        ...(hit.guards.length ? { guards: hit.guards } : {}),
+      });
+    }
+    const total = search.sites.filter((site) => !site.test).length;
+    const shown = hits.filter((hit) => !hit.test).length;
+    return { hits, count: { total, shown, complete: search.exhaustive && shown === total } };
+  }
+
   async definitionExists(name: string, language: Language, signal?: AbortSignal): Promise<boolean> {
     if (language === "ruby") {
-      const hits = await rgJson(["-t", "ruby", "--max-count", "1", ...this.rubyMethodPattern(name).flatMap((pattern) => ["-e", pattern]), this.root], this.options.cwd, this.budget, signal);
+      const hits = await this.search({ language, maxCount: 1, patterns: this.rubyMethodPattern(name), paths: [this.root] }, signal);
       return hits.length > 0;
     }
     const escaped = escapeRegex(name);
-    const hits = await rgJson(["-t", "ts", "-t", "js", "--max-count", "1", "-e", `\\b(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`, "-e", `^\\s*((public|private|protected|static|async|override)\\s+)*${escaped}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`, this.root], this.options.cwd, this.budget, signal);
+    const hits = await this.search({ language, maxCount: 1, patterns: [`\\b(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`, `^\\s*((public|private|protected|static|async|override)\\s+)*${escaped}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`], paths: [this.root] }, signal);
     return hits.length > 0;
   }
 
-  async tests(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit = 10): Promise<ReferenceHit[]> {
-    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return [];
-    if (this.tooCommon(def.name)) return [];
-    const { hits } = await this.references(def.name, anchor.language, { exclude: anchor, onlyTests: true, limit, perFile: false }, signal);
+  /** Tests that reference `anchor` by name; `all` lists every one, and filters a name too common to search by receiver type when a Ruby index is present. */
+  async tests(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = 10): Promise<ReferenceHit[]> {
+    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant" || def.kind === "template") return [];
+    const all = limit === "all";
+    const typedOnly = this.tooCommon(def.name);
+    if (typedOnly && !(all && anchor.language === "ruby" && this.indexed)) return [];
+    const { hits } = await this.references(def.name, anchor.language, { exclude: anchor, onlyTests: true, limit: all ? Infinity : limit, perFile: false, typedOnly, maxCount: all ? ALL_MATCHES_PER_FILE : undefined }, signal);
     return hits;
+  }
+
+  /** The setup blocks that run before the test `def`, outermost first, with their first lines. */
+  async setupOf(node: SparsityNode, def: Definition, maxLines = 60): Promise<Array<{ startLine: number; endLine: number; lines: string[] }>> {
+    const lines = await this.lines(node.path);
+    const facts = lines ? this.factsFor(node.language, node.path, lines) : undefined;
+    if (!lines || !facts) return [];
+    const adapter = node.language === "ruby" ? rubyAdapter : tsAdapter;
+    return adapter.setupBlocks(facts, def).map((block) => ({ ...block, lines: lines.slice(block.startLine - 1, Math.min(block.endLine, block.startLine + maxLines - 1)) }));
   }
 }
 
@@ -1785,6 +2387,7 @@ export async function collectSparsity(options: SparsityOptions): Promise<Sparsit
       nodes: collector.nodes.length,
       edges: collector.edges.length,
       unresolved: collector.edges.filter((edge) => edge.resolution === "unresolved").length,
+      unresolvedByReason: unresolvedByReason(collector.edges),
       truncatedBy: collector.budget.truncatedBy,
       frontier: uniqueValues(collector.frontier),
       cycles: uniqueValues(collector.cycles),
@@ -1861,7 +2464,8 @@ export function formatSparsity(result: SparsityResult): string {
     for (const edge of incoming) {
       const caller = byId.get(edge.from);
       if (!caller) continue;
-      out.push(`  ${caller.id} ${caller.symbol} ${caller.path}:${edge.line}${edge.note ? ` (${edge.note})` : ""}`);
+      const exact = edge.resolution === "exact" ? ` [exact${edge.via ? `, ${edge.via}` : ""}]` : "";
+      out.push(`  ${caller.id} ${caller.symbol} ${caller.path}:${edge.line}${exact}${edge.note ? ` (${edge.note})` : ""}${edge.guards?.length ? `  under ${guardText(edge.guards)}` : ""}`);
     }
   }
 
@@ -1880,7 +2484,7 @@ export function formatSparsity(result: SparsityResult): string {
   const byResolution = new Map<string, number>();
   for (const edge of result.edges) byResolution.set(edge.resolution, (byResolution.get(edge.resolution) ?? 0) + 1);
   const resolutionSummary = [...byResolution.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([resolution, count]) => `${count} ${resolution}`).join(", ");
-  out.push(`  nodes ${coverage.nodes}, edges ${coverage.edges}${resolutionSummary ? ` (${resolutionSummary})` : ""}, unresolved ${coverage.unresolved}, rg calls ${coverage.rgCalls}, truncated: ${coverage.truncatedBy}`);
+  out.push(`  nodes ${coverage.nodes}, edges ${coverage.edges}${resolutionSummary ? ` (${resolutionSummary})` : ""}, unresolved ${coverage.unresolved}${coverage.unresolved ? ` (${describeUnresolvedReasons(coverage.unresolvedByReason)})` : ""}, rg calls ${coverage.rgCalls}, truncated: ${coverage.truncatedBy}`);
   out.push(`  time: ${coverage.elapsedMs} ms wall (setup ${coverage.setupMs} ms for parser, index and program preparation; traversal ${Math.max(0, coverage.elapsedMs - coverage.setupMs)} ms)`);
   out.push(`  depth ${coverage.depthReached}/${coverage.maxDepth} reached; ${describeCoverageBoundary(coverage)}`);
   if (coverage.cycles.length) out.push(`  cycles: ${coverage.cycles.join("; ")}`);

@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
 import type * as Prism from "@ruby/prism";
+import { excerpt, normalizeSignature } from "../shared.ts";
+import { shebangLanguage } from "../scripts.ts";
 import type {
   AdapterDefinition,
   CallSite,
   CollectionKind,
   Definition,
+  Effect,
   FileFacts,
+  Guard,
   InferenceVia,
   IvarInfo,
   LanguageAdapter,
@@ -49,6 +54,11 @@ const TEST_BLOCKS = new Set(["test", "it", "describe", "context", "scenario", "s
 const MIXIN_CALLS = new Set(["include", "extend", "prepend"]);
 const CONSTRUCTOR_LIKE = new Set(["new", "find", "find_by", "find_by!", "find_or_create_by", "find_or_create_by!", "find_or_initialize_by", "create", "create!", "build", "first", "last", "take", "instance", "current", "for", "from", "load", "fetch", "lookup", "wrap", "parse", "cast", "must"]);
 
+/** What a script's top level declares rather than runs. */
+const SCRIPT_DECLARATIONS = new Set(["ClassNode", "ModuleNode", "DefNode", "SingletonClassNode", "ConstantWriteNode", "ConstantPathWriteNode"]);
+/** Calls at a script's top level that load code rather than run it. */
+const LOAD_CALLS = new Set(["require", "require_relative", "load", "autoload", "using"]);
+
 export const RELATION_METHODS = new Set([
   "where", "not", "rewhere", "order", "reorder", "limit", "offset", "joins", "left_joins", "left_outer_joins", "includes",
   "preload", "eager_load", "references", "distinct", "group", "having", "all", "none", "unscoped", "unscope", "readonly",
@@ -71,6 +81,20 @@ const PASSTHROUGH_BLOCK = new Set(["connected_to", "transaction", "with_connecti
 const IDENTITY_METHODS = new Set(["tap", "itself", "dup", "clone", "freeze", "presence", "reload", "tap"]);
 const DYNAMIC_DISPATCH = new Set(["send", "public_send", "__send__", "try", "try!"]);
 const DYNAMIC_CONSTANT = new Set(["constantize", "safe_constantize", "const_get"]);
+
+// Effects are named by method; the consumer reads the call text. Array#insert and Hash#delete are left out as too common.
+const WRITE_METHODS = new Set([
+  "save", "save!", "create", "create!", "update", "update!", "update_all", "update_column", "update_columns", "update_attribute",
+  "update_attributes", "update_attributes!", "insert_all", "insert_all!", "upsert", "upsert_all", "delete_all", "delete_by", "destroy",
+  "destroy!", "destroy_all", "destroy_by", "increment!", "decrement!", "toggle!", "touch", "touch_all", "update_counters",
+  "increment_counter", "decrement_counter", "find_or_create_by", "find_or_create_by!", "create_or_find_by", "create_or_find_by!",
+  "first_or_create", "first_or_create!",
+]);
+const JOB_ENQUEUES = new Set(["perform_later", "perform_async", "perform_in", "perform_at", "perform_bulk"]);
+const MAIL_ENQUEUES = new Set(["deliver_later", "deliver_later!"]);
+const ENQUEUE_METHODS = new Set([...JOB_ENQUEUES, ...MAIL_ENQUEUES, "enqueue"]);
+const CACHE_METHODS = new Set(["fetch", "read", "write", "delete", "exist?", "increment", "decrement", "fetch_multi", "read_multi", "write_multi", "delete_multi", "delete_matched", "clear"]);
+const EFFECT_TEXT_LIMIT = 160;
 
 function constructorLike(name: string): boolean {
   return CONSTRUCTOR_LIKE.has(name) || /^(for|from|with|of|build|create|find|new|make|load|fetch|lookup|parse|wrap|instance)(_|$)/.test(name);
@@ -100,7 +124,7 @@ function lineStartsOf(bytes: Buffer): Uint32Array {
   return Uint32Array.from(starts);
 }
 
-function lineAt(starts: Uint32Array, offset: number): number {
+export function lineAt(starts: Uint32Array, offset: number): number {
   let low = 0;
   let high = starts.length - 1;
   while (low < high) {
@@ -111,16 +135,131 @@ function lineAt(starts: Uint32Array, offset: number): number {
   return low + 1;
 }
 
-function kindName(node: Node | null | undefined): string {
+export function kindName(node: Node | null | undefined): string {
   return node ? node.constructor.name : "";
 }
 
-function sliceSource(bytes: Buffer, loc: Prism.Location | null | undefined): string {
+export function sliceSource(bytes: Buffer, loc: Prism.Location | null | undefined): string {
   if (!loc) return "";
   return bytes.subarray(loc.startOffset, loc.startOffset + loc.length).toString("utf8");
 }
 
-function constantPathText(node: Node | null | undefined): string | undefined {
+// Guards: the conditions that dominate code, as written. Shared by the call visitor and guardsAt.
+
+interface Source {
+  bytes: Buffer;
+  lineStarts: Uint32Array;
+}
+
+const GUARD_TEXT_LIMIT = 300;
+const EXIT_NODES = new Set(["ReturnNode", "NextNode", "BreakNode", "RedoNode", "RetryNode"]);
+const EXIT_CALLS = new Set(["raise", "fail", "throw"]);
+// Code inside these runs on its own later; conditions around them do not dominate it.
+const GUARD_BOUNDARIES = new Set(["DefNode", "ClassNode", "ModuleNode", "SingletonClassNode"]);
+
+/** `if x`, `elsif x` and `unless x` keep their keyword; a ternary condition is the expression alone. */
+function conditionGuard(node: Prism.IfNode | Prism.UnlessNode, source: Source, branch: Guard["branch"]): Guard {
+  const keyword = kindName(node) === "IfNode" ? (node as Prism.IfNode).ifKeywordLoc : (node as Prism.UnlessNode).keywordLoc;
+  const predicate = excerpt(sliceSource(source.bytes, node.predicate.location), GUARD_TEXT_LIMIT);
+  return {
+    line: lineAt(source.lineStarts, node.predicate.location.startOffset),
+    text: keyword ? `${sliceSource(source.bytes, keyword)} ${predicate}` : predicate,
+    branch,
+  };
+}
+
+/** The guard that `child` runs under inside `node`, when `node` branches. */
+function branchGuard(node: Node, child: Node, source: Source): Guard | undefined {
+  const kind = kindName(node);
+  if (kind === "IfNode" || kind === "UnlessNode") {
+    const conditional = node as Prism.IfNode | Prism.UnlessNode;
+    const otherwise = kind === "IfNode" ? (node as Prism.IfNode).subsequent : (node as Prism.UnlessNode).elseClause;
+    if (child === conditional.statements) return conditionGuard(conditional, source, "then");
+    if (child === otherwise) return conditionGuard(conditional, source, "else");
+  } else if (kind === "AndNode" || kind === "OrNode") {
+    const { left, right } = node as Prism.AndNode | Prism.OrNode;
+    if (child !== right) return undefined;
+    return {
+      line: lineAt(source.lineStarts, left.location.startOffset),
+      text: excerpt(sliceSource(source.bytes, left.location), GUARD_TEXT_LIMIT),
+      branch: kind === "AndNode" ? "then" : "else",
+    };
+  }
+  return undefined;
+}
+
+function exits(node: Node | null | undefined): boolean {
+  const kind = kindName(node);
+  if (EXIT_NODES.has(kind)) return true;
+  if (kind === "CallNode") {
+    const call = node as Prism.CallNode;
+    return !call.receiver && EXIT_CALLS.has(call.name);
+  }
+  return (kind === "AndNode" || kind === "OrNode") && exits((node as Prism.AndNode | Prism.OrNode).right);
+}
+
+/** An `if` (not a ternary) or `unless` that has no else branch. */
+function conditionalWithoutElse(node: Node): Prism.IfNode | Prism.UnlessNode | undefined {
+  const kind = kindName(node);
+  if (kind === "IfNode") {
+    const ifNode = node as Prism.IfNode;
+    return ifNode.ifKeywordLoc && !ifNode.subsequent ? ifNode : undefined;
+  }
+  if (kind === "UnlessNode") {
+    const unless = node as Prism.UnlessNode;
+    return unless.elseClause ? undefined : unless;
+  }
+  return undefined;
+}
+
+/** An if or unless without an else whose branch ends in an exit guards the statements after it. */
+function exitGuard(statement: Node, source: Source): Guard | undefined {
+  const conditional = conditionalWithoutElse(statement);
+  const body = conditional?.statements?.body ?? [];
+  if (!conditional || !exits(body[body.length - 1])) return undefined;
+  return conditionGuard(conditional, source, "after-return");
+}
+
+function containsOffset(node: Node, offset: number): boolean {
+  return node.location.startOffset <= offset && offset < node.location.startOffset + node.location.length;
+}
+
+/** One step down toward `offset`: the child holding it and the guards entering that child adds. */
+function stepToward(node: Node, offset: number, source: Source): { child: Node; guards: Guard[] } | undefined {
+  if (kindName(node) === "StatementsNode") {
+    const guards: Guard[] = [];
+    for (const statement of (node as Prism.StatementsNode).body) {
+      if (containsOffset(statement, offset)) return { child: statement, guards };
+      const exit = exitGuard(statement, source);
+      if (exit) guards.push(exit);
+    }
+    return undefined;
+  }
+  for (const child of node.compactChildNodes()) {
+    if (!containsOffset(child, offset)) continue;
+    const guard = branchGuard(node, child, source);
+    return { child, guards: guard ? [guard] : [] };
+  }
+  return undefined;
+}
+
+const SPACE = 0x20;
+const TAB = 0x09;
+const LINE_END = new Set([0x0a, 0x0d]);
+const COMMENT = 0x23;
+
+/** The byte offset where the code of `line` starts, or undefined for a blank or comment line. */
+function firstCodeOffset(source: Source, line: number): number | undefined {
+  const start = source.lineStarts[line - 1];
+  if (start === undefined) return undefined;
+  const end = source.lineStarts[line] ?? source.bytes.length;
+  let offset = start;
+  while (offset < end && (source.bytes[offset] === SPACE || source.bytes[offset] === TAB)) offset += 1;
+  if (offset >= end || LINE_END.has(source.bytes[offset]!) || source.bytes[offset] === COMMENT) return undefined;
+  return offset;
+}
+
+export function constantPathText(node: Node | null | undefined): string | undefined {
   if (!node) return undefined;
   const kind = kindName(node);
   if (kind === "ConstantReadNode") return (node as Prism.ConstantReadNode).name;
@@ -172,18 +311,18 @@ function camelize(name: string): string {
   return name.split("_").filter(Boolean).map((part) => part[0]!.toUpperCase() + part.slice(1)).join("");
 }
 
-function symbolValue(node: Node | null | undefined): string | undefined {
+export function symbolValue(node: Node | null | undefined): string | undefined {
   const kind = kindName(node);
   if (kind === "SymbolNode") return (node as Prism.SymbolNode).unescaped?.value;
   if (kind === "StringNode") return (node as Prism.StringNode).unescaped?.value;
   return undefined;
 }
 
-function argumentsOf(call: Prism.CallNode): Node[] {
+export function argumentsOf(call: Prism.CallNode): Node[] {
   return call.arguments_?.arguments_ ?? [];
 }
 
-function firstBlockBody(call: Prism.CallNode): Node | null {
+export function firstBlockBody(call: Prism.CallNode): Node | null {
   const block = call.block;
   if (!block) return null;
   if (kindName(block) === "BlockNode") return (block as Prism.BlockNode).body;
@@ -200,6 +339,13 @@ function lastExpression(body: Node | null): Node | null {
   if (kind === "BeginNode") return lastExpression((body as Prism.BeginNode).statements);
   if (kind === "ParenthesesNode") return lastExpression((body as Prism.ParenthesesNode).body);
   return body;
+}
+
+/** The parameters of a scope lambda or a define_method block, as written without their `()` or `||`. */
+function callableSignature(call: Prism.CallNode, bytes: Buffer): string {
+  const lambda = argumentsOf(call).find((argument) => kindName(argument) === "LambdaNode") as Prism.LambdaNode | undefined;
+  const parameters = lambda?.parameters ?? (kindName(call.block) === "BlockNode" ? (call.block as Prism.BlockNode).parameters : null);
+  return normalizeSignature(sliceSource(bytes, parameters?.location)).replace(/^[(|]|[)|]$/g, "");
 }
 
 function blockParameterNames(call: Prism.CallNode): string[] {
@@ -250,6 +396,47 @@ function collapsedReceiver(node: Node, bytes: Buffer): string {
     return receiver ? `${receiver}.${call.name}${suffix}` : `${call.name}${suffix}`;
   }
   return sliceSource(bytes, node.location).replace(/\s+/g, " ").slice(0, 40);
+}
+
+function constantName(node: Node | null | undefined): string | undefined {
+  const text = constantPathText(node);
+  return text && text !== "self" ? text.replace(/^::/, "") : undefined;
+}
+
+/** `X.perform_later`, `X.set(...).perform_later` (and Sidekiq's perform_async/in/at) run `X#perform`; `Mailer.action(...).deliver_later` runs the action. */
+function enqueueTarget(call: Prism.CallNode): { owner: string; method: string } | undefined {
+  const receiver = call.receiver;
+  if (!receiver) return undefined;
+  if (JOB_ENQUEUES.has(call.name)) {
+    const job = kindName(receiver) === "CallNode" && (receiver as Prism.CallNode).name === "set" ? (receiver as Prism.CallNode).receiver : receiver;
+    const owner = constantName(job);
+    return owner ? { owner, method: "perform" } : undefined;
+  }
+  if (!MAIL_ENQUEUES.has(call.name) || kindName(receiver) !== "CallNode") return undefined;
+  const action = receiver as Prism.CallNode;
+  const mailer = kindName(action.receiver) === "CallNode" && (action.receiver as Prism.CallNode).name === "with" ? (action.receiver as Prism.CallNode).receiver : action.receiver;
+  const owner = constantName(mailer);
+  return owner ? { owner, method: action.name } : undefined;
+}
+
+function effectKind(call: Prism.CallNode, source: Source): Effect["kind"] | undefined {
+  if (WRITE_METHODS.has(call.name)) return "write";
+  if (ENQUEUE_METHODS.has(call.name)) return "enqueue";
+  const onCache = call.receiver && /(^|[.@:])\w*cache$/i.test(collapsedReceiver(call.receiver, source.bytes));
+  return CACHE_METHODS.has(call.name) && onCache ? "cache" : undefined;
+}
+
+/** The effect a call has, on the line of its method name, with the call's text up to any block. */
+function effectOf(call: Prism.CallNode, source: Source): Effect | undefined {
+  const kind = effectKind(call, source);
+  if (!kind) return undefined;
+  const start = call.location.startOffset;
+  const end = kindName(call.block) === "BlockNode" ? call.block!.location.startOffset : start + call.location.length;
+  return {
+    kind,
+    line: lineAt(source.lineStarts, (call.messageLoc ?? call.location).startOffset),
+    text: excerpt(source.bytes.subarray(start, end).toString("utf8"), EFFECT_TEXT_LIMIT),
+  };
 }
 
 type TypeLookup = (name: string) => LocalType | undefined;
@@ -305,6 +492,9 @@ function inferExpressionType(value: Node | null | undefined, local: TypeLookup, 
   return blockValue();
 }
 
+type Visibility = "public" | "private" | "protected";
+const VISIBILITY_CALLS = new Set(["private", "public", "protected"]);
+
 class Parser {
   readonly definitions: AdapterDefinition[] = [];
   readonly namespaces: NamespaceInfo[] = [];
@@ -313,9 +503,13 @@ class Parser {
   readonly localTypes = new Map<number, Map<string, LocalType>>();
   private readonly stack: NamespaceInfo[] = [];
   private singletonDepth = 0;
+  // The default visibility of each open class, module or `class << self` body, innermost last.
+  private readonly visibility: Visibility[] = [];
   private pendingSig: ParamInfo[] | undefined;
   private pendingReturns: string | undefined;
   private readonly comments: Array<{ line: number; text: string }>;
+  /** The source is a script, its first line a Ruby shebang, so its top-level statements are definitions too. */
+  script = false;
 
   constructor(private readonly bytes: Buffer, private readonly lineStarts: Uint32Array, comments: ParseResult["comments"]) {
     this.comments = comments.map((comment) => ({ line: lineAt(lineStarts, comment.location.startOffset), text: sliceSource(bytes, comment.location) }));
@@ -338,7 +532,20 @@ class Parser {
   }
 
   visitProgram(program: Prism.ProgramNode): void {
+    // A script's top-level code runs when the script does: each statement of it is a definition, with its own calls.
+    if (this.script) for (const statement of program.statements.body) this.visitScriptStatement(statement);
     this.visitBody(program.statements, false);
+  }
+
+  /** A statement at a script's top level that runs: not a class, module, method or constant, nor a `require`. */
+  private visitScriptStatement(node: Node): void {
+    if (SCRIPT_DECLARATIONS.has(kindName(node))) return;
+    const call = kindName(node) === "CallNode" ? node as Prism.CallNode : undefined;
+    if (call && !call.receiver && LOAD_CALLS.has(call.name)) return;
+    const [startLine, endLine] = this.range(node);
+    const text = sliceSource(this.bytes, node.location).split("\n")[0]!.trim();
+    this.definitions.push({ name: call?.name ?? text.split(/[\s(]/)[0]!, symbol: excerpt(text, 80), kind: "statement", startLine, endLine, loadTime: true });
+    this.defNodes.set(startLine, node);
   }
 
   private visitBody(node: Node | null, inClassBody: boolean): void {
@@ -367,7 +574,7 @@ class Parser {
         const singleton = node as Prism.SingletonClassNode;
         if (kindName(singleton.expression) === "SelfNode") {
           this.singletonDepth += 1;
-          this.visitBody(singleton.body, true);
+          this.visitScope(singleton.body);
           this.singletonDepth -= 1;
         }
         return;
@@ -396,8 +603,39 @@ class Parser {
     this.definitions.push({ name, symbol: info.symbol, kind: "class", startLine, endLine, owner: this.owner() });
     this.stack.push(info);
     this.pendingSig = undefined;
-    this.visitBody(node.body, true);
+    this.visitScope(node.body);
     this.stack.pop();
+  }
+
+  /** A class, module or `class << self` body: its methods are public until a bare `private` or `protected`. */
+  private visitScope(body: Node | null): void {
+    this.visibility.push("public");
+    this.visitBody(body, true);
+    this.visibility.pop();
+  }
+
+  /** `private`, `protected` or `public` in a class body: bare, around a `def`, or naming methods defined before it. */
+  private visitVisibility(call: Prism.CallNode): void {
+    const visibility = call.name as Visibility;
+    const args = argumentsOf(call);
+    if (!args.length) {
+      if (this.visibility.length) this.visibility[this.visibility.length - 1] = visibility;
+      return;
+    }
+    for (const argument of args) {
+      if (kindName(argument) === "DefNode") {
+        this.visitDef(argument as Prism.DefNode, visibility);
+        continue;
+      }
+      const name = symbolValue(argument);
+      const owner = this.owner();
+      const kind = this.singletonDepth > 0 ? "singleton_method" : "method";
+      for (const def of this.definitions) {
+        if (def.name !== name || def.owner !== owner || def.kind !== kind) continue;
+        if (visibility === "public") delete def.visibility;
+        else def.visibility = visibility;
+      }
+    }
   }
 
   private visitModule(node: Prism.ModuleNode): void {
@@ -408,7 +646,7 @@ class Parser {
     this.definitions.push({ name, symbol: info.symbol, kind: "module", startLine, endLine, owner: this.owner() });
     this.stack.push(info);
     this.pendingSig = undefined;
-    this.visitBody(node.body, true);
+    this.visitScope(node.body);
     this.stack.pop();
   }
 
@@ -462,13 +700,15 @@ class Parser {
     return { params, returns };
   }
 
-  private visitDef(node: Prism.DefNode): void {
+  /** `visibility` is set for `private def`; otherwise a `def self.` method is public and others take the body's default. */
+  private visitDef(node: Prism.DefNode, explicit?: Visibility): void {
     const [startLine, endLine] = this.range(node);
     const singleton = this.singletonDepth > 0 || node.receiver !== null;
     const owner = this.owner();
     const separator = singleton ? "." : "#";
     const params = this.paramInfos(node.parameters);
     const annotated = this.annotationsFor(startLine, params);
+    const visibility = explicit ?? (node.receiver !== null ? "public" : this.visibility[this.visibility.length - 1] ?? "public");
     const definition: AdapterDefinition = {
       name: node.name,
       symbol: owner ? `${owner}${separator}${node.name}` : node.name,
@@ -479,6 +719,8 @@ class Parser {
       singleton,
       params: annotated.params,
       returns: annotated.returns,
+      signature: normalizeSignature(sliceSource(this.bytes, node.parameters?.location)),
+      ...(visibility === "public" ? {} : { visibility }),
     };
     this.definitions.push(definition);
     this.defNodes.set(startLine, node);
@@ -522,7 +764,9 @@ class Parser {
   }
 
   private visitClassLevelCall(call: Prism.CallNode, inClassBody: boolean): void {
-    if (call.receiver && kindName(call.receiver) !== "SelfNode") {
+    // `RSpec.describe X do` reads like a bare `describe`; other calls with a receiver define nothing.
+    const rspec = call.receiver && /^(::)?RSpec$/.test(constantPathText(call.receiver) ?? "") && TEST_BLOCKS.has(call.name);
+    if (call.receiver && kindName(call.receiver) !== "SelfNode" && !rspec) {
       if (call.name === "sig") this.captureSig(call);
       return;
     }
@@ -551,7 +795,8 @@ class Parser {
       this.definitions.push({ name, symbol: `${owner ?? ""} ${name} ${argumentsOf(call).map((argument) => constantPathText(argument) ?? "").join(", ")}`.trim(), kind: "declaration", startLine, endLine, owner });
       return;
     }
-    if (name === "private" || name === "public" || name === "protected" || name === "module_function" || name === "private_constant") {
+    if (VISIBILITY_CALLS.has(name) && inClassBody) return this.visitVisibility(call);
+    if (VISIBILITY_CALLS.has(name) || name === "module_function" || name === "private_constant") {
       const inner = argumentsOf(call).find((argument) => kindName(argument) === "DefNode");
       if (inner) this.visitDef(inner as Prism.DefNode);
       return;
@@ -559,13 +804,17 @@ class Parser {
     if (inClassBody && (argumentsOf(call).length > 0 || call.block)) {
       const declared = argumentsOf(call).map(symbolValue).filter((value): value is string => Boolean(value));
       const kind = DECLARATION_CALLS.has(name) || declared.length ? name : "declaration";
+      // scope and define_method define callables whose bodies run on call; every other class-body call runs at load.
+      const callable = name === "scope" || name === "define_method";
+      const signature = callable ? callableSignature(call, this.bytes) : undefined;
+      const loadTime = callable ? undefined : true;
       if (declared.length) {
         for (const value of declared) {
           const label = `${name} :${value}`;
-          this.definitions.push({ name: value, symbol: owner ? `${owner} ${label}` : label, kind, startLine, endLine, owner });
+          this.definitions.push({ name: value, symbol: owner ? `${owner} ${label}` : label, kind, startLine, endLine, owner, signature, loadTime });
         }
       } else {
-        this.definitions.push({ name, symbol: owner ? `${owner} ${name}` : name, kind, startLine, endLine, owner });
+        this.definitions.push({ name, symbol: owner ? `${owner} ${name}` : name, kind, startLine, endLine, owner, loadTime });
       }
       if (name === "scope") this.defNodes.set(startLine, call);
       const body = firstBlockBody(call);
@@ -612,6 +861,7 @@ class CallCollector {
   private readonly consumedReceivers = new Set<Node>();
   private readonly localLookup: TypeLookup;
   private readonly ivarLookup: TypeLookup;
+  private guards: Guard[] = [];
 
   constructor(
     private readonly facts: RubyFacts,
@@ -630,6 +880,7 @@ class CallCollector {
     const key = `${site.source}:${site.receiver ?? ""}:${site.name}:${site.line}`;
     if (this.seen.has(key)) return;
     this.seen.add(key);
+    if (this.guards.length) site.guards = [...this.guards];
     this.sites.push(site);
   }
 
@@ -637,16 +888,50 @@ class CallCollector {
     return lineAt(this.facts.lineStarts, node.location.startOffset);
   }
 
+  /** Visits `node` with `guard` added to the conditions that dominate it. */
+  private visitGuarded(node: Node | null, guard: Guard | undefined): void {
+    if (guard) this.guards.push(guard);
+    this.visit(node);
+    if (guard) this.guards.pop();
+  }
+
+  /** A nested definition or class body runs on its own, so it starts with no guards. */
+  private visitUnguarded(node: Node): void {
+    const outer = this.guards;
+    this.guards = [];
+    this.visit(node);
+    this.guards = outer;
+  }
+
+  /** An exiting `if` or `unless` guards the statements after it. */
+  private visitStatements(node: Prism.StatementsNode): void {
+    const depth = this.guards.length;
+    for (const statement of node.body) {
+      this.visit(statement);
+      const exit = exitGuard(statement, this.facts);
+      if (exit) this.guards.push(exit);
+    }
+    this.guards.length = depth;
+  }
+
   visit(node: Node | null): void {
     if (!node || this.consumedReceivers.has(node)) return;
     const kind = kindName(node);
+    if (GUARD_BOUNDARIES.has(kind) && this.guards.length) return this.visitUnguarded(node);
+    if (kind === "StatementsNode") return this.visitStatements(node as Prism.StatementsNode);
+    if (kind === "AndNode" || kind === "OrNode") {
+      const { left, right } = node as Prism.AndNode | Prism.OrNode;
+      this.visit(left);
+      this.visitGuarded(right, branchGuard(node, right, this.facts));
+      return;
+    }
     if (["IfNode", "UnlessNode", "CaseNode", "CaseMatchNode", "WhileNode", "UntilNode", "RescueNode"].includes(kind)) {
       const saved = new Map(this.locals);
       const changed = new Set<string>();
       for (const child of node.compactChildNodes()) {
         this.locals.clear();
         for (const [name, value] of saved) this.locals.set(name, value);
-        this.visit(child);
+        this.visitGuarded(child, branchGuard(node, child, this.facts));
         for (const [name, value] of this.locals) if (value !== saved.get(name)) changed.add(name);
       }
       this.locals.clear();
@@ -754,6 +1039,12 @@ class CallCollector {
     const receiver = call.receiver;
     const name = call.name;
     this.visitSymbolProc(call, line);
+    const enqueued = enqueueTarget(call);
+    if (enqueued) {
+      this.push({ name: enqueued.method, line, relationship: "enqueues", source: "enqueue", receiver: enqueued.owner, receiverKind: "constant", receiverType: enqueued.owner, label: `${collapsedReceiver(receiver!, this.facts.bytes)}.${name}` });
+    }
+    const effect = effectOf(call, this.facts);
+    const pushCall = (site: CallSite) => this.push(effect ? { ...site, effect } : site);
     if (DYNAMIC_DISPATCH.has(name)) {
       const literal = this.literalMethodName(call);
       const receiverText = receiver ? collapsedReceiver(receiver, this.facts.bytes) : undefined;
@@ -772,12 +1063,12 @@ class CallCollector {
       return;
     }
     if (!receiver) {
-      this.push({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
+      pushCall({ name, line, relationship: "calls", source: "bare", receiverKind: "implicit", receiverType: this.owner });
       return;
     }
     const receiverKind = kindName(receiver);
     if (receiverKind === "SelfNode") {
-      this.push({ name, line, relationship: "calls", source: "receiver_method", receiver: "self", receiverKind: "self", receiverType: this.owner });
+      pushCall({ name, line, relationship: "calls", source: "receiver_method", receiver: "self", receiverKind: "self", receiverType: this.owner });
       return;
     }
     if (receiverKind === "ConstantReadNode" || receiverKind === "ConstantPathNode") {
@@ -785,13 +1076,13 @@ class CallCollector {
       const constant = (constantPathText(receiver) ?? "").replace(/^::/, "");
       if (constant === "T" || constant.startsWith("T::")) return;
       this.push({ name: constant, line, relationship: "references", source: "constant" });
-      this.push({ name, line, relationship: "calls", source: "constant_method", receiver: constant, receiverKind: "constant", receiverType: constant });
+      pushCall({ name, line, relationship: "calls", source: "constant_method", receiver: constant, receiverKind: "constant", receiverType: constant });
       return;
     }
     const receiverText = collapsedReceiver(receiver, this.facts.bytes);
     const typed = this.typedReceiver(receiver);
     const source = typed.receiverKind === "chain" && typed.via === "chain" && chainOf(receiver) ? "constant_method" : "receiver_method";
-    this.push({ name, line, relationship: "calls", source, receiver: receiverText, ...typed });
+    pushCall({ name, line, relationship: "calls", source, receiver: receiverText, ...typed });
   }
 
   private typedReceiver(receiver: Node): Pick<CallSite, "receiverKind" | "receiverType" | "via" | "chain"> {
@@ -808,6 +1099,18 @@ class CallCollector {
   }
 }
 
+/** The syntax tree of `source` with what is needed to read it, or undefined before `ready()` or when Prism fails. */
+export function parseProgram(source: string): { program: Prism.ProgramNode; bytes: Buffer; lineStarts: Uint32Array; errors: number } | undefined {
+  if (!parseFn) return undefined;
+  try {
+    const result = parseFn(source);
+    const bytes = Buffer.from(source, "utf8");
+    return { program: result.value, bytes, lineStarts: lineStartsOf(bytes), errors: result.errors.length };
+  } catch {
+    return undefined;
+  }
+}
+
 export class RubyAdapter implements LanguageAdapter {
   readonly language = "ruby" as const;
   private readonly cache = new Map<string, RubyFacts>();
@@ -816,9 +1119,9 @@ export class RubyAdapter implements LanguageAdapter {
     return loadParser();
   }
 
-  parse(path: string, source: string): FileFacts | undefined {
+  parse(path: string, source: string, detached = false): FileFacts | undefined {
     if (!parseFn) return undefined;
-    const cached = this.cache.get(path);
+    const cached = detached ? undefined : this.cache.get(path);
     if (cached && cached.bytes.equals(Buffer.from(source, "utf8"))) return cached;
     let result: ParseResult;
     try {
@@ -829,6 +1132,7 @@ export class RubyAdapter implements LanguageAdapter {
     const bytes = Buffer.from(source, "utf8");
     const lineStarts = lineStartsOf(bytes);
     const parser = new Parser(bytes, lineStarts, result.comments);
+    parser.script = shebangLanguage(source.split("\n", 1)[0]) === "ruby";
     parser.visitProgram(result.value);
     const facts: RubyFacts = {
       path,
@@ -843,7 +1147,7 @@ export class RubyAdapter implements LanguageAdapter {
       defNodes: parser.defNodes,
       localTypes: parser.localTypes,
     };
-    this.cache.set(path, facts);
+    if (!detached) this.cache.set(path, facts);
     return facts;
   }
 
@@ -866,11 +1170,94 @@ export class RubyAdapter implements LanguageAdapter {
     const collector = new CallCollector(ruby, owner, locals, ivars);
     const call = kindName(node) === "CallNode" ? node as Prism.CallNode : undefined;
     const lambda = call ? argumentsOf(call).find((argument) => kindName(argument) === "LambdaNode") as Prism.LambdaNode | undefined : undefined;
-    const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : lambda?.body ?? (call ? firstBlockBody(call) : null);
+    // A script's top-level statement is its own body.
+    const body = kindName(node) === "DefNode" ? (node as Prism.DefNode).body : def.kind === "statement" ? node : lambda?.body ?? (call ? firstBlockBody(call) : null);
     if (!body && def.kind === "scope") return [{ name: def.name, line: def.startLine, source: "dynamic", relationship: "calls", label: def.symbol, dynamic: "scope body is not a literal lambda or block; its calls cannot be enumerated" }];
     collector.visit(body);
     return collector.sites;
   }
+
+  guardsAt(facts: FileFacts, def: Definition, line: number): Guard[] {
+    const ruby = facts as RubyFacts;
+    const offset = line >= def.startLine && line <= def.endLine ? firstCodeOffset(ruby, line) : undefined;
+    if (offset === undefined) return [];
+    let guards: Guard[] = [];
+    let node: Node = ruby.program;
+    for (;;) {
+      if (GUARD_BOUNDARIES.has(kindName(node))) guards = [];
+      const step = stepToward(node, offset, ruby);
+      if (!step) return guards;
+      guards.push(...step.guards);
+      node = step.child;
+    }
+  }
+
+  setupBlocks(facts: FileFacts, def: Definition): Array<{ startLine: number; endLine: number }> {
+    const ruby = facts as RubyFacts;
+    const offset = firstCodeOffset(ruby, def.startLine);
+    if (offset === undefined) return [];
+    const blocks: Array<{ startLine: number; endLine: number }> = [];
+    let node: Node = ruby.program;
+    // Walk down to the test, collecting the setup statements beside each scope that encloses it.
+    for (;;) {
+      let next: Node | undefined;
+      if (kindName(node) === "StatementsNode") {
+        for (const statement of (node as Prism.StatementsNode).body) {
+          if (containsOffset(statement, offset)) next = statement;
+          else if (isSetup(statement)) blocks.push(this.lineRange(ruby, statement));
+        }
+      } else {
+        next = node.compactChildNodes().find((child) => containsOffset(child, offset));
+      }
+      if (!next || next.location.startOffset === offset) return blocks;
+      node = next;
+    }
+  }
+
+  private lineRange(facts: RubyFacts, node: Node): { startLine: number; endLine: number } {
+    const end = node.location.startOffset + Math.max(0, node.location.length - 1);
+    return { startLine: lineAt(facts.lineStarts, node.location.startOffset), endLine: lineAt(facts.lineStarts, end) };
+  }
+
+  semanticFingerprint(facts: FileFacts, def: Definition): string | undefined {
+    const ruby = facts as RubyFacts;
+    const start = ruby.lineStarts[def.startLine - 1];
+    if (start === undefined) return undefined;
+    const end = ruby.lineStarts[def.endLine] ?? ruby.bytes.length;
+    // The outermost nodes on the definition's lines; comments are not nodes.
+    const parts: string[] = [];
+    const visit = (node: Node) => {
+      const from = node.location.startOffset;
+      const to = from + node.location.length;
+      if (to <= start || from >= end) return;
+      if (from >= start && to <= end) {
+        parts.push(JSON.stringify(node.toJSON(), withoutLayout));
+        return;
+      }
+      for (const child of node.compactChildNodes()) visit(child);
+    };
+    visit(ruby.program);
+    return parts.length ? createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16) : undefined;
+  }
+}
+
+// Prism's flag for a node that starts a new line, which a line break alone sets or clears.
+const NEWLINE_FLAG = 1;
+
+/** Prism's JSON of a node without where it is: its locations, and the flag a line break sets. */
+function withoutLayout(key: string, value: unknown): unknown {
+  if (key === "location" || key.endsWith("Loc")) return undefined;
+  if (key === "flags" && typeof value === "number") return value & ~NEWLINE_FLAG;
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
+const SETUP_CALLS = new Set(["setup", "before", "prepend_before", "append_before"]);
+
+/** `setup do`, `setup :method`, `before do`, `before(:each) do` or `def setup`. */
+function isSetup(statement: Node): boolean {
+  const kind = kindName(statement);
+  if (kind === "DefNode") return (statement as Prism.DefNode).name === "setup";
+  return kind === "CallNode" && !(statement as Prism.CallNode).receiver && SETUP_CALLS.has((statement as Prism.CallNode).name);
 }
 
 export const rubyAdapter = new RubyAdapter();
