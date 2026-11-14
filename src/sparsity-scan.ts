@@ -566,6 +566,17 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   const collectors = new Map<string, Collector>();
   const rootOverride = options.root && resolve(cwd, options.root) !== resolve(cwd) ? options.root : undefined;
   if (options.root && !rootOverride) indexNotes.push("Whole-repository root override ignored for a diff; using the nearest component root per changed file.");
+  const rubyRoots = new Set<string>();
+  const productionRubyRoots = new Set<string>();
+  if (rubyReady && options.indexCacheDir) {
+    for (const file of files) {
+      if (file.language !== "ruby" || !anchored(file) || file.status === "deleted") continue;
+      const root = await findRoot(cwd, ensureInsideCwd(cwd, file.path), rootOverride);
+      const rootDisplay = displaySearchRoot(cwd, root);
+      rubyRoots.add(rootDisplay);
+      if (file.kind !== "test") productionRubyRoots.add(rootDisplay);
+    }
+  }
   const collectorFor = async (path: string): Promise<{ collector: Collector; rootDisplay: string } | undefined> => {
     const absolute = ensureInsideCwd(cwd, path);
     const root = await findRoot(cwd, absolute, rootOverride);
@@ -573,12 +584,10 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     let collector = collectors.get(rootDisplay);
     if (!collector) {
       let rubyIndex: RubyIndex | undefined;
-      const productionRubyChange = files.some((file) => file.language === "ruby" && anchored(file) && file.kind !== "test" && file.status !== "deleted" && (rootDisplay === "." || file.path === rootDisplay || file.path.startsWith(`${rootDisplay}/`)));
-      const ruby = (files.find((file) => file.path === normalizeRepoRelativePath(path))?.language ?? fileLanguage(path)) === "ruby";
-      if (rubyReady && options.indexCacheDir && ruby && !productionRubyChange) {
+      if (rubyRoots.has(rootDisplay) && !productionRubyRoots.has(rootDisplay)) {
         indexNotes.push(`Ruby index for ${rootDisplay} skipped: only test files changed under it; name-based ripgrep resolution used instead.`);
       }
-      if (rubyReady && options.indexCacheDir && ruby && productionRubyChange) {
+      if (options.indexCacheDir && productionRubyRoots.has(rootDisplay)) {
         rubyIndex = await buildRubyIndex({ cwd, root: rootDisplay, cacheDir: options.indexCacheDir, signal, overlay: headContent, log: (message) => indexNotes.push(message) });
         rubyIndexes.set(rootDisplay, rubyIndex);
         const described = describeRubyIndex(rubyIndex);
