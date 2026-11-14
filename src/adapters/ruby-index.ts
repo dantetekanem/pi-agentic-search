@@ -154,7 +154,8 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 9;
+// Earlier baselines may have been persisted after incomplete file discovery.
+const INDEX_VERSION = 10;
 const DEFAULT_MAX_FILES = 8000;
 // Match rg's Ruby type even when a deleted path is absent from discovery.
 const RUBY_FILE_PATH = /(?:\.(?:rb|rake|gemspec|rbw)|(?:^|\/)(?:\.irbrc|Gemfile|Rakefile|config\.ru))$/;
@@ -163,7 +164,7 @@ function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSign
   const args = ["--files", "--hidden", "--color=never", "-t", "ruby"];
   addRgExcludes(args);
   args.push(root);
-  return new Promise((resolvePromise) => {
+  return new Promise((resolvePromise, reject) => {
     const files: string[] = [];
     let carry = "";
     let capped = false;
@@ -190,9 +191,17 @@ function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSign
         }
       }
     });
-    child.on("error", finish);
-    child.on("close", () => {
-      if (!capped && carry.trim()) files.push(normalizeRepoRelativePath(carry.trim()));
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      const noMatches = code === 1 && files.length === 0 && !carry.trim();
+      if (code !== 0 && !noMatches) {
+        const reason = signal ? `terminated by ${signal}` : `exited with code ${code}`;
+        reject(new Error(`Ruby file discovery failed: rg ${reason}`));
+        return;
+      }
+      if (carry.trim()) files.push(normalizeRepoRelativePath(carry.trim()));
+      capped = files.length > maxFiles;
       finish();
     });
   });

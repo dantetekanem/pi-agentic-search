@@ -61,18 +61,26 @@ export async function scriptFiles(root: string, cwd: string, signal?: AbortSigna
   const args = ["--files", "--hidden", "--color=never"];
   addRgExcludes(args);
   args.push(root);
-  const listed = await new Promise<string[]>((resolvePromise) => {
+  const listed = await new Promise<string[]>((resolvePromise, reject) => {
     const found: string[] = [];
     let carry = "";
+    let hasOutput = false;
     const child = spawn("rg", args, { cwd, signal, stdio: ["ignore", "pipe", "ignore"] });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
+      hasOutput ||= Boolean(chunk.trim());
       const lines = (carry + chunk).split("\n");
       carry = lines.pop() ?? "";
       for (const line of lines) if (line.trim() && hasNoEnding(line.trim()) && found.length < MOST_CANDIDATES) found.push(normalizeRepoRelativePath(line.trim()));
     });
-    child.on("error", () => resolvePromise(found));
-    child.on("close", () => {
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      const noMatches = code === 1 && !hasOutput;
+      if (code !== 0 && !noMatches) {
+        const reason = signal ? `terminated by ${signal}` : `exited with code ${code}`;
+        reject(new Error(`Script discovery failed: rg ${reason}`));
+        return;
+      }
       if (carry.trim() && hasNoEnding(carry.trim()) && found.length < MOST_CANDIDATES) found.push(normalizeRepoRelativePath(carry.trim()));
       resolvePromise(found);
     });
