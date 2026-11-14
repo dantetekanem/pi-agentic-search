@@ -80,6 +80,19 @@ test("test and reference intents prefer their relevant evidence", () => fixture(
   assert.equal(references.files[0]?.path, "src/caller.ts");
 }));
 
+test("reference intent skips the declaration bonus among files that also contain callers", () => fixture({
+  "src/a-mixed.ts": "export function needle() {}\nneedle();\n",
+  "src/z-callers.ts": "needle();\nneedle();\nneedle();\n",
+}, async (cwd) => {
+  for (const intent of ["references", "tests", "file", "auto", "definition"] as const) {
+    const result = await search(cwd, { query: "needle", intent });
+    const expected = intent === "references" ? "src/z-callers.ts" : "src/a-mixed.ts";
+
+    assert.equal(result.files[0]?.path, expected, intent);
+    assert.equal(result.files[0]?.topMatch?.marker, intent === "references" ? "ref" : "def", intent);
+  }
+}));
+
 test("an unrelated variable declaration does not suppress imported-package expansion", () => fixture({
   "package.json": '{"name":"fixture"}',
   "src/main.ts": "import { needle } from 'dependency';\nconst cached = needle();\n",

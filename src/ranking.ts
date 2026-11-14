@@ -125,7 +125,7 @@ export function rankFileGroups(
     let score = paths.get(path)?.score ?? 0;
     reasons.push(...(paths.get(path)?.reasons ?? []));
     if (count) reasons.push("content match");
-    if (definitionCount && declarationEvidence) {
+    if (intent !== "references" && definitionCount && declarationEvidence) {
       score += 35 + Math.min(30, definitionCount * 5);
       reasons.push(`${definitionCount} definition match${definitionCount === 1 ? "" : "es"}`);
     }
