@@ -1461,15 +1461,16 @@ export class Collector {
   private readonly constantCache = new Map<string, ConstantResolution>();
 
   private async resolveRubyConstant(constant: string, fromPath: string, signal?: AbortSignal): Promise<ConstantResolution> {
-    const cached = this.constantCache.get(constant);
+    const key = JSON.stringify([fromPath, constant]);
+    const cached = this.constantCache.get(key);
     if (cached) return cached;
     const result = await this.resolveRubyConstantUncached(constant, fromPath, signal);
-    this.constantCache.set(constant, result);
+    this.constantCache.set(key, result);
     return result;
   }
 
-  private async namespaceUnderRoot(namespace: string, signal?: AbortSignal): Promise<boolean> {
-    const cached = this.constantCache.get(namespace);
+  private async namespaceUnderRoot(namespace: string, fromPath: string, signal?: AbortSignal): Promise<boolean> {
+    const cached = this.constantCache.get(JSON.stringify([fromPath, namespace]));
     if (cached) return cached.candidates.length > 0;
     const files = await this.listFiles(`**/${camelToSnake(namespace)}{.rb,}`, signal);
     if (files.length) return true;
@@ -1512,7 +1513,7 @@ export class Collector {
     }
     if (hits.length) return { candidates: this.rankCandidates(hits, fromPath, constant) };
 
-    if (segments.length >= 2 && !(await this.namespaceUnderRoot(segments[0]!, signal))) {
+    if (segments.length >= 2 && !(await this.namespaceUnderRoot(segments[0]!, fromPath, signal))) {
       return { candidates: [], note: `${segments[0]} is not defined under ${this.rootDisplay}; ${constant} comes from the platform, a gem or another component.` };
     }
 
