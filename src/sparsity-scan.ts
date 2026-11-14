@@ -168,9 +168,12 @@ export interface DanglingRecord {
   name: string;
   oldPath: string;
   oldLine: number;
+  symbol?: string;
+  root: string;
   language: Language;
+  /** A matching static definition identity remains; not proof of runtime dispatch. */
   stillDefined: boolean;
-  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; test: boolean }>;
+  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; test: boolean; resolution: "static_candidate" }>;
 }
 
 export interface Section {
@@ -433,18 +436,23 @@ async function guardRevision(options: ScanOptions, head: string): Promise<void> 
   }
 }
 
-function removedDefinitionNames(lines: string[], ranges: Array<[number, number]>, language: Language): Array<{ name: string; line: number }> {
-  const found: Array<{ name: string; line: number }> = [];
+function removedDefinitions(
+  lines: string[],
+  ranges: Array<[number, number]>,
+  language: Language,
+  definitions: AdapterDefinition[] | undefined,
+): Array<{ name: string; line: number; definition?: AdapterDefinition }> {
+  const found: Array<{ name: string; line: number; definition?: AdapterDefinition }> = [];
   for (const [start, end] of ranges) {
-    for (let n = start; n <= Math.min(end, lines.length); n += 1) {
-      const text = lines[n - 1]!;
-      if (language === "ruby") {
-        const match = text.match(/^\s*def\s+(?:self\.)?([A-Za-z_]\w*[?!=]?)/);
-        if (match) found.push({ name: match[1]!, line: n });
-      } else {
-        const start = jsDefinitionStart(text);
-        if (start && start.kind !== "test" && start.kind !== "class") found.push({ name: start.name, line: n });
-      }
+    for (let line = start; line <= Math.min(end, lines.length); line += 1) {
+      const text = lines[line - 1]!;
+      const declaration = language === "ruby"
+        ? { name: text.match(/^\s*def\s+(?:self\.)?([A-Za-z_]\w*[?!=]?)/)?.[1], kind: "method" }
+        : jsDefinitionStart(text);
+      if (!declaration?.name || declaration.kind === "test" || declaration.kind === "class") continue;
+      const name = declaration.name;
+      const definition = definitions?.find((def) => def.name === name && def.startLine <= line && line <= def.endLine);
+      found.push({ name, line, definition });
     }
   }
   return found;
@@ -943,21 +951,26 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
         continue;
       }
       const ranges = file.status === "deleted" ? [[1, oldLines.length] as [number, number]] : file.oldRanges;
-      const removed = removedDefinitionNames(oldLines, ranges, file.language);
+      const removed = removedDefinitions(oldLines, ranges, file.language, await definitionsAtBase(file));
       if (!removed.length) continue;
-      const found = await collectorFor(file.status === "deleted" ? (files.find((f) => anchored(f) && f.kind !== "test" && f.status !== "deleted")?.path ?? oldPath) : file.path).catch(() => undefined);
+      const found = await collectorFor(oldPath).catch(() => undefined);
       if (!found) continue;
       for (const item of removed.slice(0, 12)) {
-        if (found.collector.tooCommon(item.name)) continue;
-        const stillDefined = await found.collector.definitionExists(item.name, file.language, signal);
+        const stillDefined = item.definition ? await found.collector.definitionExists(item.definition, file.path, file.language, signal) : false;
+        if (!item.definition) indexNotes.push(`Removed definition identity unavailable at ${oldPath}:${item.line}; caller candidates are name-only, not proof of removal.`);
         const callers = stillDefined ? [] : (await found.collector.references(item.name, file.language, { limit: 6 }, signal)).hits;
         dangling.push({
           name: item.name,
           oldPath,
           oldLine: item.line,
+          symbol: item.definition?.symbol,
+          root: found.rootDisplay,
           language: file.language,
           stillDefined,
-          callers: callers.map((hit) => ({ id: hit.node.id, symbol: hit.node.symbol, path: hit.node.path, line: hit.line, text: hit.text, test: hit.test })),
+          callers: callers.map((hit) => ({
+            id: hit.node.id, symbol: hit.node.symbol, path: hit.node.path, line: hit.line,
+            text: hit.text, test: hit.test, resolution: "static_candidate",
+          })),
         });
       }
     }
@@ -1200,10 +1213,11 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
   }
 
   if (result.dangling.length) {
-    const out: string[] = ["Definitions removed on the old side of the diff."];
+    const out: string[] = ["Definitions removed on the old side of the diff. Caller candidates match by name within the original component; runtime dispatch is not proven."];
     for (const item of result.dangling) {
-      out.push(`- ${item.name} removed from ${item.oldPath}:${item.oldLine}: ${item.stillDefined ? "another definition with this name still exists under the root" : item.callers.length ? `NO definition left, ${item.callers.length} caller(s) still reference it:` : "no definition left and no remaining callers found by name"}`);
-      for (const caller of item.callers) out.push(`    - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${caller.test ? " (test)" : ""}  ${caller.text.slice(0, 100)}`);
+      out.push(`- ${item.name} removed from ${item.oldPath}:${item.oldLine}: ${item.stillDefined ? "the same definition identity still exists under the root" : !item.symbol ? "definition identity unverified" : item.callers.length ? `NO definition left for this identity, ${item.callers.length} caller candidate(s):` : "no matching definition or caller candidates found"}`);
+      out.push(`    identity: ${item.symbol ?? "unknown"}; root: ${item.root}`);
+      for (const caller of item.callers) out.push(`    - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line} [${caller.resolution}]${caller.test ? " (test)" : ""}  ${caller.text.slice(0, 100)}`);
     }
     push("dangling", out.join("\n"));
   }
