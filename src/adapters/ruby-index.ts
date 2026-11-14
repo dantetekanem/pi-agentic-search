@@ -154,7 +154,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 9;
+const INDEX_VERSION = 10;
 const DEFAULT_MAX_FILES = 8000;
 // Match rg's Ruby type even when a deleted path is absent from discovery.
 const RUBY_FILE_PATH = /(?:\.(?:rb|rake|gemspec|rbw)|(?:^|\/)(?:\.irbrc|Gemfile|Rakefile|config\.ru))$/;
@@ -292,12 +292,20 @@ async function treeHashFor(cwd: string, root: string, signal?: AbortSignal): Pro
 
 async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal, scripts: ReadonlySet<string> = new Set()): Promise<{ modified: string[]; deleted: string[]; untracked: string[] }> {
   const result = { modified: [] as string[], deleted: [] as string[], untracked: [] as string[] };
-  const output = await runGit(["status", "--porcelain", "--untracked-files=all", "--", root === "" ? "." : root], cwd, signal);
-  for (const line of output.split("\n")) {
-    if (!line.trim()) continue;
-    const status = line.slice(0, 2);
-    const path = normalizeRepoRelativePath(line.slice(3).split(" -> ").pop()!.trim());
-    if (!RUBY_FILE_PATH.test(path) && !scripts.has(path)) continue;
+  const output = await runGit(["status", "--porcelain", "-z", "--untracked-files=all", "--", root === "" ? "." : root], cwd, signal);
+  const entries = output.split("\0");
+  const isRuby = (path: string) => RUBY_FILE_PATH.test(path) || scripts.has(path);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    const path = normalizeRepoRelativePath(entry.slice(3));
+    // Porcelain -z gives the destination first, then a separate source pathname for renames/copies.
+    if (/[RC]/.test(status)) {
+      const original = normalizeRepoRelativePath(entries[++i]!);
+      if (status.includes("R") && isRuby(original)) result.deleted.push(original);
+    }
+    if (!isRuby(path)) continue;
     if (status.includes("?")) result.untracked.push(path);
     else if (status.includes("D")) result.deleted.push(path);
     else result.modified.push(path);
