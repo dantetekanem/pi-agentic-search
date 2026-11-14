@@ -2297,14 +2297,21 @@ export class Collector {
     return { hits, count: { total, shown, complete: search.exhaustive && shown === total } };
   }
 
-  async definitionExists(name: string, language: Language, signal?: AbortSignal): Promise<boolean> {
+  async definitionExists(def: AdapterDefinition, path: string, language: Language, signal?: AbortSignal): Promise<boolean> {
+    // Ruby owners can reopen across files; JS/TS module identities are local to the original (or renamed) file.
+    let paths = [path];
     if (language === "ruby") {
-      const hits = await this.search({ language, maxCount: 1, patterns: this.rubyMethodPattern(name), paths: [this.root] }, signal);
-      return hits.length > 0;
+      const hits = await this.search({ language, maxCount: 1, patterns: this.rubyMethodPattern(def.name), paths: [this.root] }, signal);
+      paths = [...new Set(hits.map((hit) => hit.path))];
     }
-    const escaped = escapeRegex(name);
-    const hits = await this.search({ language, maxCount: 1, patterns: [`\\b(function\\s*\\*?|const|let|var|class)\\s+${escaped}([^\\w$]|$)`, `^\\s*((public|private|protected|static|async|override)\\s+)*${escaped}\\s*(<[^>]*>)?\\s*\\([^)]*\\)\\s*(:[^{;=]+)?\\s*\\{\\s*$`], paths: [this.root] }, signal);
-    return hits.length > 0;
+    for (const candidate of paths) {
+      const lines = await this.lines(candidate);
+      const facts = lines ? this.factsFor(language, candidate, lines) : undefined;
+      const matches = facts?.definitions.some((item) =>
+        item.symbol === def.symbol && item.kind === def.kind && item.owner === def.owner && item.singleton === def.singleton);
+      if (matches) return true;
+    }
+    return false;
   }
 
   /** Tests that reference `anchor` by name; `all` lists every one, and filters a name too common to search by receiver type when a Ruby index is present. */
