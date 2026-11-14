@@ -154,7 +154,7 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 8;
+const INDEX_VERSION = 9;
 const DEFAULT_MAX_FILES = 8000;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
@@ -290,12 +290,7 @@ async function treeHashFor(cwd: string, root: string, signal?: AbortSignal): Pro
 
 async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal, scripts: ReadonlySet<string> = new Set()): Promise<{ modified: string[]; deleted: string[]; untracked: string[] }> {
   const result = { modified: [] as string[], deleted: [] as string[], untracked: [] as string[] };
-  let output: string;
-  try {
-    output = await runGit(["status", "--porcelain", "--untracked-files=all", "--", root === "" ? "." : root], cwd, signal);
-  } catch {
-    return result;
-  }
+  const output = await runGit(["status", "--porcelain", "--untracked-files=all", "--", root === "" ? "." : root], cwd, signal);
   for (const line of output.split("\n")) {
     if (!line.trim()) continue;
     const status = line.slice(0, 2);
@@ -329,7 +324,10 @@ export async function buildRubyIndex(options: RubyIndexOptions): Promise<RubyInd
   const files = [...discovery.files, ...[...scripts].filter((path) => !discovery.files.includes(path))];
 
   const treeHash = (await treeHashFor(options.cwd, root, options.signal)) ?? "worktree";
-  const dirty = await dirtyFiles(options.cwd, root, options.signal, scripts);
+  // A HEAD baseline needs verified status; without HEAD, read the worktree and never cache it.
+  const dirty = treeHash === "worktree"
+    ? { modified: [], deleted: [], untracked: [] }
+    : await dirtyFiles(options.cwd, root, options.signal, scripts);
   const dirtySet = new Set([...dirty.modified, ...dirty.deleted, ...dirty.untracked]);
   const cachePath = join(options.cacheDir, `${cacheKey(options.cwd, root, treeHash)}.json.gz`);
 
