@@ -154,8 +154,10 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-const INDEX_VERSION = 8;
+const INDEX_VERSION = 9;
 const DEFAULT_MAX_FILES = 8000;
+// Match rg's Ruby type even when a deleted path is absent from discovery.
+const RUBY_FILE_PATH = /(?:\.(?:rb|rake|gemspec|rbw)|(?:^|\/)(?:\.irbrc|Gemfile|Rakefile|config\.ru))$/;
 
 function rgFiles(root: string, cwd: string, maxFiles: number, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
   const args = ["--files", "--hidden", "--color=never", "-t", "ruby"];
@@ -300,7 +302,7 @@ async function dirtyFiles(cwd: string, root: string, signal?: AbortSignal, scrip
     if (!line.trim()) continue;
     const status = line.slice(0, 2);
     const path = normalizeRepoRelativePath(line.slice(3).split(" -> ").pop()!.trim());
-    if (!/\.(rb|rake)$/.test(path) && !scripts.has(path)) continue;
+    if (!RUBY_FILE_PATH.test(path) && !scripts.has(path)) continue;
     if (status.includes("?")) result.untracked.push(path);
     else if (status.includes("D")) result.deleted.push(path);
     else result.modified.push(path);
