@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { repositoryCwd } from "./context.ts";
 import { renderCall, renderResult } from "./render.ts";
 import { runSearch as search } from "./search.ts";
 import { registerSparsityTools } from "./sparsity-extension.ts";
@@ -13,6 +14,7 @@ export { formatSearchResults } from "./format.ts";
 export type { CodeMatch, RankedFileResult, PathMatch } from "./types.ts";
 
 const SearchParams = Type.Object({
+  cwd: Type.Optional(Type.String({ description: "Repository checkout to search. Default: the session's working directory. Use when the session is not inside the searched repository." })),
   query: Type.String({ description: "Precise code syntax regex or literal string to search for. For Rails scopes use scope\\s+:." }),
   context: Type.Optional(Type.String({ description: "Optional natural-language disambiguation hint used only for ranking, not as the ripgrep query. Example: actual goal progress" })),
   intent: Type.Optional(Type.Enum(["definition", "references", "tests", "file", "auto"], { type: "string" })),
@@ -57,7 +59,10 @@ export default function agenticSearchExtension(pi: ExtensionAPI) {
       "A complete agentic_search miss applies only to the reported pattern and completed scopes. Partial or failed coverage requires inspecting its unvisited roots or unresolved relationships.",
     ],
     parameters: SearchParams,
-    async execute(_id, params, signal, _onUpdate, ctx) { return runSearch(params, ctx.cwd, signal); },
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const cwd = await repositoryCwd(params.cwd, ctx.cwd);
+      return runSearch(params, cwd, signal);
+    },
     renderCall, renderResult,
   });
   pi.registerCommand("agentic-search-info", {
