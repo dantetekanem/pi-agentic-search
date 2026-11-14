@@ -162,6 +162,8 @@ export interface AnchorRecord {
   effects: Effect[];
   /** The framework calls this definition: a job's `perform` or a controller action; `exact` when declared or routed. Needs a Ruby index. */
   entry?: Entry | PackageEntry | ScriptEntry;
+  /** The change deleted the whole definition and the file defines it no more: its lines are the base's, `removed` holds them, and `changedLines` is empty. */
+  goneAtHead?: true;
 }
 
 export interface DanglingRecord {
@@ -436,6 +438,17 @@ async function guardRevision(options: ScanOptions, head: string): Promise<void> 
   }
 }
 
+/** The hunk that only deletes lines and that git places at `line`, the line before them, unless another hunk adds lines there. */
+function deletionMarkedAt(file: ChangedFile, line: number): Hunk | undefined {
+  if (file.hunks.some((hunk) => hunk.newCount > 0 && hunk.newStart <= line && line < hunk.newStart + hunk.newCount)) return undefined;
+  return file.hunks.find((hunk) => hunk.newCount === 0 && Math.max(1, hunk.newStart) === line);
+}
+
+/** Whether a hunk with no new lines took them from inside `def`: they stood between its lines `newStart` and `newStart + 1`. */
+function deletedInside(hunk: Hunk, def: { startLine: number; endLine: number }): boolean {
+  return def.startLine <= hunk.newStart && hunk.newStart < def.endLine;
+}
+
 function removedDefinitions(
   lines: string[],
   ranges: Array<[number, number]>,
@@ -639,10 +652,18 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
           line += 1;
           continue;
         }
+        // Lines deleted after a definition's last line are no change of that definition.
+        const deletion = deletionMarkedAt(file, line);
+        if (deletion && !deletedInside(deletion, created.def)) {
+          line += 1;
+          continue;
+        }
         const container = created.def.kind === "class" || created.def.kind === "module";
         const single = created.def.kind === "statement" || created.def.kind === "declaration";
         const previous = (lines[line - 2] ?? "").trimEnd();
-        const continuation = /[,(\[{|\\]$/.test(previous) || /^\s*[.)\]}]/.test(text) || /^\s*["'`]/.test(text) || /^\s*[a-z_]\w*:\s/.test(text) && /[,(]$/.test(previous);
+        // Only a statement made of this line alone can be a piece of another one: a line inside a statement the parser
+        // read from a line above, such as a listener's callback, is that statement's change.
+        const continuation = created.def.startLine === line && (/[,(\[{|\\]$/.test(previous) || /^\s*[.)\]}]/.test(text) || /^\s*["'`]/.test(text) || /^\s*[a-z_]\w*:\s/.test(text) && /[,(]$/.test(previous));
         const closer = /^\s*(end|else|elsif|ensure|rescue|begin|do|then|[}\])]+;?)\s*$/.test(text);
         if (single && (!/[A-Za-z_$]/.test(text) || closer || continuation || /^\s*(import\b|export\s+(\*|\{)|export\s+.*\bfrom\b|const\s+.*=\s*require\()/.test(text))) {
           line += 1;
@@ -666,7 +687,10 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     for (const [start, end] of candidate.file.newRanges) {
       const from = Math.max(start, candidate.def.startLine);
       const to = Math.min(end, candidate.def.endLine);
-      for (let n = from; n <= to; n += 1) changed.add(n);
+      for (let n = from; n <= to; n += 1) {
+        const deletion = deletionMarkedAt(candidate.file, n);
+        if (!deletion || deletedInside(deletion, candidate.def)) changed.add(n);
+      }
     }
     candidate.changedLines = [...changed].sort((a, b) => a - b);
   }
@@ -772,6 +796,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       if (hunk.oldCount === 0) continue;
       const newEnd = hunk.newStart + Math.max(hunk.newCount, 1) - 1;
       if (newEnd < candidate.def.startLine || hunk.newStart > candidate.def.endLine) continue;
+      if (hunk.newCount === 0 && !deletedInside(hunk, candidate.def)) continue;
       const lines = await oldLines(candidate.file.oldPath ?? candidate.file.path);
       if (!lines) continue;
       const slice = lines.slice(hunk.oldStart - 1, hunk.oldStart - 1 + hunk.oldCount);
@@ -904,6 +929,43 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     });
   }
 
+  // Definitions deleted whole from a file that stays, which the file defines no more: anchors at their base lines, so a
+  // change that only takes code away still says what it took. What still refers to them is in `dangling`.
+  const goneNodes: SparsityNode[] = [];
+  for (const file of base ? files : []) {
+    if ((file.status !== "modified" && file.status !== "renamed") || !file.language || !anchored(file) || !file.oldRanges.length) continue;
+    const atBase = await definitionsAtBase(file);
+    const baseLines = await oldLines(file.oldPath ?? file.path);
+    const headLines = await (await collectorFor(file.path).catch(() => undefined))?.collector.lines(file.path);
+    if (!atBase || !baseLines || !headLines) continue;
+    const adapter = file.language === "ruby" ? rubyAdapter : tsAdapter;
+    const atHead = new Set((adapter.parse(file.path, headLines.join("\n"), true)?.definitions ?? []).map((def) => def.symbol));
+    const deleted = (def: AdapterDefinition) => file.oldRanges.some(([start, end]) => start <= def.startLine && def.endLine <= end);
+    const gone = atBase.filter((def) => def.kind !== "test" && deleted(def) && !atHead.has(def.symbol));
+    for (const def of gone) {
+      if (gone.some((outer) => outer !== def && outer.startLine <= def.startLine && def.endLine <= outer.endLine)) continue;
+      if (anchors.length >= options.maxAnchors) {
+        skippedAnchors.push(`${file.path}:${def.startLine} ${def.symbol} (deleted)`);
+        continue;
+      }
+      const lines = baseLines.slice(def.startLine - 1, def.endLine);
+      const node: SparsityNode = {
+        id: nextId(), path: file.path, symbol: def.symbol, kind: def.kind, language: file.language, startLine: def.startLine, endLine: def.endLine,
+        fingerprint: createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 16),
+        snippet: `deleted whole by this change: lines ${def.startLine}-${def.endLine} of the base, listed under removed`, depth: 0,
+      };
+      goneNodes.push(node);
+      // Production anchors come before test anchors, deleted ones too.
+      const firstTest = anchors.findIndex((anchor) => files.find((item) => item.path === anchor.path)?.kind === "test");
+      anchors.splice(file.kind === "test" || firstTest < 0 ? anchors.length : firstTest, 0, {
+        id: node.id, symbol: def.symbol, kind: def.kind, path: file.path, startLine: def.startLine, endLine: def.endLine, fingerprint: node.fingerprint,
+        changedLines: [], removed: [{ oldStart: def.startLine, lines: lines.slice(0, 60) }], vicinity: "", boundary: { score: 0, tags: [] },
+        callers: [], callerCount: { total: 0, shown: 0, complete: false }, tests: [],
+        ...(runsAtLoad(def) ? { loadTime: true as const } : {}), guards: [], effects: [], goneAtHead: true,
+      });
+    }
+  }
+
   // Tests as facts of their own: every test definition that references an anchor, its calls one hop out, its setup
   let testDefinitions: TestDefinitionRecord[] | undefined;
   if (options.allTests) {
@@ -977,7 +1039,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
   }
 
   const all = [...collectors.values()];
-  const nodes = all.flatMap((collector) => collector.nodes).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+  const nodes = [...all.flatMap((collector) => collector.nodes), ...goneNodes].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
   const edges = all.flatMap((collector) => collector.edges);
   const coverage = {
     maxDepth: options.maxDepth,
@@ -1245,7 +1307,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
     for (const item of result.coverage.frontier.slice(0, 25)) recap.push(`  - ${item}`);
   }
   for (const note of result.coverage.notes) recap.push(`note: ${note}`);
-  const untested = result.anchors.filter((anchor) => !anchor.tests.length && !["declaration", "statement", "constant", "class", "module"].includes(anchor.kind));
+  const untested = result.anchors.filter((anchor) => !anchor.tests.length && !anchor.goneAtHead && !["declaration", "statement", "constant", "class", "module"].includes(anchor.kind));
   if (untested.length) recap.push(`changed definitions with no test referencing them by name: ${untested.map((anchor) => `${anchor.id} ${anchor.symbol}`).join(", ")}`);
   push("recap", recap.length ? recap.join("\n") : "nothing unresolved; no frontier; no skipped anchors");
 

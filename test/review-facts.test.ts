@@ -1006,3 +1006,66 @@ test("a call written as an assignment or an export is a caller, and a declaratio
     assert.equal(declaresName(text, "foo"), false, text);
   }
 }));
+
+test("a changed line inside a top-level call's callback anchors that statement, whatever the line before it ends with", () => repo(async ({ git, write, scan }) => {
+  const worker = (fallback: string, helper: string) => `const known = new Map();
+
+self.addEventListener("install", () => self.skipWaiting());
+
+self.addEventListener("fetch", (event) => {
+  const version = known.get(event.request.url);
+  if (!version) {
+    ${fallback}
+    return;
+  }
+  event.respondWith(fetch(event.request));
+});
+${helper}
+function cacheName(version) {
+  return \`assets-v\${version}\`;
+}
+`;
+  const anyCache = `
+async function fromAnyCache(request) {
+  const names = await caches.keys();
+  for (const name of names) {
+    const hit = await (await caches.open(name)).match(request);
+    if (hit) return hit;
+  }
+  return fetch(request);
+}
+`;
+  await write({ "package.json": '{"name":"fixture"}\n', "public/sw.js": worker("event.respondWith(fromAnyCache(event.request));", anyCache) });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({
+    "public/sw.js": worker("event.respondWith(fetch(event.request));", ""),
+    "test/javascript/sw.test.js": 'import { test, expect } from "bun:test";\n\nfunction startWorker() {\n  return {};\n}\n\ntest("an unknown version goes to the network", () => {\n  expect(startWorker()).toEqual({});\n});\n',
+  });
+  git("add", ".");
+  git("commit", "-qm", "change");
+
+  const result = await scan("HEAD~1..HEAD");
+  const inWorker = result.anchors.filter((anchor) => anchor.path === "public/sw.js").map((anchor) => [anchor.kind, anchor.startLine, anchor.endLine, anchor.changedLines]);
+  assert.deepEqual(inWorker, [["statement", 5, 12, [8]], ["function", 14, 21, []]], "the line after `if (!version) {` sits inside the fetch listener the parser read, so it is that listener's change; the helper went whole");
+  assert.deepEqual(result.dangling.map((entry) => [entry.name, entry.stillDefined]), [["fromAnyCache", false]]);
+}));
+
+test("a definition the change deletes whole is an anchor at its base lines, and the definition before the deletion is not changed by it", () => repo(async ({ git, write, scan }) => {
+  const anyCache = "async function fromAnyCache(request) {\n  const names = await caches.keys();\n  for (const name of names) {\n    const hit = await (await caches.open(name)).match(request);\n    if (hit) return hit;\n  }\n  return fetch(request);\n}\n\n";
+  const worker = (helper: string) => `self.addEventListener("fetch", (event) => {\n  event.respondWith(fetch(event.request));\n});\n\n${helper}function cacheName(version) {\n  return \`assets-v\${version}\`;\n}\n`;
+  const cart = (legacy: string) => `class Cart\n  def total\n    1\n  end\n${legacy}end\n`;
+  await write({ "package.json": '{"name":"fixture"}\n', "public/sw.js": worker(anyCache), "app/models/cart.rb": cart("\n  def legacy_total\n    2\n  end\n") });
+  git("add", ".");
+  git("commit", "-qm", "base");
+  await write({ "public/sw.js": worker(""), "app/models/cart.rb": cart("") });
+  git("commit", "-qam", "change");
+
+  const result = await scan("HEAD~1..HEAD");
+  const anchorsIn = (path: string) => result.anchors.filter((anchor) => anchor.path === path).map((anchor) => [anchor.symbol, anchor.kind, anchor.startLine, anchor.endLine, anchor.changedLines, anchor.goneAtHead]);
+  assert.deepEqual(anchorsIn("public/sw.js"), [["fromAnyCache", "function", 5, 12, [], true]], "nothing calls it and nothing defines it again: it is still what the change did");
+  assert.deepEqual(anchorsIn("app/models/cart.rb"), [["Cart#legacy_total", "method", 6, 8, [], true]], "git places the deletion after `total`'s last line, which does not make `total` changed");
+  const gone = result.anchors.find((anchor) => anchor.symbol === "fromAnyCache")!;
+  assert.deepEqual(gone.removed, [{ oldStart: 5, lines: anyCache.split("\n").slice(0, 8) }], "its own lines, as the base had them");
+  assert.ok(result.nodes.some((node) => node.id === gone.id && node.path === "public/sw.js"), "an anchor is a node of the pack");
+}));
