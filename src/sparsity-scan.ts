@@ -858,7 +858,8 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
     queue.push({ node: candidate.node, def: candidate.def, depth: 0, ancestry: [], focus: candidate.changedLines });
     queues.set(candidate.collector, queue);
   }
-  await Promise.all([...queues].map(async ([collector, queue]) => {
+  // Each collector shares the callee count; finish creation before another root checks its cap.
+  for (const [collector, queue] of queues) {
     while (queue.length) {
       const item = queue.shift()!;
       if (budget.exhausted || signal?.aborted) {
@@ -867,7 +868,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
       }
       await collector.expand(item.node, item.def, item.depth, item.ancestry, queue, signal, item.focus);
     }
-  }));
+  }
 
   // Callers and tests, a few anchors at a time
   const notSearched: CallerSearch = { hits: [], count: { total: 0, shown: 0, complete: false } };
