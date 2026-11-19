@@ -540,6 +540,8 @@ class Calls {
 
 export class TsAdapter implements LanguageAdapter {
   readonly language = "javascript" as const;
+  // The public syntax-diagnostic API can inspect detached ASTs without loading project files.
+  private readonly syntaxProgram = ts.createProgram([], { noLib: true, noResolve: true, types: [] });
   private programs?: TsPrograms;
   private cwd = "";
 
@@ -568,7 +570,7 @@ export class TsAdapter implements LanguageAdapter {
       definitions: extractor.definitions.sort((a, b) => a.startLine - b.startLine || b.endLine - a.endLine),
       namespaces: [],
       ivars: new Map(),
-      errors: 0,
+      errors: this.syntaxProgram.getSyntacticDiagnostics(sourceFile).length,
       sourceFile,
       defNodes: extractor.defNodes,
       handle: fromProgram && fromProgram.text === source ? handle : undefined,
