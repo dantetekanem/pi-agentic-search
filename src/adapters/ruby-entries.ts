@@ -3,7 +3,7 @@ import { ancestorsOf, lookupMethod, resolveConstant, type IndexedDefinition, typ
 import { argumentsOf, constantPathText, kindName, lineAt, parseProgram, symbolValue } from "./ruby.ts";
 import type { RouteTable } from "./ruby-routes.ts";
 
-export type EntryKind = "controller" | "job";
+export type EntryKind = "controller" | "job" | "task";
 
 /** A route that reaches a controller action: its verbs and path, and the line of the routes file that draws it, as written. */
 export interface EntryRoute {
@@ -23,10 +23,10 @@ export interface EntryExceptionsApp {
 }
 
 /**
- * A definition the framework calls: a job's `perform`, or a public method of a controller. `exact` is true for a job
- * and for an action a route read from `config/routes.rb` names; a public controller method no read route names may
- * be routed by code the reader did not interpret, or not at all. A routed action lists its routes, and the action
- * `config.exceptions_app` names says where.
+ * A definition the framework calls: a job's `perform`, a public method of a controller, or a rake task, which rake runs
+ * by its name. `exact` is true for a job, a task and an action a route read from `config/routes.rb` names; a public
+ * controller method no read route names may be routed by code the reader did not interpret, or not at all. A routed
+ * action lists its routes, and the action `config.exceptions_app` names says where.
  */
 export interface Entry {
   kind: EntryKind;
@@ -102,7 +102,10 @@ export function entryRegistry(index: RubyIndex, routes?: RouteTable, routesFile 
     return symbol ? lookupMethod(index, symbol, action, false).filter((def) => def.kind === "method" && !def.visibility) : [];
   };
   const byOwner = new Map<string, IndexedDefinition[]>();
-  for (const def of index.definitions) if (def.owner) byOwner.set(def.owner, [...(byOwner.get(def.owner) ?? []), def]);
+  for (const def of index.definitions) {
+    if (def.owner) byOwner.set(def.owner, [...(byOwner.get(def.owner) ?? []), def]);
+    if (def.kind === "task") mark(def, { kind: "task", exact: true });
+  }
 
   for (const namespace of index.namespaces.values()) {
     if (namespace.kind !== "class") continue;

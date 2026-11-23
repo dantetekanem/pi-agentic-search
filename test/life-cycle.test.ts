@@ -52,6 +52,29 @@ const RAILS: Record<string, string> = {
   "app/views/layouts/application.html.erb": "<%= yield %>\n",
 };
 
+/** A Rails app's other ways in: rake tasks, a mailer and an Action Cable channel. */
+const RAILS_MORE: Record<string, string> = {
+  ...RAILS,
+  "lib/tasks/reports.rake": [
+    "namespace :reports do",
+    "  desc \"Send the daily report\"",
+    "  task daily: :environment do",
+    "    ReportMailer.daily(User.find(1)).deliver_now",
+    "  end",
+    "end",
+    "",
+    "task :cleanup do",
+    "  Cleanup.prune",
+    "end",
+    "",
+  ].join("\n"),
+  "app/models/cleanup.rb": "class Cleanup\n  def self.prune\n    true\n  end\nend\n",
+  "app/mailers/application_mailer.rb": "class ApplicationMailer < ActionMailer::Base\nend\n",
+  "app/mailers/report_mailer.rb": "class ReportMailer < ApplicationMailer\n  def daily(user)\n    mail(to: user.email)\n  end\n\n  private\n\n  def footer\n    \"bye\"\n  end\nend\n",
+  "app/channels/application_cable/channel.rb": "module ApplicationCable\n  class Channel < ActionCable::Channel::Base\n  end\nend\n",
+  "app/channels/chat_channel.rb": "class ChatChannel < ApplicationCable::Channel\n  def subscribed\n    stream_from \"chat\"\n  end\n\n  def speak(data)\n    data\n  end\n\n  private\n\n  def quiet\n    nil\n  end\nend\n",
+};
+
 const callerOf = (result: ScanResult, symbol: string) => {
   const anchor = result.anchors.find((entry) => entry.symbol === symbol);
   assert.ok(anchor, `anchors: ${result.anchors.map((entry) => entry.symbol).join(", ")}`);
@@ -128,6 +151,15 @@ test("what renders a template is its caller: a render call naming it, and the ac
   const [action] = callerOf(result, "users/show.html.erb");
   assert.deepEqual([action?.symbol, action?.line, action?.resolution, action?.convention, action?.entry?.kind, action?.entry && "routes" in action.entry ? action.entry.routes?.length : 0], ["UsersController#show", 2, "exact", true, "controller", 2]);
   assert.ok(result.edges.some((edge) => edge.relationship === "called_by" && edge.via === "convention"));
+}));
+
+test("a rake task is a way in, named with its namespace, and what it calls has it as a caller", () => repo(RAILS_MORE, async (scan) => {
+  const result = await scan({ anchors: ["lib/tasks/reports.rake:4", "lib/tasks/reports.rake:9", "app/models/cleanup.rb:2"] });
+  const anchor = (symbol: string) => result.anchors.find((item) => item.symbol === symbol);
+  assert.deepEqual([anchor("reports:daily")?.kind, anchor("reports:daily")?.startLine, anchor("reports:daily")?.endLine, anchor("reports:daily")?.entry], ["task", 3, 5, { kind: "task", exact: true }]);
+  assert.deepEqual(anchor("cleanup")?.entry, { kind: "task", exact: true });
+  assert.deepEqual(anchor("reports:daily")?.callerCount, { total: 0, shown: 0, complete: false }, "rake runs a task by its name; no call is searched for");
+  assert.deepEqual(callerOf(result, "Cleanup.prune").map(({ symbol, kind, line, entry }) => [symbol, kind, line, entry]), [["cleanup", "task", 9, { kind: "task", exact: true }]]);
 }));
 
 test("a changed template is anchored as one definition, with its changed lines", () => repo(RAILS, async (scan, git, cwd) => {

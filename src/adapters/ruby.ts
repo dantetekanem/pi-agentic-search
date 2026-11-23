@@ -318,6 +318,16 @@ export function symbolValue(node: Node | null | undefined): string | undefined {
   return undefined;
 }
 
+/** The name a rake `task` or `namespace` call gives: `:daily`, `"daily"`, or the first key of `daily: :environment`. */
+function rakeName(argument: Node | undefined): string | undefined {
+  const kind = kindName(argument);
+  if (kind === "KeywordHashNode" || kind === "HashNode") {
+    const [first] = (argument as Prism.KeywordHashNode | Prism.HashNode).elements;
+    return kindName(first) === "AssocNode" ? symbolValue((first as Prism.AssocNode).key) : undefined;
+  }
+  return symbolValue(argument);
+}
+
 export function argumentsOf(call: Prism.CallNode): Node[] {
   return call.arguments_?.arguments_ ?? [];
 }
@@ -510,6 +520,9 @@ class Parser {
   private readonly comments: Array<{ line: number; text: string }>;
   /** The source is a script, its first line a Ruby shebang, so its top-level statements are definitions too. */
   script = false;
+  /** The source is a rake file (`*.rake`, `Rakefile`), so its `task` blocks are definitions, inside their `namespace` blocks. */
+  rakefile = false;
+  private readonly rakeNamespaces: string[] = [];
 
   constructor(private readonly bytes: Buffer, private readonly lineStarts: Uint32Array, comments: ParseResult["comments"]) {
     this.comments = comments.map((comment) => ({ line: lineAt(lineStarts, comment.location.startOffset), text: sliceSource(bytes, comment.location) }));
@@ -777,6 +790,22 @@ class Parser {
     if (name === "sig") {
       this.captureSig(call);
       return;
+    }
+    if (this.rakefile && !inClassBody && !call.receiver && call.block && (name === "namespace" || name === "task")) {
+      const label = rakeName(argumentsOf(call)[0]);
+      if (label !== undefined && name === "namespace") {
+        this.rakeNamespaces.push(label);
+        this.visitBody(firstBlockBody(call), false);
+        this.rakeNamespaces.pop();
+        return;
+      }
+      if (label !== undefined) {
+        // Rake runs a task by its name, the namespaces it is in first: `reports:daily`.
+        const symbol = [...this.rakeNamespaces, label].join(":");
+        this.definitions.push({ name: symbol, symbol, kind: "task", startLine, endLine });
+        this.defNodes.set(startLine, call);
+        return;
+      }
     }
     if (TEST_BLOCKS.has(name) && call.block) {
       const label = symbolValue(argumentsOf(call)[0]) ?? name;
@@ -1133,6 +1162,7 @@ export class RubyAdapter implements LanguageAdapter {
     const lineStarts = lineStartsOf(bytes);
     const parser = new Parser(bytes, lineStarts, result.comments);
     parser.script = shebangLanguage(source.split("\n", 1)[0]) === "ruby";
+    parser.rakefile = /(?:\.rake|(?:^|\/)Rakefile)$/.test(path);
     parser.visitProgram(result.value);
     const facts: RubyFacts = {
       path,

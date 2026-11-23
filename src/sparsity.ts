@@ -2285,7 +2285,8 @@ export class Collector {
   async callers(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = MAX_CALLERS): Promise<CallerSearch> {
     const name = def.name;
     const none: CallerSearch = { hits: [], count: { total: 0, shown: 0, complete: false } };
-    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant") return none;
+    // A rake task is run by its name from the command line or another task, not called.
+    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant" || def.kind === "task") return none;
     const all = limit === "all";
     const options: ReferenceOptions = { exclude: anchor, limit: all ? Infinity : limit, perFile: !all, maxCount: all ? ALL_MATCHES_PER_FILE : undefined };
     let search: ReferenceSearch;
@@ -2356,7 +2357,7 @@ export class Collector {
 
   /** Tests that reference `anchor` by name; `all` lists every one, and filters a name too common to search by receiver type when a Ruby index is present. */
   async tests(anchor: SparsityNode, def: Definition, signal?: AbortSignal, limit: number | "all" = 10): Promise<ReferenceHit[]> {
-    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant" || def.kind === "template") return [];
+    if (def.kind === "declaration" || def.kind === "statement" || def.kind === "constant" || def.kind === "template" || def.kind === "task") return [];
     const all = limit === "all";
     const typedOnly = this.tooCommon(def.name);
     if (typedOnly && !(all && anchor.language === "ruby" && this.indexed)) return [];

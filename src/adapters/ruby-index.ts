@@ -154,8 +154,9 @@ export interface RubyIndexOptions {
   overlay?: Map<string, string>;
 }
 
-// Earlier baselines may have been persisted after incomplete file discovery, or with definitions from before a staged rename.
-const INDEX_VERSION = 11;
+// Earlier baselines may have been persisted after incomplete file discovery, with definitions from before a staged
+// rename, or without the task blocks of rake files and the calls inside them.
+const INDEX_VERSION = 12;
 const DEFAULT_MAX_FILES = 8000;
 // Match rg's Ruby type even when a deleted path is absent from discovery.
 const RUBY_FILE_PATH = /(?:\.(?:rb|rake|gemspec|rbw)|(?:^|\/)(?:\.irbrc|Gemfile|Rakefile|config\.ru))$/;
