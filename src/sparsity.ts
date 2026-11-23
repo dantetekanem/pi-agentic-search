@@ -11,6 +11,7 @@ import { readRoutes } from "./adapters/ruby-routes.ts";
 import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
+import type { WayIn } from "./adapters/js-entries.ts";
 import { scriptFiles, scriptLanguage, shebangLanguage, type ScriptEntry } from "./scripts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
@@ -184,6 +185,8 @@ export interface ReferenceHit {
   named?: string;
   /** No call names it: Rails renders the action's own template by convention. */
   convention?: true;
+  /** Set by `callers` for JS and TS: the key of the object literal's property whose function holds the call, or whose value the name is. */
+  key?: string;
 }
 
 /** What a reference search found: the hits it shows, and every site that passed its filters. */
@@ -2125,6 +2128,13 @@ export class Collector {
     return site ? { site, guards: site.guards ?? [] } : { guards: adapter.guardsAt(facts, hit.def, hit.line) };
   }
 
+  /** Where a JS or TS caller's reference to `name` sits: the property of an object literal whose function holds it. */
+  private async wayIn(hit: ReferenceHit, name: string): Promise<WayIn | undefined> {
+    const lines = await this.lines(hit.node.path);
+    const facts = lines ? this.tsFacts(hit.node.path, lines) : undefined;
+    return facts ? tsAdapter.wayIn(facts, hit.def, hit.line, name) : undefined;
+  }
+
   /** `path` imports `name` from the module at `target`, by a relative import of its own. */
   private async importsFrom(path: string, name: string, target: string): Promise<boolean> {
     const lines = await this.lines(path);
@@ -2287,6 +2297,8 @@ export class Collector {
     for (const hit of hits) {
       const { site, guards } = hit.node.kind === "template" || hit.convention ? { site: undefined, guards: [] } : await this.callSite(hit, name);
       hit.guards = guards;
+      const way = hit.node.language === "javascript" ? await this.wayIn(hit, name) : undefined;
+      if (way?.key !== undefined) hit.key = way.key;
       if (!hit.exactVia && this.resolvesTo(site, anchor)) hit.exactVia = "checker";
       // A file outside the TypeScript programs, such as a Node script with no ending, is still exact by its import.
       if (!hit.exactVia && anchor.language === "javascript" && await this.importsFrom(hit.node.path, name, anchor.path)) hit.exactVia = "import";

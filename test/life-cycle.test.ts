@@ -188,19 +188,35 @@ const HOST: Record<string, string> = {
     "",
   ].join("\n"),
   "src/log.ts": "import { sync } from './reviews.ts';\n\nexport const told = (id: string) => `synced ${sync(id)}`;\n",
+  "src/menu.ts": [
+    "import { sync, type Reviews } from './reviews.ts';",
+    "",
+    "export function menu(reviews: Reviews) {",
+    "  return {",
+    "    prepare: (id: string) => reviews.prepare(id, {}),",
+    "    sync,",
+    "    again: sync,",
+    "  };",
+    "}",
+    "",
+  ].join("\n"),
 };
 
 const callers = (result: ScanResult, symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)!.callers;
 
 test("a call inside a function that is the value of an object's property, or an argument, is a caller: the definition that holds it", () => repo(HOST, async (scan) => {
   const result = await scan({ anchors: ["src/reviews.ts:2", "src/reviews.ts:7"], allCallers: true });
-  assert.deepEqual(callers(result, "Reviews.prepare").map(({ symbol, path, line }) => [symbol, path, line]), [
-    ["reviewHandlers", "src/seat.ts", 6],
-    ["reviewHandlers", "src/seat.ts", 8],
-  ], "a quoted key that holds the name does not hide the call after it");
-  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "Reviews.prepare")!.callerCount, { total: 2, shown: 2, complete: true });
-  assert.deepEqual(callers(result, "sync").map(({ symbol, path, line }) => [symbol, path, line]), [
-    ["bus.on('sync', (id: string) => sync(id))", "src/bus.ts", 5],
-    ["told", "src/log.ts", 3],
-  ], "the event's name is the function's name, written first in a string; a template's `${}` holds a call");
+  const sites = (symbol: string) => callers(result, symbol).map(({ symbol, path, line, key }) => [symbol, `${path}:${line}`, key]).sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  assert.deepEqual(sites("Reviews.prepare"), [
+    ["menu", "src/menu.ts:5", "prepare"],
+    ["reviewHandlers", "src/seat.ts:6", "review.prepare"],
+    ["reviewHandlers", "src/seat.ts:8", "review.again"],
+  ], "a quoted key that holds the name does not hide the call after it, and each caller keeps the key of the property whose function holds the call");
+  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "Reviews.prepare")!.callerCount, { total: 3, shown: 3, complete: true });
+  assert.deepEqual(sites("sync"), [
+    ["bus.on('sync', (id: string) => sync(id))", "src/bus.ts:5", undefined],
+    ["told", "src/log.ts:3", undefined],
+    ["menu", "src/menu.ts:6", "sync"],
+    ["menu", "src/menu.ts:7", "again"],
+  ], "the event's name is the function's name, written first in a string, and that function is the value of no property; a template's `${}` holds a call; a property's value can be the name itself");
 }));

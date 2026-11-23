@@ -142,9 +142,10 @@ export interface AnchorRecord {
    * its path. `guards` are the conditions dominating the call site, outermost first; `enqueue` marks a call that
    * enqueues this definition (a job's `perform`). `name` is what the line writes when it is not the definition's own
    * name, such as the path `render` names a template by; `convention` marks an action that renders its own template,
-   * with no call to name it, at the action's first line.
+   * with no call to name it, at the action's first line. `key` is the key of the JS or TS object literal's property
+   * whose function holds the call, or whose value the name is: `review.prepare` for `'review.prepare': () => prepare()`.
    */
-  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true; name?: string; convention?: true }>;
+  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true; name?: string; convention?: true; key?: string }>;
   /** How many production call sites the search found, how many `callers` lists, and whether that is all of them. */
   callerCount: CallerCount;
   tests: Array<{ id: string; symbol: string; path: string; line: number; text: string }>;
@@ -895,6 +896,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
         ...(hit.enqueue ? { enqueue: true as const } : {}),
         ...(hit.named ? { name: hit.named } : {}),
         ...(hit.convention ? { convention: true as const } : {}),
+        ...(hit.key !== undefined ? { key: hit.key } : {}),
       });
     }
     callerRecords.sort((a, b) => Number(b.changed) - Number(a.changed) || b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
@@ -1214,7 +1216,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
       for (const caller of anchor.callers) {
         const via = calledBy.get(`${caller.id}:${caller.line}`)?.via;
         const exact = caller.resolution === "exact" ? ` [exact${via ? `, ${via}` : ""}]` : "";
-        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${exact}${caller.enqueue ? " (enqueues)" : ""}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
+        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${exact}${caller.key !== undefined ? ` in ${JSON.stringify(caller.key)}` : ""}${caller.enqueue ? " (enqueues)" : ""}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
         if (caller.guards.length) out.push(`    under: ${guardText(caller.guards)}`);
         if (caller.context) out.push(caller.context);
       }

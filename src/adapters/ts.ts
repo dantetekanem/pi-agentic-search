@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { excerpt, normalizeSignature } from "../shared.ts";
 import type { AdapterDefinition, CallSite, Definition, FileFacts, Guard, LanguageAdapter, ResolvedTarget } from "./types.ts";
+import { wayInOf, type WayIn } from "./js-entries.ts";
 
 interface TsFacts extends FileFacts {
   sourceFile: ts.SourceFile;
@@ -313,6 +314,26 @@ function firstCodeOffset(sf: ts.SourceFile, line: number): number | undefined {
   return offset;
 }
 
+/** The names `name` written on `line` that do not declare or import it, in order, at most `limit`. */
+function referencesOn(sf: ts.SourceFile, line: number, name: string, limit = Infinity): Array<ts.Identifier | ts.PrivateIdentifier> {
+  const found: Array<ts.Identifier | ts.PrivateIdentifier> = [];
+  if (line < 1 || line > sf.getLineStarts().length) return found;
+  const lineStart = sf.getPositionOfLineAndCharacter(line - 1, 0);
+  const lineEnd = line < sf.getLineStarts().length ? sf.getPositionOfLineAndCharacter(line, 0) : sf.getEnd();
+  const visit = (node: ts.Node): void => {
+    if (found.length >= limit || node.getEnd() < lineStart || node.getStart(sf) >= lineEnd) return;
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) && node.text === name) {
+      const parent = node.parent;
+      const declaring = parent && (ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent) || ts.isExportSpecifier(parent) || ((ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent) || ts.isClassDeclaration(parent) || ts.isMethodDeclaration(parent) || ts.isParameter(parent) || ts.isPropertyDeclaration(parent) || ts.isBindingElement(parent)) && parent.name === node));
+      if (!declaring) found.push(node);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
 class Extractor {
   readonly definitions: AdapterDefinition[] = [];
   readonly defNodes = new Map<number, ts.Node>();
@@ -586,23 +607,15 @@ export class TsAdapter implements LanguageAdapter {
   }
 
   confirmsReference(facts: FileFacts, line: number, name: string): boolean {
-    const sf = (facts as TsFacts).sourceFile;
-    if (line < 1 || line > sf.getLineStarts().length) return false;
-    const lineStart = sf.getPositionOfLineAndCharacter(line - 1, 0);
-    const lineEnd = line < sf.getLineStarts().length ? sf.getPositionOfLineAndCharacter(line, 0) : sf.getEnd();
-    let found = false;
-    const visit = (node: ts.Node): void => {
-      if (found || node.getEnd() < lineStart || node.getStart(sf) >= lineEnd) return;
-      if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) && node.text === name) {
-        const parent = node.parent;
-        const declaring = parent && (ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent) || ts.isExportSpecifier(parent) || ((ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent) || ts.isClassDeclaration(parent) || ts.isMethodDeclaration(parent) || ts.isParameter(parent) || ts.isPropertyDeclaration(parent) || ts.isBindingElement(parent)) && parent.name === node));
-        if (!declaring) found = true;
-        return;
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sf);
-    return found;
+    return referencesOn((facts as TsFacts).sourceFile, line, name, 1).length > 0;
+  }
+
+  /** The way in of the reference to `name` on `line` inside `def`, as `wayInOf` reads it; a property's own key is no reference to it. */
+  wayIn(facts: FileFacts, def: Definition, line: number, name: string): WayIn | undefined {
+    const { sourceFile, defNodes } = facts as TsFacts;
+    const found = referencesOn(sourceFile, line, name);
+    const reference = found.find((node) => !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) ?? found[0];
+    return reference && ts.isIdentifier(reference) ? wayInOf(reference, defNodes.get(def.startLine)) : undefined;
   }
 
   calls(facts: FileFacts, def: Definition): CallSite[] {
