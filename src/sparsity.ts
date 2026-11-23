@@ -11,7 +11,7 @@ import { readRoutes } from "./adapters/ruby-routes.ts";
 import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
-import type { WayIn } from "./adapters/js-entries.ts";
+import { isCodeEntry, type CodeEntry, type WayIn } from "./adapters/js-entries.ts";
 import { scriptFiles, scriptLanguage, shebangLanguage, type ScriptEntry } from "./scripts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
@@ -53,9 +53,10 @@ export interface SparsityNode {
   /**
    * The framework calls this definition: a job's `perform` or a controller action, which needs a Ruby index; or its
    * package exposes it: a command's statement, the default export of a module Pi loads, what the package exports; or
-   * it is a script's top-level statement, which runs from the command line.
+   * it is a script's top-level statement, which runs from the command line; or a caller listed for it as an anchor
+   * registers it by name, as the value of a handler.
    */
-  entry?: Entry | PackageEntry | ScriptEntry;
+  entry?: Entry | PackageEntry | ScriptEntry | CodeEntry;
 }
 
 export interface SparsityEdge {
@@ -187,6 +188,8 @@ export interface ReferenceHit {
   convention?: true;
   /** Set by `callers` for JS and TS: the key of the object literal's property whose function holds the call, or whose value the name is. */
   key?: string;
+  /** Set by `callers` for JS and TS: the way in the call site belongs to, such as the handler of a map of handlers it is in. */
+  siteEntry?: CodeEntry;
 }
 
 /** What a reference search found: the hits it shows, and every site that passed its filters. */
@@ -1151,6 +1154,18 @@ export function declaresName(text: string, name: string): boolean {
   const scope = new RegExp(`^\\s*scope\\s*\\(?\\s*:${n}\\b`);
   const destructured = new RegExp(`^\\s*(export\\s+)?(const|let|var)\\s*[{\\[](?:[^}\\]]*[^\\w$.}\\]])?${n}(?![\\w$])[^}\\]]*[}\\]]\\s*=`);
   return declaration.test(text) || scope.test(text) || destructured.test(text) || /^\s*(import|require|require_relative)\b/.test(text) || /^\s*export\s*(\*|\{|type\s*\{)/.test(text);
+}
+
+/**
+ * What an anchor's entry says once `found` is added: the entry it had, or `found` when it had none. A second way in of
+ * the same kind that code registers adds its doors and routes, and is exact when either is.
+ */
+function joinEntries(known: SparsityNode["entry"], found: CodeEntry): SparsityNode["entry"] {
+  if (!known) return { ...found, ...(found.doors ? { doors: [...found.doors] } : {}), ...(found.routes ? { routes: [...found.routes] } : {}) };
+  if (!isCodeEntry(known) || known.kind !== found.kind) return known;
+  const doors = [...(known.doors ?? []), ...(found.doors ?? []).filter((door) => !known.doors?.some((item) => item.file === door.file && item.line === door.line && item.title === door.title))];
+  const routes = [...(known.routes ?? []), ...(found.routes ?? []).filter((route) => !known.routes?.some((item) => item.file === route.file && item.line === route.line && item.path === route.path))];
+  return { kind: known.kind, exact: known.exact || found.exact, ...(doors.length ? { doors } : {}), ...(routes.length ? { routes } : {}) };
 }
 
 export class Collector {
@@ -2299,6 +2314,9 @@ export class Collector {
       hit.guards = guards;
       const way = hit.node.language === "javascript" ? await this.wayIn(hit, name) : undefined;
       if (way?.key !== undefined) hit.key = way.key;
+      if (way?.entry) hit.siteEntry = way.entry;
+      // The name is the registered value itself, so the anchor is the way in, unless something else already says so.
+      if (way?.entry && way.registers && !hit.test) anchor.entry = joinEntries(anchor.entry, way.entry);
       if (!hit.exactVia && this.resolvesTo(site, anchor)) hit.exactVia = "checker";
       // A file outside the TypeScript programs, such as a Node script with no ending, is still exact by its import.
       if (!hit.exactVia && anchor.language === "javascript" && await this.importsFrom(hit.node.path, name, anchor.path)) hit.exactVia = "import";

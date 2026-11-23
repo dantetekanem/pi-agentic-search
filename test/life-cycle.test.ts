@@ -158,6 +158,7 @@ test("what a package exposes says so, with where its package.json does: a comman
   }, "exported through index.ts under another name");
   const command = result.nodes.find((node) => node.path === "src/cli.ts");
   assert.deepEqual(command?.entry, { kind: "command", exact: true, doors: [{ kind: "command", title: "tiny", file: "package.json", line: 6, text: '"tiny": "./src/cli.ts"' }] }, "the command's file calls total as it runs");
+  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "total")?.callers.map((caller) => [caller.path, caller.entry?.kind]).sort(), [["src/cli.ts", "command"], ["src/extension.ts", "extension"]], "a caller record carries its caller's own entry");
 }));
 
 /** A host whose window commands are a map of handlers by name, and the other ways a Node app is entered. */
@@ -200,13 +201,30 @@ const HOST: Record<string, string> = {
     "}",
     "",
   ].join("\n"),
+  "src/commands.ts": [
+    "import { sync } from './reviews.ts';",
+    "",
+    "const commands = {",
+    "  sync: (id: string) => sync(id),",
+    "  again: sync,",
+    "};",
+    "",
+    "export function run(name: keyof typeof commands, id: string) {",
+    "  return commands[name](id);",
+    "}",
+    "",
+    "export const options = { 'on-sync': () => sync('a'), retries: 2 };",
+    "",
+  ].join("\n"),
 };
 
 const callers = (result: ScanResult, symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)!.callers;
 
 test("a call inside a function that is the value of an object's property, or an argument, is a caller: the definition that holds it", () => repo(HOST, async (scan) => {
   const result = await scan({ anchors: ["src/reviews.ts:2", "src/reviews.ts:7"], allCallers: true });
-  const sites = (symbol: string) => callers(result, symbol).map(({ symbol, path, line, key }) => [symbol, `${path}:${line}`, key]).sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  const sites = (symbol: string) => [...callers(result, symbol)]
+    .sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+    .map(({ symbol, path, line, key }) => [symbol, `${path}:${line}`, key]);
   assert.deepEqual(sites("Reviews.prepare"), [
     ["menu", "src/menu.ts:5", "prepare"],
     ["reviewHandlers", "src/seat.ts:6", "review.prepare"],
@@ -215,8 +233,34 @@ test("a call inside a function that is the value of an object's property, or an 
   assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "Reviews.prepare")!.callerCount, { total: 3, shown: 3, complete: true });
   assert.deepEqual(sites("sync"), [
     ["bus.on('sync', (id: string) => sync(id))", "src/bus.ts:5", undefined],
+    ["commands", "src/commands.ts:4", "sync"],
+    ["commands", "src/commands.ts:5", "again"],
+    ["options", "src/commands.ts:12", "on-sync"],
     ["told", "src/log.ts:3", undefined],
     ["menu", "src/menu.ts:6", "sync"],
     ["menu", "src/menu.ts:7", "again"],
   ], "the event's name is the function's name, written first in a string, and that function is the value of no property; a template's `${}` holds a call; a property's value can be the name itself");
+}));
+
+test("a map of handlers by name is a way in: each key a handler, exact only where the code reads the map by a key it is given", () => repo(HOST, async (scan) => {
+  const result = await scan({ anchors: ["src/reviews.ts:2", "src/reviews.ts:7"], allCallers: true });
+  const entryAt = (symbol: string, path: string, line: number) => callers(result, symbol).find((caller) => caller.path === path && caller.line === line)?.entry;
+  assert.deepEqual(entryAt("Reviews.prepare", "src/seat.ts", 6), {
+    kind: "handler", exact: false,
+    doors: [{ kind: "handler", title: "review.prepare", file: "src/seat.ts", line: 6, text: "'review.prepare': ({ id, refresh }: { id: string; refresh?: boolean }) => reviews.prepare(id, { refresh })," }],
+  }, "every value a function written in place, under quoted keys that are no names: the window's commands, sent by key from another file");
+  assert.deepEqual(entryAt("Reviews.prepare", "src/seat.ts", 8), {
+    kind: "handler", exact: false,
+    doors: [{ kind: "handler", title: "review.again", file: "src/seat.ts", line: 7, text: "'review.again': ({ id }: { id: string }) => {" }],
+  }, "the door is the line of the handler's key");
+  assert.deepEqual(entryAt("sync", "src/commands.ts", 4), {
+    kind: "handler", exact: true,
+    doors: [{ kind: "handler", title: "sync", file: "src/commands.ts", line: 4, text: "sync: (id: string) => sync(id)," }],
+  }, "`commands[name](id)` reads the map by a key it is given");
+  assert.equal(entryAt("Reviews.prepare", "src/menu.ts", 5), undefined, "an object of methods under plain names is no map of handlers by itself");
+  assert.equal(entryAt("sync", "src/commands.ts", 12), undefined, "an object with a value that is no function holds options");
+  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "sync")?.entry, {
+    kind: "handler", exact: true,
+    doors: [{ kind: "handler", title: "again", file: "src/commands.ts", line: 5, text: "again: sync," }],
+  }, "a definition that is a handler's value is the handler");
 }));

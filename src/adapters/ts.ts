@@ -615,7 +615,7 @@ export class TsAdapter implements LanguageAdapter {
     const { sourceFile, defNodes } = facts as TsFacts;
     const found = referencesOn(sourceFile, line, name);
     const reference = found.find((node) => !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) ?? found[0];
-    return reference && ts.isIdentifier(reference) ? wayInOf(reference, defNodes.get(def.startLine)) : undefined;
+    return reference && ts.isIdentifier(reference) ? wayInOf(reference, defNodes.get(def.startLine), facts.path) : undefined;
   }
 
   calls(facts: FileFacts, def: Definition): CallSite[] {

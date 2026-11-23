@@ -29,6 +29,7 @@ import { rubyAdapter } from "./adapters/ruby.ts";
 import { buildRubyIndex, type RubyIndex } from "./adapters/ruby-index.ts";
 import type { Entry } from "./adapters/ruby-entries.ts";
 import type { PackageEntry } from "./adapters/package-entries.ts";
+import { isCodeEntry, type CodeEntry } from "./adapters/js-entries.ts";
 import { isTemplatePath } from "./adapters/ruby-views.ts";
 import { hasNoEnding, scriptLanguage, type ScriptEntry } from "./scripts.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
@@ -144,8 +145,10 @@ export interface AnchorRecord {
    * name, such as the path `render` names a template by; `convention` marks an action that renders its own template,
    * with no call to name it, at the action's first line. `key` is the key of the JS or TS object literal's property
    * whose function holds the call, or whose value the name is: `review.prepare` for `'review.prepare': () => prepare()`.
+   * `entry` is the way in the call site belongs to: the handler it is in, or that it registers the anchor as, and
+   * otherwise the caller's own entry.
    */
-  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true; name?: string; convention?: true; key?: string }>;
+  callers: Array<{ id: string; symbol: string; path: string; line: number; text: string; context: string; test: boolean; changed: boolean; boundary: string[]; resolution: "exact" | "static_candidate"; guards: Guard[]; enqueue?: true; name?: string; convention?: true; key?: string; entry?: Entry | PackageEntry | ScriptEntry | CodeEntry }>;
   /** How many production call sites the search found, how many `callers` lists, and whether that is all of them. */
   callerCount: CallerCount;
   tests: Array<{ id: string; symbol: string; path: string; line: number; text: string }>;
@@ -162,7 +165,7 @@ export interface AnchorRecord {
   /** Writes, enqueues and cache calls on changed lines (Ruby), including calls that produce no edge. */
   effects: Effect[];
   /** The framework calls this definition: a job's `perform` or a controller action; `exact` when declared or routed. Needs a Ruby index. */
-  entry?: Entry | PackageEntry | ScriptEntry;
+  entry?: Entry | PackageEntry | ScriptEntry | CodeEntry;
   /** The change deleted the whole definition and the file defines it no more: its lines are the base's, `removed` holds them, and `changedLines` is empty. */
   goneAtHead?: true;
 }
@@ -897,6 +900,7 @@ export async function scanSparsity(options: ScanOptions): Promise<ScanResult> {
         ...(hit.named ? { name: hit.named } : {}),
         ...(hit.convention ? { convention: true as const } : {}),
         ...(hit.key !== undefined ? { key: hit.key } : {}),
+        ...(hit.siteEntry ?? hit.node.entry ? { entry: hit.siteEntry ?? hit.node.entry } : {}),
       });
     }
     callerRecords.sort((a, b) => Number(b.changed) - Number(a.changed) || b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line);
@@ -1130,6 +1134,17 @@ function edgeLine(edge: SparsityEdge, byId: Map<string, SparsityNode>): string {
   return `  - :${edge.line} \`${edge.name}\`${edge.relationship === "enqueues" ? " enqueues" : ""} → [${label}] ${destination}${extras ? `  (${extras})` : ""}`;
 }
 
+/** An entry as the anchor's text says it: its kind, then how a controller is routed, or the names and routes code registers it by. */
+function describeEntry(entry: NonNullable<AnchorRecord["entry"]>): string {
+  if (entry.kind === "controller") return `controller${entry.exact ? ", routed by config/routes.rb" : ", public method; no route read names it"}`;
+  if (!isCodeEntry(entry)) return entry.kind;
+  const names = [
+    ...(entry.routes ?? []).map((route) => `${route.verbs.join("/")} ${route.path} (${route.file}:${route.line})`),
+    ...(entry.doors ?? []).map((door) => `${JSON.stringify(door.title)} (${door.file}:${door.line})`),
+  ];
+  return `${entry.kind}${names.length ? ` ${names.join(", ")}` : ""}${entry.exact ? "" : ", not exact"}`;
+}
+
 /** One line per distinct list of guards: the changed lines it covers, then each guard outermost first. */
 function describeGuards(entries: AnchorRecord["guards"]): string[] {
   const groups = new Map<string, { lines: number[]; guards: Guard[] }>();
@@ -1192,7 +1207,7 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
       anchor.whitespaceOnly?.length ? `whitespace-only changes on ${compressRanges(anchor.whitespaceOnly)}` : undefined,
     ].filter(Boolean);
     if (baseNotes.length) out.push(`base: ${baseNotes.join("; ")}`);
-    if (anchor.entry) out.push(`entry: ${anchor.entry.kind}${anchor.entry.kind === "controller" ? anchor.entry.exact ? ", routed by config/routes.rb" : ", public method; no route read names it" : ""}`);
+    if (anchor.entry) out.push(`entry: ${describeEntry(anchor.entry)}`);
     if (anchor.guards.length) out.push("guards on changed lines:", ...describeGuards(anchor.guards));
     if (anchor.effects.length) out.push(`effects on changed lines: ${anchor.effects.map((effect) => `${effect.kind} :${effect.line} \`${effect.text}\``).join("; ")}`);
     out.push(node.snippet);
@@ -1216,7 +1231,8 @@ async function renderSections(result: Omit<ScanResult, "sections" | "packPath" |
       for (const caller of anchor.callers) {
         const via = calledBy.get(`${caller.id}:${caller.line}`)?.via;
         const exact = caller.resolution === "exact" ? ` [exact${via ? `, ${via}` : ""}]` : "";
-        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${exact}${caller.key !== undefined ? ` in ${JSON.stringify(caller.key)}` : ""}${caller.enqueue ? " (enqueues)" : ""}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
+        const way = caller.entry && isCodeEntry(caller.entry) ? ` (${describeEntry(caller.entry)})` : "";
+        out.push(`  - ${caller.id} ${caller.symbol} ${caller.path}:${caller.line}${exact}${caller.key !== undefined ? ` in ${JSON.stringify(caller.key)}` : ""}${way}${caller.enqueue ? " (enqueues)" : ""}${caller.changed ? " (changed in this diff)" : ""}${caller.boundary.length ? ` [${caller.boundary.join(", ")}]` : ""}  ${caller.text.slice(0, 100)}`);
         if (caller.guards.length) out.push(`    under: ${guardText(caller.guards)}`);
         if (caller.context) out.push(caller.context);
       }
