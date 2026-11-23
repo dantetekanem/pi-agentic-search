@@ -304,3 +304,49 @@ test("a listener is a way in, named by its event, and exact where the receiver i
   assert.equal(entryAt("src/main.ts", 16), undefined, "a stream's data inside the function that has it is part of that function's work");
   assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "onAgain")?.entry, listener(false, "again", "src/main.ts", 9, "bus.once('again', onAgain);"), "a definition registered by name is the listener");
 }));
+
+const ROUTES: Record<string, string> = {
+  "src/server.ts": [
+    "import express, { type Express } from 'express';",
+    "import { Hono } from 'hono';",
+    "import { sync } from './reviews.ts';",
+    "",
+    "const app = express();",
+    "app.get('/reviews/:id/sync', (req, res) => res.json(sync(req.params.id)));",
+    "app.post('/sync', auth, syncNow);",
+    "",
+    "const hono = new Hono();",
+    "hono.on(['PUT', 'PATCH'], '/hono/sync', (c) => c.json(sync('x')));",
+    "",
+    "export function routes(api: Express) {",
+    "  api.delete('/sync/:id', (req, res) => res.json(sync(req.params.id)));",
+    "}",
+    "",
+    "export function mount(router: { all(path: string, fn: () => void): void }) {",
+    "  router.all('/any', () => sync('any'));",
+    "}",
+    "",
+    "export function lookup(store: { get(key: string, load: () => string): string }) {",
+    "  return store.get('/sync', () => sync('cached'));",
+    "}",
+    "",
+    "function auth() {}",
+    "",
+    "export function syncNow() {",
+    "  return sync('now');",
+    "}",
+    "",
+  ].join("\n"),
+};
+
+test("a route a Node app registers is a way in, with its verbs and path as Rails routes have them", () => repo({ ...HOST, ...ROUTES }, async (scan) => {
+  const result = await scan({ anchors: ["src/reviews.ts:7", "src/server.ts:26"], allCallers: true });
+  const entryAt = (line: number) => callers(result, "sync").find((caller) => caller.path === "src/server.ts" && caller.line === line)?.entry;
+  const route = (exact: boolean, verbs: string[], path: string, line: number, text: string) => ({ kind: "route", exact, routes: [{ verbs, path, file: "src/server.ts", line, text }] });
+  assert.deepEqual(entryAt(6), route(true, ["GET"], "/reviews/:id/sync", 6, "app.get('/reviews/:id/sync', (req, res) => res.json(sync(req.params.id)));"), "express() made the app");
+  assert.deepEqual(entryAt(10), route(true, ["PUT", "PATCH"], "/hono/sync", 10, "hono.on(['PUT', 'PATCH'], '/hono/sync', (c) => c.json(sync('x')));"), "Hono's on takes its verbs first");
+  assert.deepEqual(entryAt(13), route(true, ["DELETE"], "/sync/:id", 13, "api.delete('/sync/:id', (req, res) => res.json(sync(req.params.id)));"), "a parameter of express's own type");
+  assert.deepEqual(entryAt(17), route(false, ["GET", "POST", "PUT", "PATCH", "DELETE"], "/any", 17, "router.all('/any', () => sync('any'));"), "a router by its name alone; `all` takes the verbs Rails's `via: :all` does");
+  assert.equal(entryAt(21), undefined, "a store's get with a path for a key is no route");
+  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "syncNow")?.entry, route(true, ["POST"], "/sync", 7, "app.post('/sync', auth, syncNow);"), "a definition registered by name, after the middleware, is the route's handler");
+}));

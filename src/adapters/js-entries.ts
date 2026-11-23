@@ -1,10 +1,10 @@
 import ts from "typescript";
 import type { EntryRoute } from "./ruby-entries.ts";
 
-/** A way into a Node or browser app that its own code registers: a handler in a map of handlers by name, a listener of an event. */
-export type CodeEntryKind = "handler" | "listener";
+/** A way into a Node or browser app that its own code registers: a handler in a map of handlers by name, a listener of an event, a route. */
+export type CodeEntryKind = "handler" | "listener" | "route";
 
-const CODE_ENTRY_KINDS = new Set<string>(["handler", "listener"]);
+const CODE_ENTRY_KINDS = new Set<string>(["handler", "listener", "route"]);
 
 /** An entry of a kind code registers, as against one a framework's ancestry or a package.json gives. */
 export const isCodeEntry = (entry: { kind: string }): entry is CodeEntry => CODE_ENTRY_KINDS.has(entry.kind);
@@ -266,12 +266,94 @@ function listenerExact(call: ts.CallExpression, index: number): boolean | undefi
   return method === "addEventListener" ? false : undefined;
 }
 
-/** The way in a call registers the function at `index` of its arguments as: a listener of the event it names. */
+/** The verbs a router method registers; `all` takes the ones Rails's `via: :all` does. */
+const VERB_METHODS: Record<string, string[]> = {
+  get: ["GET"], post: ["POST"], put: ["PUT"], patch: ["PATCH"], delete: ["DELETE"], head: ["HEAD"], options: ["OPTIONS"],
+  all: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+};
+const HTTP_VERB = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/;
+/** The packages whose apps and routers register routes: Express, Hono, Fastify, Koa's router, Elysia. */
+const ROUTER_MODULES = /^(?:express|hono|fastify|@koa\/router|koa-router|elysia)(?:\/|$)/;
+/** A receiver named like an app or a router: `app`, `router`, `api`, `adminRouter`. */
+const ROUTER_NAME = /^(?:app|api|router|routes|server|fastify|hono)$|(?:App|Api|Router|Routes|Server)$/;
+
+/** The verbs Hono's `on` names: `'GET'` or `['PUT', 'PATCH']`. */
+function verbsOf(node: ts.Expression | undefined): string[] | undefined {
+  const inner = node && innermost(node);
+  const verbs = inner && ts.isArrayLiteralExpression(inner) ? inner.elements.map((element) => literalText(element)) : [literalText(inner)];
+  return verbs.length && verbs.every((verb): verb is string => verb !== undefined && HTTP_VERB.test(verb)) ? verbs : undefined;
+}
+
+/** The name a type is written with starts with a name imported from a router package: `Express`, `express.Router`. */
+function routerType(type: ts.TypeNode | undefined): boolean {
+  if (!type || !ts.isTypeReferenceNode(type)) return false;
+  let name: ts.EntityName = type.typeName;
+  while (ts.isQualifiedName(name)) name = name.left;
+  const origin = originOf(name.text, name);
+  return origin.from === "import" && ROUTER_MODULES.test(origin.module);
+}
+
+/** A value made by what a router package exports: `express()`, `express.Router()`, `new Hono()`, `Fastify()`. */
+function routerMade(value: ts.Expression | undefined): boolean {
+  const made = value && innermost(value);
+  if (!made || !(ts.isCallExpression(made) || ts.isNewExpression(made))) return false;
+  let callee = innermost(made.expression);
+  while (ts.isPropertyAccessExpression(callee)) callee = innermost(callee.expression);
+  if (!ts.isIdentifier(callee)) return false;
+  const origin = originOf(callee.text, callee);
+  return origin.from === "import" && ROUTER_MODULES.test(origin.module);
+}
+
+/**
+ * Whether the name `at` holds is an app or a router a router package made: a parameter written with such a type, or a
+ * variable made by such a call, in the functions around it or at the file's top.
+ */
+function madeByRouterPackage(at: ts.Identifier): boolean {
+  const name = at.text;
+  for (let node: ts.Node | undefined = at.parent; node && !ts.isSourceFile(node); node = node.parent) {
+    if (!ts.isFunctionLike(node)) continue;
+    const parameter = node.parameters.find((item) => ts.isIdentifier(item.name) && item.name.text === name);
+    if (parameter) return routerType(parameter.type);
+  }
+  let made = false;
+  const visit = (node: ts.Node): void => {
+    if (made) return;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) made = routerMade(node.initializer) || routerType(node.type);
+    else ts.forEachChild(node, visit);
+  };
+  visit(at.getSourceFile());
+  return made;
+}
+
+/**
+ * The route a call registers the function at `index` as: `R.get('/path', ...fns)` and the other verbs, or Hono's
+ * `R.on(verbs, '/path', ...fns)`, with the path a literal that starts with `/` (or is `*`) and the function after it,
+ * handler or middleware. `exact` when R is an app or a router a router package made; not exact when R is only named
+ * like one (`app`, `router`, `this.app`, `adminRouter`); no route otherwise, so a store's `get('/key', load)` is none.
+ */
+function routeOf(call: ts.CallExpression, index: number): { exact: boolean; verbs: string[]; path: string } | undefined {
+  const callee = innermost(call.expression);
+  if (!ts.isPropertyAccessExpression(callee)) return undefined;
+  const method = callee.name.text;
+  const hono = method === "on";
+  const verbs = hono ? verbsOf(call.arguments[0]) : Object.hasOwn(VERB_METHODS, method) ? VERB_METHODS[method] : undefined;
+  const path = literalText(call.arguments[hono ? 1 : 0]);
+  if (!verbs || path === undefined || !(path.startsWith("/") || path === "*") || index < (hono ? 2 : 1)) return undefined;
+  const receiver = innermost(callee.expression);
+  const last = ts.isIdentifier(receiver) ? receiver : ts.isPropertyAccessExpression(receiver) ? receiver.name : undefined;
+  const root = ts.isIdentifier(receiver) ? receiver : undefined;
+  if (root && madeByRouterPackage(root)) return { exact: true, verbs, path };
+  return last && ROUTER_NAME.test(last.text) ? { exact: false, verbs, path } : undefined;
+}
+
+/** The way in a call registers the function at `index` of its arguments as: a route, or a listener of the event it names. */
 function registrationOf(call: ts.CallExpression, index: number, sf: ts.SourceFile, path: string): CodeEntry | undefined {
-  const exact = listenerExact(call, index);
-  if (exact === undefined) return undefined;
   const line = lineOf(sf, call);
   const text = lineText(sf, line);
+  const route = routeOf(call, index);
+  if (route) return { kind: "route", exact: route.exact, routes: [{ verbs: route.verbs, path: route.path, file: path, line, ...(text ? { text } : {}) }] };
+  const exact = listenerExact(call, index);
+  if (exact === undefined) return undefined;
   return { kind: "listener", exact, doors: [{ kind: "listener", title: literalText(call.arguments[0])!, file: path, line, ...(text ? { text } : {}) }] };
 }
 
