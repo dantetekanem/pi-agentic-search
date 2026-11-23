@@ -529,18 +529,26 @@ function isOperatorCall(site: CallSite): boolean {
   return site.source !== "constant" && !/^[A-Za-z_]/.test(site.name);
 }
 
+/**
+ * Every place the line writes `name` as a word, as the reference search matches it, is inside a string literal, so it
+ * holds no call: `"review.prepare": () => prepare()` holds one after its string.
+ */
 function insideStringLiteral(text: string, name: string): boolean {
-  const index = text.indexOf(name);
-  if (index < 0) return false;
+  const word = new RegExp(`(?<![\\w:@$])${escapeRegex(name)}${/[?!=]$/.test(name) ? "" : "(?![\\w?!=])"}`, "g");
+  const places = [...text.matchAll(word)].map((match) => match.index);
+  if (!places.length) return false;
   let quote: string | undefined;
-  for (let c = 0; c < index; c += 1) {
-    const char = text[c]!;
-    if (quote) {
-      if (char === "\\") c += 1;
-      else if (char === quote) quote = undefined;
-    } else if (char === '"' || char === "'" || char === "`") quote = char;
-  }
-  return quote !== undefined;
+  let c = 0;
+  return places.every((index) => {
+    for (; c < index; c += 1) {
+      const char = text[c]!;
+      if (quote) {
+        if (char === "\\") c += 1;
+        else if (char === quote) quote = undefined;
+      } else if (char === '"' || char === "'" || char === "`") quote = char;
+    }
+    return quote !== undefined;
+  });
 }
 
 function insideJsImport(lines: string[], line: number): boolean {
@@ -2067,7 +2075,8 @@ export class Collector {
       .filter((hit) => !(options.exclude && hit.path === options.exclude.path && hit.line >= options.exclude.startLine && hit.line <= options.exclude.endLine))
       .filter((hit) => !declaresName(hit.text, name))
       .filter((hit) => !/^\s*(#|\/\/|\*)/.test(hit.text))
-      .filter((hit) => !insideStringLiteral(hit.text, name))
+      // JS and TS hits are checked against the syntax tree below, which also sees a call inside a template's `${}`.
+      .filter((hit) => language === "javascript" || !insideStringLiteral(hit.text, name))
       .filter((hit) => !(options.skipTests && isTestPath(hit.path)))
       .filter((hit) => !(options.onlyTests && !isTestPath(hit.path)));
     const found: RgHit[] = [];

@@ -159,3 +159,48 @@ test("what a package exposes says so, with where its package.json does: a comman
   const command = result.nodes.find((node) => node.path === "src/cli.ts");
   assert.deepEqual(command?.entry, { kind: "command", exact: true, doors: [{ kind: "command", title: "tiny", file: "package.json", line: 6, text: '"tiny": "./src/cli.ts"' }] }, "the command's file calls total as it runs");
 }));
+
+/** A host whose window commands are a map of handlers by name, and the other ways a Node app is entered. */
+const HOST: Record<string, string> = {
+  "package.json": JSON.stringify({ name: "host", type: "module" }, null, 2) + "\n",
+  "tsconfig.json": '{"compilerOptions":{"strict":true,"module":"nodenext","allowImportingTsExtensions":true,"noEmit":true},"include":["src"]}\n',
+  "src/reviews.ts": "export class Reviews {\n  prepare(id: string, options: { refresh?: boolean }) {\n    return { id, ...options };\n  }\n}\n\nexport function sync(id: string) {\n  return id;\n}\n",
+  "src/seat.ts": [
+    "import type { Reviews } from './reviews.ts';",
+    "",
+    "export function reviewHandlers(reviews: Reviews) {",
+    "  return {",
+    "    // Asked for by the window.",
+    "    'review.prepare': ({ id, refresh }: { id: string; refresh?: boolean }) => reviews.prepare(id, { refresh }),",
+    "    'review.again': ({ id }: { id: string }) => {",
+    "      return reviews.prepare(id, { refresh: true });",
+    "    },",
+    "  };",
+    "}",
+    "",
+  ].join("\n"),
+  "src/bus.ts": [
+    "import { EventEmitter } from 'node:events';",
+    "import { sync } from './reviews.ts';",
+    "",
+    "export const bus = new EventEmitter();",
+    "bus.on('sync', (id: string) => sync(id));",
+    "",
+  ].join("\n"),
+  "src/log.ts": "import { sync } from './reviews.ts';\n\nexport const told = (id: string) => `synced ${sync(id)}`;\n",
+};
+
+const callers = (result: ScanResult, symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)!.callers;
+
+test("a call inside a function that is the value of an object's property, or an argument, is a caller: the definition that holds it", () => repo(HOST, async (scan) => {
+  const result = await scan({ anchors: ["src/reviews.ts:2", "src/reviews.ts:7"], allCallers: true });
+  assert.deepEqual(callers(result, "Reviews.prepare").map(({ symbol, path, line }) => [symbol, path, line]), [
+    ["reviewHandlers", "src/seat.ts", 6],
+    ["reviewHandlers", "src/seat.ts", 8],
+  ], "a quoted key that holds the name does not hide the call after it");
+  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "Reviews.prepare")!.callerCount, { total: 2, shown: 2, complete: true });
+  assert.deepEqual(callers(result, "sync").map(({ symbol, path, line }) => [symbol, path, line]), [
+    ["bus.on('sync', (id: string) => sync(id))", "src/bus.ts", 5],
+    ["told", "src/log.ts", 3],
+  ], "the event's name is the function's name, written first in a string; a template's `${}` holds a call");
+}));
