@@ -1,10 +1,13 @@
 import ts from "typescript";
 import type { EntryRoute } from "./ruby-entries.ts";
 
-/** A way into a Node or browser app that its own code registers: a handler in a map of handlers by name, a listener of an event, a route. */
-export type CodeEntryKind = "handler" | "listener" | "route";
+/**
+ * A way into a Node or browser app that its own code registers: a handler in a map of handlers by name, a listener of
+ * an event, a route, or the handler a JSX element's event prop is given (`ui-handler`).
+ */
+export type CodeEntryKind = "handler" | "listener" | "route" | "ui-handler";
 
-const CODE_ENTRY_KINDS = new Set<string>(["handler", "listener", "route"]);
+const CODE_ENTRY_KINDS = new Set<string>(["handler", "listener", "route", "ui-handler"]);
 
 /** An entry of a kind code registers, as against one a framework's ancestry or a package.json gives. */
 export const isCodeEntry = (entry: { kind: string }): entry is CodeEntry => CODE_ENTRY_KINDS.has(entry.kind);
@@ -357,6 +360,25 @@ function registrationOf(call: ts.CallExpression, index: number, sf: ts.SourceFil
   return { kind: "listener", exact, doors: [{ kind: "listener", title: literalText(call.arguments[0])!, file: path, line, ...(text ? { text } : {}) }] };
 }
 
+/**
+ * The handler a JSX event prop is given, when `value` is the prop's expression: an `on` prop such as `onClick`, titled
+ * by the element and the prop (`button onClick`) at the prop's line. Never exact: an element's prop says the interface
+ * may call it, and a component's `on` prop is a callback it is handed, which may not come from the user at all.
+ */
+function uiHandlerOf(value: ts.Node, sf: ts.SourceFile, path: string): CodeEntry | undefined {
+  const written = outermost(value);
+  const container = written.parent;
+  if (!ts.isJsxExpression(container) || container.expression !== written || !ts.isJsxAttribute(container.parent)) return undefined;
+  const attribute = container.parent;
+  const prop = attribute.name.getText(sf);
+  if (!/^on[A-Z]/.test(prop)) return undefined;
+  const element = attribute.parent.parent;
+  const title = ts.isJsxOpeningElement(element) || ts.isJsxSelfClosingElement(element) ? `${element.tagName.getText(sf)} ${prop}` : prop;
+  const line = lineOf(sf, attribute);
+  const text = lineText(sf, line);
+  return { kind: "ui-handler", exact: false, doors: [{ kind: "ui-handler", title, file: path, line, ...(text ? { text } : {}) }] };
+}
+
 /** The call `value` is an argument of, and where. */
 function argumentOf(value: ts.Node): { call: ts.CallExpression; index: number } | undefined {
   const written = outermost(value);
@@ -368,9 +390,10 @@ function argumentOf(value: ts.Node): { call: ts.CallExpression; index: number } 
 
 /**
  * The way in of the reference `name` at `reference`, up to `stop`, the node of the definition that holds it. First the
- * reference as a value: a property's (`'review.prepare': prepare`, `{ prepare }`, `handlers.prepare`) or a registered
- * listener (`bus.on('x', prepare)`). Then the nearest function written in place around it that is a property's value
- * or a registered listener; a function around it that is neither, such as a callback of `map`, passes through.
+ * reference as a value: a property's (`'review.prepare': prepare`, `{ prepare }`, `handlers.prepare`), a registered
+ * listener or route (`bus.on('x', prepare)`), or a JSX event prop's (`onClick={prepare}`). Then the nearest function
+ * written in place around it that is one of those; a function around it that is none, such as a callback of `map`,
+ * passes through.
  * `path` is the file's path as the pack writes it.
  */
 export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, path: string): WayIn | undefined {
@@ -383,7 +406,7 @@ export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, pat
     return { key: own.key, ...(entry ? { entry, registers: true as const } : {}) };
   }
   const passed = argumentOf(value);
-  const registered = passed && registrationOf(passed.call, passed.index, sf, path);
+  const registered = (passed && registrationOf(passed.call, passed.index, sf, path)) || uiHandlerOf(value, sf, path);
   if (registered) return { entry: registered, registers: true };
   for (let node = value.parent; node && node !== stop && !ts.isSourceFile(node); node = node.parent) {
     if (!isFunctionValue(node)) continue;
@@ -393,7 +416,7 @@ export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, pat
       return { key: around.key, ...(entry ? { entry } : {}) };
     }
     const argument = argumentOf(node);
-    const entry = argument && registrationOf(argument.call, argument.index, sf, path);
+    const entry = (argument && registrationOf(argument.call, argument.index, sf, path)) || uiHandlerOf(node, sf, path);
     if (entry) return { entry };
   }
   return undefined;

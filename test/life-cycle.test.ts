@@ -392,3 +392,31 @@ test("a route a Node app registers is a way in, with its verbs and path as Rails
   assert.equal(entryAt(21), undefined, "a store's get with a path for a key is no route");
   assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "syncNow")?.entry, route(true, ["POST"], "/sync", 7, "app.post('/sync', auth, syncNow);"), "a definition registered by name, after the middleware, is the route's handler");
 }));
+
+const UI: Record<string, string> = {
+  "src/ui.ts": "export function refresh(id: string) {\n  return id;\n}\n",
+  "src/Panel.tsx": [
+    "import { refresh } from './ui.ts';",
+    "",
+    "export function Panel({ id }: { id: string }) {",
+    "  return (",
+    "    <div>",
+    "      <button onClick={() => refresh(id)}>Refresh</button>",
+    "      <RefreshButton onPress={refresh} label=\"x\" />",
+    "      <input value={refresh(id)} />",
+    "    </div>",
+    "  );",
+    "}",
+    "",
+  ].join("\n"),
+};
+
+test("a JSX event prop is a way in from the interface, named by its element and prop, and never exact", () => repo({ ...HOST, ...UI }, async (scan) => {
+  const result = await scan({ anchors: ["src/ui.ts:1"], allCallers: true });
+  const entryAt = (line: number) => callers(result, "refresh").find((caller) => caller.path === "src/Panel.tsx" && caller.line === line)?.entry;
+  const uiHandler = (title: string, line: number, text: string) => ({ kind: "ui-handler", exact: false, doors: [{ kind: "ui-handler", title, file: "src/Panel.tsx", line, text }] });
+  assert.deepEqual(entryAt(6), uiHandler("button onClick", 6, "<button onClick={() => refresh(id)}>Refresh</button>"));
+  assert.deepEqual(entryAt(7), uiHandler("RefreshButton onPress", 7, '<RefreshButton onPress={refresh} label="x" />'), "a component's on- prop: a callback it is handed, which may or may not come from the user");
+  assert.equal(entryAt(8), undefined, "a value prop is worked out as the component renders");
+  assert.deepEqual(result.anchors[0]?.entry, uiHandler("RefreshButton onPress", 7, '<RefreshButton onPress={refresh} label="x" />'), "a definition handed to an event prop by name is the handler");
+}));
