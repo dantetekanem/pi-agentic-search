@@ -264,3 +264,43 @@ test("a map of handlers by name is a way in: each key a handler, exact only wher
     doors: [{ kind: "handler", title: "again", file: "src/commands.ts", line: 5, text: "again: sync," }],
   }, "a definition that is a handler's value is the handler");
 }));
+
+const LISTENERS: Record<string, string> = {
+  "src/main.ts": [
+    "import { ipcMain } from 'electron';",
+    "import { listen } from '@tauri-apps/api/event';",
+    "import { sync } from './reviews.ts';",
+    "import { bus } from './bus.ts';",
+    "",
+    "process.on('SIGTERM', () => sync('term'));",
+    "ipcMain.handle('review.sync', (_event: unknown, id: string) => sync(id));",
+    "listen('tauri://focus', () => sync('focus'));",
+    "bus.once('again', onAgain);",
+    "",
+    "export function onAgain(id: string) {",
+    "  return id;",
+    "}",
+    "",
+    "export function pipe(stream: NodeJS.ReadableStream) {",
+    "  stream.on('data', (chunk) => sync(String(chunk)));",
+    "}",
+    "",
+    "export function watch(button: HTMLElement) {",
+    "  button.addEventListener('click', () => sync('click'));",
+    "}",
+    "",
+  ].join("\n"),
+};
+
+test("a listener is a way in, named by its event, and exact where the receiver is a known event source", () => repo({ ...HOST, ...LISTENERS }, async (scan) => {
+  const result = await scan({ anchors: ["src/reviews.ts:7", "src/main.ts:11"], allCallers: true });
+  const entryAt = (path: string, line: number) => callers(result, "sync").find((caller) => caller.path === path && caller.line === line)?.entry;
+  const listener = (exact: boolean, title: string, file: string, line: number, text: string) => ({ kind: "listener", exact, doors: [{ kind: "listener", title, file, line, text }] });
+  assert.deepEqual(entryAt("src/main.ts", 6), listener(true, "SIGTERM", "src/main.ts", 6, "process.on('SIGTERM', () => sync('term'));"), "the process is an event source");
+  assert.deepEqual(entryAt("src/main.ts", 7), listener(true, "review.sync", "src/main.ts", 7, "ipcMain.handle('review.sync', (_event: unknown, id: string) => sync(id));"), "Electron's ipcMain handles a message");
+  assert.deepEqual(entryAt("src/main.ts", 8), listener(true, "tauri://focus", "src/main.ts", 8, "listen('tauri://focus', () => sync('focus'));"), "Tauri's listen");
+  assert.deepEqual(entryAt("src/bus.ts", 5), listener(false, "sync", "src/bus.ts", 5, "bus.on('sync', (id: string) => sync(id));"), "an emitter the module holds: a listener, though nothing says what the emitter is");
+  assert.deepEqual(entryAt("src/main.ts", 20), listener(false, "click", "src/main.ts", 20, "button.addEventListener('click', () => sync('click'));"), "addEventListener on a value the function is given");
+  assert.equal(entryAt("src/main.ts", 16), undefined, "a stream's data inside the function that has it is part of that function's work");
+  assert.deepEqual(result.anchors.find((anchor) => anchor.symbol === "onAgain")?.entry, listener(false, "again", "src/main.ts", 9, "bus.once('again', onAgain);"), "a definition registered by name is the listener");
+}));

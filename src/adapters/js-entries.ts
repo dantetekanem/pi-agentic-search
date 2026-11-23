@@ -1,15 +1,15 @@
 import ts from "typescript";
 import type { EntryRoute } from "./ruby-entries.ts";
 
-/** A way into a Node or browser app that its own code registers: a handler in a map of handlers by name. */
-export type CodeEntryKind = "handler";
+/** A way into a Node or browser app that its own code registers: a handler in a map of handlers by name, a listener of an event. */
+export type CodeEntryKind = "handler" | "listener";
 
-const CODE_ENTRY_KINDS = new Set<string>(["handler"]);
+const CODE_ENTRY_KINDS = new Set<string>(["handler", "listener"]);
 
 /** An entry of a kind code registers, as against one a framework's ancestry or a package.json gives. */
 export const isCodeEntry = (entry: { kind: string }): entry is CodeEntry => CODE_ENTRY_KINDS.has(entry.kind);
 
-/** The line that registers the way in, as written, and the name it is reached by: a handler's key. */
+/** The line that registers the way in, as written, and the name it is reached by: a handler's key, a listener's event. */
 export interface CodeDoor {
   kind: CodeEntryKind;
   title: string;
@@ -37,9 +37,9 @@ export interface CodeEntry {
 export interface WayIn {
   /** The property's key as written: the text of a name or a quoted key, a computed key with its brackets. */
   key?: string;
-  /** The way in the property is: a handler of a map of handlers by name. */
+  /** The way in: a handler of a map of handlers by name, or the listener a call registers. */
   entry?: CodeEntry;
-  /** The name is the registered value itself (`again: sync`), not a call inside it: the definition it names is the way in. */
+  /** The name is the registered value itself (`again: sync`, `bus.on('x', sync)`), not a call inside it: the definition it names is the way in. */
   registers?: true;
 }
 
@@ -155,9 +155,140 @@ function handlerOf({ key, property, map }: Property, sf: ts.SourceFile, path: st
 }
 
 /**
- * The way in of the reference `name` at `reference`, up to `stop`, the node of the definition that holds it: the
- * reference as a property's value (`'review.prepare': prepare`, `{ prepare }`, `handlers.prepare`), else the nearest
- * function written in place around it that is a property's value. A function around it that is neither passes through.
+ * Where the value a name holds comes from, seen at `at`: a parameter or local of a function around it, an import (with
+ * its module) or a declaration at the file's top, or neither, which is a global such as `process` or `window`.
+ */
+type Origin = { from: "local" } | { from: "import"; module: string } | { from: "module" } | { from: "global" };
+
+/** The module `require('x')` or `require('x').y` loads. */
+function requiredModule(node: ts.Expression | undefined): string | undefined {
+  let current = node && innermost(node);
+  while (current && ts.isPropertyAccessExpression(current)) current = innermost(current.expression);
+  if (!current || !ts.isCallExpression(current) || !ts.isIdentifier(current.expression) || current.expression.text !== "require") return undefined;
+  const [specifier] = current.arguments;
+  return specifier && ts.isStringLiteral(specifier) ? specifier.text : undefined;
+}
+
+/** Whether a binding (a name, or a destructuring pattern) declares `name`. */
+function binds(binding: ts.BindingName, name: string): boolean {
+  if (ts.isIdentifier(binding)) return binding.text === name;
+  return binding.elements.some((element) => !ts.isOmittedExpression(element) && binds(element.name, name));
+}
+
+function originOf(name: string, at: ts.Node): Origin {
+  for (let node: ts.Node | undefined = at.parent; node && !ts.isSourceFile(node); node = node.parent) {
+    if (!ts.isFunctionLike(node)) continue;
+    if (node.parameters.some((parameter) => binds(parameter.name, name))) return { from: "local" };
+    let declared = false;
+    const visit = (inner: ts.Node): void => {
+      if (declared) return;
+      if ((ts.isVariableDeclaration(inner) && binds(inner.name, name)) || ((ts.isFunctionDeclaration(inner) || ts.isClassDeclaration(inner)) && inner.name?.text === name)) declared = true;
+      else ts.forEachChild(inner, visit);
+    };
+    if ("body" in node && node.body) visit(node.body);
+    if (declared) return { from: "local" };
+  }
+  for (const statement of at.getSourceFile().statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.importClause) {
+      const clause = statement.importClause;
+      const bindings = clause.namedBindings;
+      if (clause.name?.text === name || (bindings && (ts.isNamespaceImport(bindings) ? bindings.name.text === name : bindings.elements.some((element) => element.name.text === name)))) {
+        return { from: "import", module: statement.moduleSpecifier.text };
+      }
+    } else if (ts.isVariableStatement(statement)) {
+      const declaration = statement.declarationList.declarations.find((item) => binds(item.name, name));
+      if (declaration) {
+        const module = requiredModule(declaration.initializer);
+        return module ? { from: "import", module } : { from: "module" };
+      }
+    } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name?.text === name) {
+      return { from: "module" };
+    }
+  }
+  return { from: "global" };
+}
+
+/** What a receiver is, from the name it starts with: `this.bus` is a member, `getCurrentWindow().listen` starts with a call. */
+function receiverOf(expression: ts.Expression): { name?: string; origin?: Origin; member?: true; call?: true } {
+  let current = innermost(expression);
+  let call = false;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) current = innermost(current.expression);
+    else if (ts.isCallExpression(current)) {
+      call = true;
+      current = innermost(current.expression);
+    } else break;
+  }
+  if (current.kind === ts.SyntaxKind.ThisKeyword) return { member: true };
+  if (!ts.isIdentifier(current)) return { call: true };
+  return { name: current.text, origin: originOf(current.text, current), ...(call ? { call: true as const } : {}) };
+}
+
+const EMITTER_METHODS = new Set(["on", "once", "addListener", "prependListener", "prependOnceListener", "addEventListener"]);
+/** Globals that are event sources of the process or the page. */
+const GLOBAL_SOURCES = new Set(["process", "window", "document", "globalThis", "self"]);
+const fromElectron = (origin: Origin | undefined) => origin?.from === "import" && origin.module === "electron";
+const fromTauri = (origin: Origin | undefined) => origin?.from === "import" && origin.module.startsWith("@tauri-apps/");
+const fromProcess = (origin: Origin | undefined) => origin?.from === "import" && (origin.module === "process" || origin.module === "node:process");
+
+/** A string written as a literal: an event's name or a route's path. */
+function literalText(node: ts.Expression | undefined): string | undefined {
+  const inner = node && innermost(node);
+  return inner && (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) ? inner.text : undefined;
+}
+
+/**
+ * Whether a listener of the event `call` names first is exact, when the function at `index` is one: true on a known
+ * event source (`process`, `window`, `document`, a bare `addEventListener`, what Electron's or Tauri's modules give),
+ * false on an emitter the module holds, imports from elsewhere or finds as a global it does not declare, and for
+ * `addEventListener` on any other value; no listener on a parameter, local or member of the code around it, or on what
+ * a call returns, such as a stream's `data` inside a function. The event is a literal, or there is no listener.
+ * Electron's `handle` and `handleOnce` count only on what `electron` gives, Tauri's `listen` only from `@tauri-apps/`.
+ */
+function listenerExact(call: ts.CallExpression, index: number): boolean | undefined {
+  if (index < 1 || literalText(call.arguments[0]) === undefined) return undefined;
+  const callee = innermost(call.expression);
+  if (ts.isIdentifier(callee)) {
+    const origin = originOf(callee.text, callee);
+    if (callee.text === "addEventListener" && origin.from === "global") return true;
+    if ((callee.text === "listen" || callee.text === "once") && fromTauri(origin)) return true;
+    return undefined;
+  }
+  if (!ts.isPropertyAccessExpression(callee)) return undefined;
+  const method = callee.name.text;
+  const receiver = receiverOf(callee.expression);
+  const known = fromElectron(receiver.origin) || fromTauri(receiver.origin) || (!receiver.call && (fromProcess(receiver.origin) || (receiver.origin?.from === "global" && GLOBAL_SOURCES.has(receiver.name!))));
+  if (method === "handle" || method === "handleOnce") return fromElectron(receiver.origin) ? true : undefined;
+  if (method === "listen") return fromTauri(receiver.origin) ? true : undefined;
+  if (!EMITTER_METHODS.has(method)) return undefined;
+  if (known) return true;
+  if (!receiver.call && (receiver.origin?.from === "import" || receiver.origin?.from === "module" || receiver.origin?.from === "global")) return false;
+  return method === "addEventListener" ? false : undefined;
+}
+
+/** The way in a call registers the function at `index` of its arguments as: a listener of the event it names. */
+function registrationOf(call: ts.CallExpression, index: number, sf: ts.SourceFile, path: string): CodeEntry | undefined {
+  const exact = listenerExact(call, index);
+  if (exact === undefined) return undefined;
+  const line = lineOf(sf, call);
+  const text = lineText(sf, line);
+  return { kind: "listener", exact, doors: [{ kind: "listener", title: literalText(call.arguments[0])!, file: path, line, ...(text ? { text } : {}) }] };
+}
+
+/** The call `value` is an argument of, and where. */
+function argumentOf(value: ts.Node): { call: ts.CallExpression; index: number } | undefined {
+  const written = outermost(value);
+  const parent = written.parent;
+  if (!ts.isCallExpression(parent)) return undefined;
+  const index = parent.arguments.indexOf(written as ts.Expression);
+  return index >= 0 ? { call: parent, index } : undefined;
+}
+
+/**
+ * The way in of the reference `name` at `reference`, up to `stop`, the node of the definition that holds it. First the
+ * reference as a value: a property's (`'review.prepare': prepare`, `{ prepare }`, `handlers.prepare`) or a registered
+ * listener (`bus.on('x', prepare)`). Then the nearest function written in place around it that is a property's value
+ * or a registered listener; a function around it that is neither, such as a callback of `map`, passes through.
  * `path` is the file's path as the pack writes it.
  */
 export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, path: string): WayIn | undefined {
@@ -169,12 +300,19 @@ export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, pat
     const entry = handlerOf(own, sf, path);
     return { key: own.key, ...(entry ? { entry, registers: true as const } : {}) };
   }
+  const passed = argumentOf(value);
+  const registered = passed && registrationOf(passed.call, passed.index, sf, path);
+  if (registered) return { entry: registered, registers: true };
   for (let node = value.parent; node && node !== stop && !ts.isSourceFile(node); node = node.parent) {
     if (!isFunctionValue(node)) continue;
     const around = propertyOf(node, sf);
-    if (!around) continue;
-    const entry = handlerOf(around, sf, path);
-    return { key: around.key, ...(entry ? { entry } : {}) };
+    if (around) {
+      const entry = handlerOf(around, sf, path);
+      return { key: around.key, ...(entry ? { entry } : {}) };
+    }
+    const argument = argumentOf(node);
+    const entry = argument && registrationOf(argument.call, argument.index, sf, path);
+    if (entry) return { entry };
   }
   return undefined;
 }
