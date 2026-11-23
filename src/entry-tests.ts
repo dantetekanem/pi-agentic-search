@@ -243,7 +243,8 @@ export async function findEntryTests(query: string, path: string | undefined, cw
   const { symbol, sources } = located;
   const index = await readAncestry(symbol, sources, files);
   const kind = frameworkKind(ancestorsOf(index, symbol).slice(1));
-  if (!kind) return undefined;
+  // Tests are found by the conventions of controllers and jobs; a mailer's or a channel's are not read here.
+  if (kind !== "controller" && kind !== "job") return undefined;
 
   const method = kind === "job" ? target.method ?? "perform" : target.method;
   const def = method ? lookupMethod(index, symbol, method, false)[0] : undefined;

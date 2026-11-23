@@ -3,7 +3,7 @@ import { ancestorsOf, lookupMethod, resolveConstant, type IndexedDefinition, typ
 import { argumentsOf, constantPathText, kindName, lineAt, parseProgram, symbolValue } from "./ruby.ts";
 import type { RouteTable } from "./ruby-routes.ts";
 
-export type EntryKind = "controller" | "job" | "task";
+export type EntryKind = "controller" | "job" | "task" | "mailer" | "channel";
 
 /** A route that reaches a controller action: its verbs and path, and the line of the routes file that draws it, as written. */
 export interface EntryRoute {
@@ -23,10 +23,11 @@ export interface EntryExceptionsApp {
 }
 
 /**
- * A definition the framework calls: a job's `perform`, a public method of a controller, or a rake task, which rake runs
- * by its name. `exact` is true for a job, a task and an action a route read from `config/routes.rb` names; a public
- * controller method no read route names may be routed by code the reader did not interpret, or not at all. A routed
- * action lists its routes, and the action `config.exceptions_app` names says where.
+ * A definition the framework calls: a job's `perform`, a public method of a controller, a mailer or an Action Cable
+ * channel, or a rake task, which rake runs by its name. `exact` is true for a job, a task, a mailer's or a channel's
+ * public method (each is an action the framework calls by its name) and an action a route read from
+ * `config/routes.rb` names; a public controller method no read route names may be routed by code the reader did not
+ * interpret, or not at all. A routed action lists its routes, and the action `config.exceptions_app` names says where.
  */
 export interface Entry {
   kind: EntryKind;
@@ -68,11 +69,15 @@ export function readExceptionsApps(source: string): ExceptionsApp[] {
 
 const JOB_ANCESTORS = /(^|::)ApplicationJob$|^ActiveJob::Base$|^Sidekiq::(?:Job|Worker)$/;
 const CONTROLLER_ANCESTORS = /(^|::)ApplicationController$|^ActionController::(?:Base|API)$/;
+const MAILER_ANCESTORS = /(^|::)ApplicationMailer$|^ActionMailer::Base$/;
+const CHANNEL_ANCESTORS = /(^|::)ApplicationCable::Channel$|^ActionCable::Channel::Base$/;
 
 /** What a class is to the framework, from its ancestors other than itself, as declared superclasses and mixins name them. */
 export function frameworkKind(ancestors: string[]): EntryKind | undefined {
   if (ancestors.some((name) => JOB_ANCESTORS.test(name))) return "job";
   if (ancestors.some((name) => CONTROLLER_ANCESTORS.test(name))) return "controller";
+  if (ancestors.some((name) => MAILER_ANCESTORS.test(name))) return "mailer";
+  if (ancestors.some((name) => CHANNEL_ANCESTORS.test(name))) return "channel";
   return undefined;
 }
 
@@ -112,8 +117,9 @@ export function entryRegistry(index: RubyIndex, routes?: RouteTable, routesFile 
     const kind = frameworkKind(ancestorsOf(index, namespace.symbol).slice(1));
     if (kind === "job") {
       for (const def of lookupMethod(index, namespace.symbol, "perform", false)) if (def.kind === "method") mark(def, { kind, exact: true });
-    } else if (kind === "controller") {
-      for (const def of byOwner.get(namespace.symbol) ?? []) if (def.kind === "method" && !def.visibility) mark(def, { kind, exact: false });
+    } else if (kind === "controller" || kind === "mailer" || kind === "channel") {
+      // A mailer's or a channel's public methods are its actions, called by name; a controller's need a route.
+      for (const def of byOwner.get(namespace.symbol) ?? []) if (def.kind === "method" && !def.visibility) mark(def, { kind, exact: kind !== "controller" });
     }
   }
   for (const route of routes?.routes ?? []) {

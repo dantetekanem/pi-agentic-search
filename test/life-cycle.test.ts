@@ -162,6 +162,16 @@ test("a rake task is a way in, named with its namespace, and what it calls has i
   assert.deepEqual(callerOf(result, "Cleanup.prune").map(({ symbol, kind, line, entry }) => [symbol, kind, line, entry]), [["cleanup", "task", 9, { kind: "task", exact: true }]]);
 }));
 
+test("a mailer's public method is a mailer entry and an Action Cable channel's is a channel entry, both exact", () => repo(RAILS_MORE, async (scan) => {
+  const result = await scan({ anchors: ["app/mailers/report_mailer.rb:2", "app/mailers/report_mailer.rb:8", "app/channels/chat_channel.rb:2", "app/channels/chat_channel.rb:6", "app/channels/chat_channel.rb:12"] });
+  const entry = (symbol: string) => result.anchors.find((anchor) => anchor.symbol === symbol)?.entry;
+  assert.deepEqual(entry("ReportMailer#daily"), { kind: "mailer", exact: true }, "ActionMailer makes every public method an action");
+  assert.equal(entry("ReportMailer#footer"), undefined, "a private method is no action");
+  assert.deepEqual(entry("ChatChannel#subscribed"), { kind: "channel", exact: true }, "Action Cable calls it when a client subscribes");
+  assert.deepEqual(entry("ChatChannel#speak"), { kind: "channel", exact: true }, "a client calls a public method of its channel by name");
+  assert.equal(entry("ChatChannel#quiet"), undefined);
+}));
+
 test("a changed template is anchored as one definition, with its changed lines", () => repo(RAILS, async (scan, git, cwd) => {
   await writeFile(join(cwd, "app/views/users/_badge.html.erb"), "<span class=\"badge\">\n  <%= user.full_name %>\n</span>\n");
   git("commit", "-qam", "badge");
