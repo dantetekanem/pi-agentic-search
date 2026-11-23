@@ -46,10 +46,17 @@ export interface WayIn {
   registers?: true;
 }
 
+type ObjectMethod = (ts.MethodDeclaration | ts.AccessorDeclaration) & { parent: ts.ObjectLiteralExpression };
+
+/** A method or accessor written in an object literal: `prepare() {}`, `get size() {}`. */
+function isObjectMethod(node: ts.Node): node is ObjectMethod {
+  const method = ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node);
+  return method && ts.isObjectLiteralExpression(node.parent);
+}
+
 /** A function as written in place: an arrow, a function expression, or a method or accessor of an object literal. */
 function isFunctionValue(node: ts.Node): boolean {
-  return ts.isArrowFunction(node) || ts.isFunctionExpression(node)
-    || ((ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) && ts.isObjectLiteralExpression(node.parent));
+  return ts.isArrowFunction(node) || ts.isFunctionExpression(node) || isObjectMethod(node);
 }
 
 const isWrapper = (node: ts.Node): node is ts.ParenthesizedExpression | ts.AsExpression | ts.SatisfiesExpression | ts.TypeAssertion | ts.NonNullExpression =>
@@ -96,13 +103,16 @@ interface Property {
 
 /** The property `value` is the value of, or is, in an object literal. */
 function propertyOf(value: ts.Node, sf: ts.SourceFile): Property | undefined {
-  if ((ts.isMethodDeclaration(value) || ts.isGetAccessorDeclaration(value) || ts.isSetAccessorDeclaration(value)) && ts.isObjectLiteralExpression(value.parent)) {
-    return { key: keyText(value.name, sf), property: value, map: value.parent };
-  }
+  if (isObjectMethod(value)) return { key: keyText(value.name, sf), property: value, map: value.parent };
+
   const written = outermost(value);
   const parent = written.parent;
-  if (ts.isPropertyAssignment(parent) && parent.initializer === written) return { key: keyText(parent.name, sf), property: parent, map: parent.parent };
-  if (ts.isShorthandPropertyAssignment(parent) && parent.name === value) return { key: parent.name.text, property: parent, map: parent.parent };
+  if (ts.isPropertyAssignment(parent) && parent.initializer === written) {
+    return { key: keyText(parent.name, sf), property: parent, map: parent.parent };
+  }
+  if (ts.isShorthandPropertyAssignment(parent) && parent.name === value) {
+    return { key: parent.name.text, property: parent, map: parent.parent };
+  }
   return undefined;
 }
 
@@ -151,10 +161,24 @@ function readByKey(map: ts.ObjectLiteralExpression, sf: ts.SourceFile): boolean 
 function handlerOf({ key, property, map }: Property, sf: ts.SourceFile, path: string): CodeEntry | undefined {
   const properties = map.properties.filter((item) => !ts.isSpreadAssignment(item));
   const exact = readByKey(map, sf);
-  if (exact ? !properties.every((item) => inPlace(item) || named(item)) : !properties.every(inPlace) || !properties.some(quotedKey)) return undefined;
+  const handlerMap = exact
+    ? properties.every((item) => inPlace(item) || named(item))
+    : properties.every(inPlace) && properties.some(quotedKey);
+  if (!handlerMap) return undefined;
+
   const line = lineOf(sf, property);
+  return { kind: "handler", exact, doors: [doorAt("handler", key, sf, path, line)] };
+}
+
+/** Where a way in is registered: the file, the line, and the line as written. */
+function writtenAt(sf: ts.SourceFile, path: string, line: number): { file: string; line: number; text?: string } {
   const text = lineText(sf, line);
-  return { kind: "handler", exact, doors: [{ kind: "handler", title: key, file: path, line, ...(text ? { text } : {}) }] };
+  return { file: path, line, ...(text ? { text } : {}) };
+}
+
+/** The door at `line` of the file, titled by the name the way in is reached by. */
+function doorAt(kind: CodeEntryKind, title: string, sf: ts.SourceFile, path: string, line: number): CodeDoor {
+  return { kind, title, ...writtenAt(sf, path, line) };
 }
 
 /**
@@ -178,26 +202,38 @@ function binds(binding: ts.BindingName, name: string): boolean {
   return binding.elements.some((element) => !ts.isOmittedExpression(element) && binds(element.name, name));
 }
 
+/** Whether `body`, at any depth, declares `name` as a variable, a function or a class. */
+function declaresInside(body: ts.Node, name: string): boolean {
+  let declared = false;
+  const visit = (node: ts.Node): void => {
+    if (declared) return;
+    const variable = ts.isVariableDeclaration(node) && binds(node.name, name);
+    const named = (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name?.text === name;
+    if (variable || named) declared = true;
+    else ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return declared;
+}
+
+/** Whether an import clause binds `name`: its default, a namespace or a named import. */
+function importsName(clause: ts.ImportClause, name: string): boolean {
+  if (clause.name?.text === name) return true;
+  const bindings = clause.namedBindings;
+  if (!bindings) return false;
+  if (ts.isNamespaceImport(bindings)) return bindings.name.text === name;
+  return bindings.elements.some((element) => element.name.text === name);
+}
+
 function originOf(name: string, at: ts.Node): Origin {
   for (let node: ts.Node | undefined = at.parent; node && !ts.isSourceFile(node); node = node.parent) {
     if (!ts.isFunctionLike(node)) continue;
     if (node.parameters.some((parameter) => binds(parameter.name, name))) return { from: "local" };
-    let declared = false;
-    const visit = (inner: ts.Node): void => {
-      if (declared) return;
-      if ((ts.isVariableDeclaration(inner) && binds(inner.name, name)) || ((ts.isFunctionDeclaration(inner) || ts.isClassDeclaration(inner)) && inner.name?.text === name)) declared = true;
-      else ts.forEachChild(inner, visit);
-    };
-    if ("body" in node && node.body) visit(node.body);
-    if (declared) return { from: "local" };
+    if ("body" in node && node.body && declaresInside(node.body, name)) return { from: "local" };
   }
   for (const statement of at.getSourceFile().statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.importClause) {
-      const clause = statement.importClause;
-      const bindings = clause.namedBindings;
-      if (clause.name?.text === name || (bindings && (ts.isNamespaceImport(bindings) ? bindings.name.text === name : bindings.elements.some((element) => element.name.text === name)))) {
-        return { from: "import", module: statement.moduleSpecifier.text };
-      }
+      if (importsName(statement.importClause, name)) return { from: "import", module: statement.moduleSpecifier.text };
     } else if (ts.isVariableStatement(statement)) {
       const declaration = statement.declarationList.declarations.find((item) => binds(item.name, name));
       if (declaration) {
@@ -211,20 +247,31 @@ function originOf(name: string, at: ts.Node): Origin {
   return { from: "global" };
 }
 
-/** What a receiver is, from the name it starts with: `this.bus` is a member, `getCurrentWindow().listen` starts with a call. */
-function receiverOf(expression: ts.Expression): { name?: string; origin?: Origin; member?: true; call?: true } {
+/**
+ * What a receiver starts with: `this` (`this.bus`), a name (`bus`, `ipcMain`, `getCurrentWindow()`), with `called`
+ * when a call is on the way to the receiver, or another expression.
+ */
+type Receiver =
+  | { starts: "this" }
+  | { starts: "expression" }
+  | { starts: "name"; name: string; origin: Origin; called: boolean };
+
+function receiverOf(expression: ts.Expression): Receiver {
   let current = innermost(expression);
-  let call = false;
+  let called = false;
   for (;;) {
-    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) current = innermost(current.expression);
-    else if (ts.isCallExpression(current)) {
-      call = true;
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
       current = innermost(current.expression);
-    } else break;
+    } else if (ts.isCallExpression(current)) {
+      called = true;
+      current = innermost(current.expression);
+    } else {
+      break;
+    }
   }
-  if (current.kind === ts.SyntaxKind.ThisKeyword) return { member: true };
-  if (!ts.isIdentifier(current)) return { call: true };
-  return { name: current.text, origin: originOf(current.text, current), ...(call ? { call: true as const } : {}) };
+  if (current.kind === ts.SyntaxKind.ThisKeyword) return { starts: "this" };
+  if (!ts.isIdentifier(current)) return { starts: "expression" };
+  return { starts: "name", name: current.text, origin: originOf(current.text, current), called };
 }
 
 const EMITTER_METHODS = new Set(["on", "once", "addListener", "prependListener", "prependOnceListener", "addEventListener"]);
@@ -258,14 +305,22 @@ function listenerExact(call: ts.CallExpression, index: number): boolean | undefi
     return undefined;
   }
   if (!ts.isPropertyAccessExpression(callee)) return undefined;
+
   const method = callee.name.text;
   const receiver = receiverOf(callee.expression);
-  const known = fromElectron(receiver.origin) || fromTauri(receiver.origin) || (!receiver.call && (fromProcess(receiver.origin) || (receiver.origin?.from === "global" && GLOBAL_SOURCES.has(receiver.name!))));
-  if (method === "handle" || method === "handleOnce") return fromElectron(receiver.origin) ? true : undefined;
-  if (method === "listen") return fromTauri(receiver.origin) ? true : undefined;
+  const origin = receiver.starts === "name" ? receiver.origin : undefined;
+  if (method === "handle" || method === "handleOnce") return fromElectron(origin) ? true : undefined;
+  if (method === "listen") return fromTauri(origin) ? true : undefined;
   if (!EMITTER_METHODS.has(method)) return undefined;
-  if (known) return true;
-  if (!receiver.call && (receiver.origin?.from === "import" || receiver.origin?.from === "module" || receiver.origin?.from === "global")) return false;
+
+  // A name the receiver is, with no call on the way: `bus`, `process.stdin`, not `getBus()`.
+  const plain = receiver.starts === "name" && !receiver.called ? receiver : undefined;
+  const frameworkSource = fromElectron(origin) || fromTauri(origin);
+  const globalSource = plain !== undefined && (fromProcess(plain.origin) || (plain.origin.from === "global" && GLOBAL_SOURCES.has(plain.name)));
+  if (frameworkSource || globalSource) return true;
+
+  const heldByModule = plain !== undefined && plain.origin.from !== "local";
+  if (heldByModule) return false;
   return method === "addEventListener" ? false : undefined;
 }
 
@@ -338,10 +393,15 @@ function routeOf(call: ts.CallExpression, index: number): { exact: boolean; verb
   const callee = innermost(call.expression);
   if (!ts.isPropertyAccessExpression(callee)) return undefined;
   const method = callee.name.text;
+  // Hono's `on` names its verbs first and its path second; every other method is a verb, its path first.
   const hono = method === "on";
-  const verbs = hono ? verbsOf(call.arguments[0]) : Object.hasOwn(VERB_METHODS, method) ? VERB_METHODS[method] : undefined;
-  const path = literalText(call.arguments[hono ? 1 : 0]);
-  if (!verbs || path === undefined || !(path.startsWith("/") || path === "*") || index < (hono ? 2 : 1)) return undefined;
+  const verbMethod = Object.hasOwn(VERB_METHODS, method) ? VERB_METHODS[method] : undefined;
+  const verbs = hono ? verbsOf(call.arguments[0]) : verbMethod;
+  const pathAt = hono ? 1 : 0;
+  const path = literalText(call.arguments[pathAt]);
+  if (!verbs || path === undefined || index <= pathAt) return undefined;
+  if (!path.startsWith("/") && path !== "*") return undefined;
+
   const receiver = innermost(callee.expression);
   const last = ts.isIdentifier(receiver) ? receiver : ts.isPropertyAccessExpression(receiver) ? receiver.name : undefined;
   const root = ts.isIdentifier(receiver) ? receiver : undefined;
@@ -352,12 +412,16 @@ function routeOf(call: ts.CallExpression, index: number): { exact: boolean; verb
 /** The way in a call registers the function at `index` of its arguments as: a route, or a listener of the event it names. */
 function registrationOf(call: ts.CallExpression, index: number, sf: ts.SourceFile, path: string): CodeEntry | undefined {
   const line = lineOf(sf, call);
-  const text = lineText(sf, line);
   const route = routeOf(call, index);
-  if (route) return { kind: "route", exact: route.exact, routes: [{ verbs: route.verbs, path: route.path, file: path, line, ...(text ? { text } : {}) }] };
+  if (route) {
+    const drawn: EntryRoute = { verbs: route.verbs, path: route.path, ...writtenAt(sf, path, line) };
+    return { kind: "route", exact: route.exact, routes: [drawn] };
+  }
+
   const exact = listenerExact(call, index);
-  if (exact === undefined) return undefined;
-  return { kind: "listener", exact, doors: [{ kind: "listener", title: literalText(call.arguments[0])!, file: path, line, ...(text ? { text } : {}) }] };
+  const event = literalText(call.arguments[0]);
+  if (exact === undefined || event === undefined) return undefined;
+  return { kind: "listener", exact, doors: [doorAt("listener", event, sf, path, line)] };
 }
 
 /**
@@ -374,9 +438,7 @@ function uiHandlerOf(value: ts.Node, sf: ts.SourceFile, path: string): CodeEntry
   if (!/^on[A-Z]/.test(prop)) return undefined;
   const element = attribute.parent.parent;
   const title = ts.isJsxOpeningElement(element) || ts.isJsxSelfClosingElement(element) ? `${element.tagName.getText(sf)} ${prop}` : prop;
-  const line = lineOf(sf, attribute);
-  const text = lineText(sf, line);
-  return { kind: "ui-handler", exact: false, doors: [{ kind: "ui-handler", title, file: path, line, ...(text ? { text } : {}) }] };
+  return { kind: "ui-handler", exact: false, doors: [doorAt("ui-handler", title, sf, path, lineOf(sf, attribute))] };
 }
 
 /** The call `value` is an argument of, and where. */
@@ -393,13 +455,13 @@ function argumentOf(value: ts.Node): { call: ts.CallExpression; index: number } 
  * reference as a value: a property's (`'review.prepare': prepare`, `{ prepare }`, `handlers.prepare`), a registered
  * listener or route (`bus.on('x', prepare)`), or a JSX event prop's (`onClick={prepare}`). Then the nearest function
  * written in place around it that is one of those; a function around it that is none, such as a callback of `map`,
- * passes through.
- * `path` is the file's path as the pack writes it.
+ * passes through. `path` is the file's path as the pack writes it.
  */
 export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, path: string): WayIn | undefined {
   const sf = reference.getSourceFile();
   let value: ts.Node = reference;
   while (ts.isPropertyAccessExpression(value.parent) && value.parent.name === value) value = value.parent;
+
   const own = propertyOf(value, sf);
   if (own) {
     const entry = handlerOf(own, sf, path);
@@ -408,6 +470,7 @@ export function wayInOf(reference: ts.Identifier, stop: ts.Node | undefined, pat
   const passed = argumentOf(value);
   const registered = (passed && registrationOf(passed.call, passed.index, sf, path)) || uiHandlerOf(value, sf, path);
   if (registered) return { entry: registered, registers: true };
+
   for (let node = value.parent; node && node !== stop && !ts.isSourceFile(node); node = node.parent) {
     if (!isFunctionValue(node)) continue;
     const around = propertyOf(node, sf);

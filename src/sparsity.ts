@@ -6,12 +6,12 @@ import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:
 import { addRgExcludes, ensureInsideCwd, ensureRealPathInsideCwd, isRealPathInsideCwd, jsImportCandidatePaths } from "./sparsity-shared.ts";
 import { SKIP_DIRS } from "./classifications.ts";
 import { RELATION_METHODS, rubyAdapter } from "./adapters/ruby.ts";
-import { entryKey, entryRegistry, readExceptionsApps, type Entry } from "./adapters/ruby-entries.ts";
+import { entryKey, entryRegistry, readExceptionsApps, type Entry, type EntryRoute } from "./adapters/ruby-entries.ts";
 import { readRoutes } from "./adapters/ruby-routes.ts";
 import { conventionalRenderers, inTemplateFolder, renderedName, renderPatterns, rubyInTemplate, templateName, viewsFolder, type TemplateName } from "./adapters/ruby-views.ts";
 import { tsAdapter, TsPrograms } from "./adapters/ts.ts";
 import { packageEntries, type PackageEntries, type PackageEntry } from "./adapters/package-entries.ts";
-import { isCodeEntry, type CodeEntry, type WayIn } from "./adapters/js-entries.ts";
+import { isCodeEntry, type CodeDoor, type CodeEntry, type WayIn } from "./adapters/js-entries.ts";
 import { scriptFiles, scriptLanguage, shebangLanguage, type ScriptEntry } from "./scripts.ts";
 import { appendMetricsLine, edgeMetrics, indexMetrics } from "./metrics.ts";
 import { ancestorsOf, buildRubyIndex, lookupMethod, resolveConstant as resolveIndexedConstant, type IndexedCallSite, type IndexedDefinition, type RubyIndex } from "./adapters/ruby-index.ts";
@@ -1161,11 +1161,27 @@ export function declaresName(text: string, name: string): boolean {
  * the same kind that code registers adds its doors and routes, and is exact when either is.
  */
 function joinEntries(known: SparsityNode["entry"], found: CodeEntry): SparsityNode["entry"] {
-  if (!known) return { ...found, ...(found.doors ? { doors: [...found.doors] } : {}), ...(found.routes ? { routes: [...found.routes] } : {}) };
+  if (!known) {
+    return {
+      ...found,
+      ...(found.doors ? { doors: [...found.doors] } : {}),
+      ...(found.routes ? { routes: [...found.routes] } : {}),
+    };
+  }
   if (!isCodeEntry(known) || known.kind !== found.kind) return known;
-  const doors = [...(known.doors ?? []), ...(found.doors ?? []).filter((door) => !known.doors?.some((item) => item.file === door.file && item.line === door.line && item.title === door.title))];
-  const routes = [...(known.routes ?? []), ...(found.routes ?? []).filter((route) => !known.routes?.some((item) => item.file === route.file && item.line === route.line && item.path === route.path))];
-  return { kind: known.kind, exact: known.exact || found.exact, ...(doors.length ? { doors } : {}), ...(routes.length ? { routes } : {}) };
+
+  const sameDoor = (a: CodeDoor, b: CodeDoor) => a.file === b.file && a.line === b.line && a.title === b.title;
+  const sameRoute = (a: EntryRoute, b: EntryRoute) => a.file === b.file && a.line === b.line && a.path === b.path;
+  const newDoors = (found.doors ?? []).filter((door) => !known.doors?.some((item) => sameDoor(item, door)));
+  const newRoutes = (found.routes ?? []).filter((route) => !known.routes?.some((item) => sameRoute(item, route)));
+  const doors = [...(known.doors ?? []), ...newDoors];
+  const routes = [...(known.routes ?? []), ...newRoutes];
+  return {
+    kind: known.kind,
+    exact: known.exact || found.exact,
+    ...(doors.length ? { doors } : {}),
+    ...(routes.length ? { routes } : {}),
+  };
 }
 
 export class Collector {
